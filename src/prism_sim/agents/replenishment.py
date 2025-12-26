@@ -11,17 +11,19 @@ class MinMaxReplenisher:
     Triggers the Bullwhip effect via order batching.
     """
 
-    def __init__(self, world: World, state: StateManager):
+    def __init__(self, world: World, state: StateManager, config: Dict):
         self.world = world
         self.state = state
+        
+        params = config.get("simulation_parameters", {}).get("agents", {}).get("replenishment", {})
 
-        # Policy Parameters (Could be config driven)
-        self.target_days = 7.0  # Order Up To (S)
-        self.reorder_point_days = 3.0  # Reorder Point (s)
+        # Policy Parameters (Config driven)
+        self.target_days = params.get("target_days_supply", 7.0)  # Order Up To (S)
+        self.reorder_point_days = params.get("reorder_point_days", 3.0)  # Reorder Point (s)
 
         # Bullwhip parameters
-        self.min_order_qty = 10.0  # Minimum order size
-        self.batch_size = 50.0  # Pallet size approx
+        self.min_order_qty = params.get("min_order_qty", 10.0)  # Minimum order size
+        self.batch_size = params.get("batch_size_cases", 50.0)  # Pallet size approx
 
     def generate_orders(self, day: int, demand_history: np.ndarray) -> List[Order]:
         """

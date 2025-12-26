@@ -1,0 +1,32 @@
+rules:
+  - id: avoid-hardcoded-values
+    languages:
+      - python
+    severity: WARNING
+    message: >-
+      Hardcoded literal value detected in assignment. 
+      Per Prime Directive: "Do not hardcode variables or values. Always use a config paradigm."
+      Move this value to a configuration file or a dedicated constants module.
+    pattern-either:
+      # Catch String Literals
+      - patterns:
+          - pattern: $VAR = "..."
+          - pattern-not: $VAR = "__main__" # Ignore standard boilerplate
+          - pattern-not: $VAR = os.environ[...] # Ignore env var reads
+      
+      # Catch Bytes Literals
+      - patterns:
+          - pattern: $VAR = b"..."
+
+      # Catch Numeric Literals (Integer/Float)
+      - patterns:
+          - pattern: $VAR = $NUM
+          - metavariable-regex:
+              metavariable: $NUM
+              regex: ^-?\d+(\.\d+)?$
+
+      # Catch Booleans (often flags that should be config)
+      - patterns:
+          - pattern: $VAR = True
+      - patterns:
+          - pattern: $VAR = False

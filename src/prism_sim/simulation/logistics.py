@@ -11,12 +11,15 @@ class LogisticsEngine:
     Implements 'Tetris' logic (Bin Packing) and Lead Time delays.
     """
 
-    MAX_WEIGHT_KG = 20000.0
-    MAX_VOLUME_M3 = 60.0
-
-    def __init__(self, world: World, state: StateManager):
+    def __init__(self, world: World, state: StateManager, config: Dict):
         self.world = world
         self.state = state
+        self.config = config
+        
+        constraints = config.get("simulation_parameters", {}).get("logistics", {}).get("constraints", {})
+        self.max_weight_kg = constraints.get("truck_max_weight_kg", 20000.0)
+        self.max_volume_m3 = constraints.get("truck_max_volume_m3", 60.0)
+        
         self.route_map: Dict[Tuple[str, str], Link] = {}
         self._build_route_map()
 
@@ -65,8 +68,8 @@ class LogisticsEngine:
 
                 while remaining_qty > 0:
                     # Check space
-                    weight_space = self.MAX_WEIGHT_KG - current_shipment.total_weight_kg
-                    vol_space = self.MAX_VOLUME_M3 - current_shipment.total_volume_m3
+                    weight_space = self.max_weight_kg - current_shipment.total_weight_kg
+                    vol_space = self.max_volume_m3 - current_shipment.total_volume_m3
 
                     if weight_space <= 0 or vol_space <= 0:
                         # Full, close and start new
@@ -79,8 +82,8 @@ class LogisticsEngine:
                             shipment_counter,
                         )
                         shipment_counter += 1
-                        weight_space = self.MAX_WEIGHT_KG
-                        vol_space = self.MAX_VOLUME_M3
+                        weight_space = self.max_weight_kg
+                        vol_space = self.max_volume_m3
 
                     # How much fits?
                     # Avoid div by zero

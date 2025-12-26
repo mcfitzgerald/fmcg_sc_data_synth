@@ -29,6 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Enforced code quality standards using `ruff`, `mypy`, and `semgrep`.
 - Fixed linting errors, unused imports, and type mismatches across the codebase.
 - Added `mypy` to project dependencies.
+- Refactored hardcoded simulation parameters into `simulation_config.json` to enforce the configuration paradigm.
 
 ## [0.1.0] - 2025-12-26
 

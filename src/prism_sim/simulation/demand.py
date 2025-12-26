@@ -122,9 +122,10 @@ class POSEngine:
     Point-of-Sale Engine. Generates daily consumer demand.
     """
 
-    def __init__(self, world: World, state: StateManager):
+    def __init__(self, world: World, state: StateManager, config: Dict):
         self.world = world
         self.state = state
+        self.config = config
         self.calendar = PromoCalendar(world)
 
         # Base Demand (Cases per day) - Randomized for now per Store/SKU
@@ -137,6 +138,8 @@ class POSEngine:
         Initializes base demand for Retail Stores.
         RDCs and Suppliers have 0 consumer demand.
         """
+        profiles = self.config.get("simulation_parameters", {}).get("demand", {}).get("category_profiles", {})
+        
         for n_id, node in self.world.nodes.items():
             if node.type != NodeType.STORE:
                 continue
@@ -146,19 +149,19 @@ class POSEngine:
             for p_id, product in self.world.products.items():
                 p_idx = self.state.product_id_to_idx[p_id]
 
-                # Assign base demand based on category (rough logic)
-                # Toothpaste: High volume
-                # Soap: Medium
-                # Detergent: Medium
-                # Ingredients: 0
-
+                # Assign base demand based on category
                 mean_demand = 0.0
+                
+                # Check category match (rough logic based on ID string or category enum if available)
+                # Ideally we use product.category, but for now matching ID strings as per previous logic
                 if "PASTE" in p_id:
-                    mean_demand = 50.0
+                     mean_demand = profiles.get("ORAL_CARE", {}).get("base_daily_demand", 50.0)
                 elif "SOAP" in p_id:
-                    mean_demand = 30.0
+                     mean_demand = profiles.get("PERSONAL_WASH", {}).get("base_daily_demand", 30.0)
                 elif "DET" in p_id:
-                    mean_demand = 20.0
+                     mean_demand = profiles.get("HOME_CARE", {}).get("base_daily_demand", 20.0)
+                elif "ING" in p_id:
+                     mean_demand = profiles.get("INGREDIENT", {}).get("base_daily_demand", 0.0)
 
                 self.base_demand[n_idx, p_idx] = mean_demand
 

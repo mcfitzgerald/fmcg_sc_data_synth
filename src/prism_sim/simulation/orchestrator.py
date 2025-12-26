@@ -6,7 +6,7 @@ from prism_sim.simulation.demand import POSEngine
 from prism_sim.agents.replenishment import MinMaxReplenisher
 from prism_sim.agents.allocation import AllocationAgent
 from prism_sim.simulation.logistics import LogisticsEngine
-from prism_sim.config.loader import load_manifest
+from prism_sim.config.loader import load_manifest, load_simulation_config
 from prism_sim.network.core import Shipment
 
 
@@ -18,6 +18,7 @@ class Orchestrator:
     def __init__(self):
         # 1. Initialize World
         manifest = load_manifest()
+        self.config = load_simulation_config()
         self.builder = WorldBuilder(manifest)
         self.world = self.builder.build()
 
@@ -26,10 +27,10 @@ class Orchestrator:
         self._initialize_inventory()
 
         # 3. Initialize Engines & Agents
-        self.pos_engine = POSEngine(self.world, self.state)
-        self.replenisher = MinMaxReplenisher(self.world, self.state)
+        self.pos_engine = POSEngine(self.world, self.state, self.config)
+        self.replenisher = MinMaxReplenisher(self.world, self.state, self.config)
         self.allocator = AllocationAgent(self.state)
-        self.logistics = LogisticsEngine(self.world, self.state)
+        self.logistics = LogisticsEngine(self.world, self.state, self.config)
 
     def _initialize_inventory(self):
         # Seed some initial inventory to avoid massive day 1 orders

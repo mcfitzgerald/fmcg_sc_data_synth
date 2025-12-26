@@ -1,0 +1,26 @@
+{
+  "simulation_parameters": {
+    "agents": {
+      "replenishment": {
+        "target_days_supply": 7.0,
+        "reorder_point_days": 3.0,
+        "min_order_qty": 10.0,
+        "batch_size_cases": 50.0
+      }
+    },
+    "demand": {
+      "category_profiles": {
+        "ORAL_CARE": { "base_daily_demand": 50.0 },
+        "PERSONAL_WASH": { "base_daily_demand": 30.0 },
+        "HOME_CARE": { "base_daily_demand": 20.0 },
+        "INGREDIENT": { "base_daily_demand": 0.0 }
+      }
+    },
+    "logistics": {
+      "constraints": {
+        "truck_max_weight_kg": 20000.0,
+        "truck_max_volume_m3": 60.0
+      }
+    }
+  }
+}

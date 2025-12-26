@@ -16,3 +16,18 @@ def load_manifest(manifest_path: Optional[str] = None) -> Dict[str, Any]:
 
     with open(final_path, "r") as f:
         return json.load(f)
+
+
+def load_simulation_config(config_path: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Loads the simulation runtime configuration.
+    If no path is provided, looks for simulation_config.json in the config directory.
+    """
+    if config_path is None:
+        # Default to the file next to this script
+        final_path = Path(__file__).parent / "simulation_config.json"
+    else:
+        final_path = Path(config_path)
+
+    with open(final_path, "r") as f:
+        return json.load(f)
