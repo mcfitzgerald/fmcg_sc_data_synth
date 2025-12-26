@@ -23,7 +23,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Network Expansion:** Added `Order` and `OrderLine` primitives to `network/core.py` and instantiated Retail Stores in `WorldBuilder`.
 - **Testing:** Added integration tests for POS demand, promo lifts, and replenishment logic in `tests/test_milestone_3.py`.
 
-## [0.1.0] - 2025-12-25
+## [0.1.1] - 2025-12-26
+
+### Maintenance
+- Enforced code quality standards using `ruff`, `mypy`, and `semgrep`.
+- Fixed linting errors, unused imports, and type mismatches across the codebase.
+- Added `mypy` to project dependencies.
+
+## [0.1.0] - 2025-12-26
 
 ### Added
 - **Core Primitives:** Implemented `Node` (RDC, Supplier) and `Link` (Route) classes in `src/prism_sim/network/core.py`.

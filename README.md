@@ -2,6 +2,10 @@
 
 A high-fidelity supply chain simulation engine built on the principles of Supply Chain Physics.
 
+## Environment Notes
+
+Run all python through poetry
+
 ## Project Status
 **Current Milestone:** Milestone 3 (The Time Loop & Demand Physics) - *Completed*
 - **Next:** Milestone 4 (Fulfill & Logistics Physics)
