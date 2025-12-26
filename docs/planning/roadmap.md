@@ -3,21 +3,21 @@
 This roadmap outlines the sequential milestones to transition from a statistical generator to a Discrete-Event Simulation (DES) governed by Supply Chain Physics.
 
 ## Milestone 1: Project Scaffolding & Reference
-*   **Task 1.1:** Initialize fresh repository with `poetry` and `git`.
-*   **Task 1.2:** Establish directory structure:
+*   **Task 1.1:** [x] Initialize fresh repository with `poetry` and `git`.
+*   **Task 1.2:** [x] Establish directory structure:
     *   `src/prism_sim/`: Core simulation engines.
     *   `reference/`: Legacy `fmcg_example` code for logic reuse.
     *   `tests/`: Integration tests
-*   **Task 1.3:** Port configuration "Gold Standards" (`benchmark_manifest.json`).
+*   **Task 1.3:** [x] Port configuration "Gold Standards" (`benchmark_manifest.json`).
 
 ## Milestone 2: World Building & Performance Core
 *   **Goal:** Initialize the "Physical Reality" (Levels 0-4) with an optimized **Modular Architecture**.
-*   **Task 2.1:** **Network Topology:** Instantiate `Node` objects for the "Big 4" RDCs, **DTC Fulfillment Centers**, and **eCommerce Pure Players**.
+*   **Task 2.1:** [x] **Network Topology:** Instantiate `Node` objects for the "Big 4" RDCs, **DTC Fulfillment Centers**, and **eCommerce Pure Players**.
     *   *Constraint:* Ensure **Chicago Hub** handles ~40% of traditional retail volume.
     *   *Constraint:* Create **Specialty Surfactant SPOF** with a high-cost backup supplier.
-*   **Task 2.2:** **Product Physics:** Define the Weight/Cube attributes for the three core categories.
-*   **Task 2.3:** **BOM & Recipes:** Port formulas and capacities.
-*   **Task 2.4:** **Performance Engineering:** Initialize **Vectorized State Tensors** (`numpy`) for Inventory, Cash, and Backlog, ensuring O(1) index mapping.
+*   **Task 2.2:** [x] **Product Physics:** Define the Weight/Cube attributes for the three core categories.
+*   **Task 2.3:** [x] **BOM & Recipes:** Port formulas and capacities.
+*   **Task 2.4:** [x] **Performance Engineering:** Initialize **Vectorized State Tensors** (`numpy`) for Inventory, Cash, and Backlog, ensuring O(1) index mapping.
 
 ## Milestone 3: The Time Loop & Demand Physics
 *   **Goal:** Implement the Orchestrator and the "Pull" signal (Levels 8-9) using **Atomic Agents**.
