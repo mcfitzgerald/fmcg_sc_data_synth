@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] - 2025-12-26
+
+### Changed
+- **Config-Driven Values:** Moved all magic numbers to `simulation_config.json` per CLAUDE.md directives:
+  - `calendar.weeks_per_year` (52)
+  - `manufacturing.recall_batch_trigger_day` (30)
+  - `manufacturing.default_yield_percent` (98.5)
+  - `manufacturing.spof.warning_threshold` (10.0)
+  - `logistics.default_lead_time_days` (3.0)
+- **Refactored Allocation Agent:** Extracted helper methods (`_group_orders_by_source`, `_calculate_demand_vector`, `_calculate_fill_ratios`, `_apply_ratios_to_orders`) to reduce branch complexity.
+- **Refactored Demand Engine:** Extracted `_apply_multiplier_to_cells` helper and created `PromoConfig` dataclass to reduce branch/argument complexity.
+- **Code Quality:** Fixed all ruff linting issues (D200 docstrings, E501 line length, PLR1714 comparisons, RUF059 unused vars, PLC0415 imports).
+
+### Fixed
+- All ruff checks now pass with zero warnings.
+- All mypy strict type checks pass (20 source files).
+
 ## [0.4.0] - 2025-12-26
 
 ### Added

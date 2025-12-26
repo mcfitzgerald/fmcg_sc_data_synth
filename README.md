@@ -29,3 +29,11 @@ The simulation uses a hybrid **Discrete-Event Simulation (DES)** architecture wi
 - VUT Equation (Kingman's Formula)
 - Mass Balance
 - Signal Resonance (Bullwhip Effect)
+
+## Code Quality
+
+All code passes strict quality checks:
+- **ruff**: Full linting with pylint, pycodestyle, pyflakes, pydocstyle rules
+- **mypy**: Strict type checking enabled
+- **semgrep**: Security and hardcode detection
+- **Config-driven**: No magic numbers - all parameters in `simulation_config.json`
