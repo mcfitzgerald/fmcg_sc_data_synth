@@ -2,6 +2,10 @@
 
 A high-fidelity supply chain simulation engine built on the principles of Supply Chain Physics.
 
+## Project Status
+**Current Milestone:** Milestone 3 (The Time Loop & Demand Physics) - *Completed*
+- **Next:** Milestone 4 (Fulfill & Logistics Physics)
+
 ## Core Principles
 
 This project adheres strictly to the laws of Supply Chain Physics to ensure kinematic consistency and mass balance in all simulations. See [physics.md](docs/planning/physics.md) for the theoretical framework and validation rubric.
