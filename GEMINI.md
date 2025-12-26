@@ -16,6 +16,10 @@ We have included the code base from a previous simulation in `reference/fmcg_exa
 
 Build modularly, separating concerns and first-principle components for reusabiltiy and extensibility
 
+When python files reach 700-1000 lines, that is a good indication it is time to split into modules.
+
+Create and maintain robost documentation for all code.
+
 When running validations and tests, if there is a bug or something seems of, don't just skip or assume it's fine. Alert me and we will determine course of action, which typicall means we must find root cause.
 
 Do not hardcode variables or values. Always use a config paradigm (a config file or files so variables can be easily located and changed)
