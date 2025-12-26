@@ -7,8 +7,8 @@ This roadmap outlines the sequential milestones to transition from a statistical
 *   **Task 1.2:** Establish directory structure:
     *   `src/prism_sim/`: Core simulation engines.
     *   `reference/`: Legacy `fmcg_example` code for logic reuse.
-    *   `tests/bdd/`: Spec-driven validation.
-*   **Task 1.3:** Port configuration "Gold Standards" (`benchmark_manifest.json`, `prism_fmcg.yaml`).
+    *   `tests/`: Integration tests
+*   **Task 1.3:** Port configuration "Gold Standards" (`benchmark_manifest.json`).
 
 ## Milestone 2: World Building & Performance Core
 *   **Goal:** Initialize the "Physical Reality" (Levels 0-4) with an optimized **Modular Architecture**.

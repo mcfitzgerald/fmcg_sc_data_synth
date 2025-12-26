@@ -1,12 +1,16 @@
 # PRIME DIRECTIVE
 
-## "Specflow" Spec-Driven Development
+## Spec-Driven Development
 
-We are using intent and roadmap spec-driven development as desribed by the specflow standard: https://www.specflow.com
+We are using intent and roadmap spec-driven development 
 
 Key reference documents are located in `./docs/planning/`
 
 Always read `./docs/planning/intent.md` and `./docs/planning/roadmap.md`
+
+### Traceability & Execution
+- **Mandatory References:** All code changes and git commits must explicitly reference the specific **Roadmap Task ID** (e.g., `[Task 2.1]`) and the **Intent Section** being addressed.
+- **Spec-Driven Flow:** Use the Roadmap as the primary sequence and the Intent as the technical source of truth.
 
 ### Note
 
