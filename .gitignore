@@ -52,4 +52,4 @@ Thumbs.db
 # Project specific
 seed.sql
 .specstory/
-reference/
+# reference/

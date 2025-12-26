@@ -8,6 +8,10 @@ Key reference documents are located in `./docs/planning/`
 
 Always read `./docs/planning/intent.md` and `./docs/planning/roadmap.md`
 
+### Note
+
+We have included the code base from a previous simulation in `reference/fmcg_example_OLD/` that used stochastic techniques and was not properly implemented via physics, but has potentially useful code and should be consulted when needed, BUT WE SHOULD SCRUTINIZE BEFORE LIFTING OR SHIFTING ANYTHING OVER
+
 ## Coding and Engineering Standards
 
 Build modularly, separating concerns and first-principle components for reusabiltiy and extensibility

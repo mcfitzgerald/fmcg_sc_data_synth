@@ -1,0 +1,362 @@
+"""
+Reference data constants for FMCG data generation.
+
+Contains master data definitions for:
+- DIVISIONS: 5 global business divisions
+- CHANNELS: 4 sales channels
+- PRODUCTS: 3 product families (PrismWhite, ClearWave, AquaPure)
+- PLANTS: 7 manufacturing facilities
+- PACKAGING_TYPES: 17 packaging configurations
+"""
+
+# Hardcoded divisions (5 global)
+DIVISIONS = [
+    {
+        "code": "NAM",
+        "name": "North America",
+        "hq_city": "Knoxville",
+        "hq_country": "USA",
+        "president": "Sarah Chen",
+        "revenue_target": 5_000_000_000,
+    },
+    {
+        "code": "LATAM",
+        "name": "Latin America",
+        "hq_city": "São Paulo",
+        "hq_country": "Brazil",
+        "president": "Carlos Rodriguez",
+        "revenue_target": 2_500_000_000,
+    },
+    {
+        "code": "APAC",
+        "name": "Asia Pacific",
+        "hq_city": "Singapore",
+        "hq_country": "Singapore",
+        "president": "Wei Zhang",
+        "revenue_target": 4_000_000_000,
+    },
+    {
+        "code": "EUR",
+        "name": "Europe",
+        "hq_city": "Paris",
+        "hq_country": "France",
+        "president": "Marie Dubois",
+        "revenue_target": 2_000_000_000,
+    },
+    {
+        "code": "AFR-EUR",
+        "name": "Africa & Middle East",
+        "hq_city": "Dubai",
+        "hq_country": "UAE",
+        "president": "Ahmed Hassan",
+        "revenue_target": 1_500_000_000,
+    },
+]
+
+# Hardcoded channels (4 types)
+CHANNELS = [
+    {
+        "code": "B2M-LARGE",
+        "name": "B&M Large Retail",
+        "channel_type": "bm_large",
+        "volume_pct": 40,
+        "margin_pct": 18,
+        "payment_days": 45,
+    },
+    {
+        "code": "B2M-DIST",
+        "name": "B&M Distributor",
+        "channel_type": "bm_distributor",
+        "volume_pct": 30,
+        "margin_pct": 22,
+        "payment_days": 30,
+    },
+    {
+        "code": "ECOM",
+        "name": "E-commerce",
+        "channel_type": "ecommerce",
+        "volume_pct": 20,
+        "margin_pct": 25,
+        "payment_days": 15,
+    },
+    {
+        "code": "DTC",
+        "name": "Direct to Consumer",
+        "channel_type": "dtc",
+        "volume_pct": 10,
+        "margin_pct": 35,
+        "payment_days": 0,
+    },
+]
+
+# Hardcoded products (3 product families)
+PRODUCTS = [
+    {
+        "code": "PROD-PW",
+        "name": "PrismWhite",
+        "brand": "PrismWhite",
+        "category": "oral_care",
+        "subcategory": "toothpaste",
+        "launch_date": "2015-01-15",
+    },
+    {
+        "code": "PROD-CW",
+        "name": "ClearWave",
+        "brand": "ClearWave",
+        "category": "home_care",
+        "subcategory": "dish_soap",
+        "launch_date": "2012-06-01",
+    },
+    {
+        "code": "PROD-AP",
+        "name": "AquaPure",
+        "brand": "AquaPure",
+        "category": "personal_care",
+        "subcategory": "body_wash",
+        "launch_date": "2018-03-20",
+    },
+]
+
+# Hardcoded plants (7 manufacturing facilities)
+PLANTS = [
+    {
+        "code": "PLT-NAM-TN",
+        "name": "Tennessee Plant",
+        "division": "NAM",
+        "country": "USA",
+        "city": "Memphis",
+        "capacity_tons": 500,
+        "lat": 35.1495,
+        "lon": -90.0490,
+    },
+    {
+        "code": "PLT-NAM-TX",
+        "name": "Texas Plant",
+        "division": "NAM",
+        "country": "USA",
+        "city": "Houston",
+        "capacity_tons": 400,
+        "lat": 29.7604,
+        "lon": -95.3698,
+    },
+    {
+        "code": "PLT-LATAM-BR",
+        "name": "Brazil Plant",
+        "division": "LATAM",
+        "country": "Brazil",
+        "city": "São Paulo",
+        "capacity_tons": 350,
+        "lat": -23.5505,
+        "lon": -46.6333,
+    },
+    {
+        "code": "PLT-APAC-CN",
+        "name": "China Plant",
+        "division": "APAC",
+        "country": "China",
+        "city": "Suzhou",
+        "capacity_tons": 600,
+        "lat": 31.2989,
+        "lon": 120.5853,
+    },
+    {
+        "code": "PLT-APAC-IN",
+        "name": "India Plant",
+        "division": "APAC",
+        "country": "India",
+        "city": "Mumbai",
+        "capacity_tons": 350,
+        "lat": 19.0760,
+        "lon": 72.8777,
+    },
+    {
+        "code": "PLT-EUR-PL",
+        "name": "Poland Plant",
+        "division": "EUR",
+        "country": "Poland",
+        "city": "Łódź",
+        "capacity_tons": 300,
+        "lat": 51.7592,
+        "lon": 19.4560,
+    },
+    {
+        "code": "PLT-AFR-TR",
+        "name": "Turkey Plant",
+        "division": "AFR-EUR",
+        "country": "Turkey",
+        "city": "Istanbul",
+        "capacity_tons": 250,
+        "lat": 41.0082,
+        "lon": 28.9784,
+    },
+]
+
+# Packaging types for FMCG
+PACKAGING_TYPES = [
+    # Toothpaste tubes
+    {
+        "code": "PKG-TUBE-50",
+        "name": "50ml Tube",
+        "container": "tube",
+        "size": 50,
+        "unit": "ml",
+        "material": "plastic",
+        "recyclable": True,
+        "per_case": 24,
+    },
+    {
+        "code": "PKG-TUBE-100",
+        "name": "100ml Tube",
+        "container": "tube",
+        "size": 100,
+        "unit": "ml",
+        "material": "plastic",
+        "recyclable": True,
+        "per_case": 12,
+    },
+    {
+        "code": "PKG-TUBE-150",
+        "name": "150ml Tube",
+        "container": "tube",
+        "size": 150,
+        "unit": "ml",
+        "material": "plastic",
+        "recyclable": True,
+        "per_case": 12,
+    },
+    {
+        "code": "PKG-TUBE-200",
+        "name": "200ml Tube",
+        "container": "tube",
+        "size": 200,
+        "unit": "ml",
+        "material": "plastic",
+        "recyclable": True,
+        "per_case": 6,
+    },
+    # Dish soap bottles
+    {
+        "code": "PKG-BOTL-250",
+        "name": "250ml Bottle",
+        "container": "bottle",
+        "size": 250,
+        "unit": "ml",
+        "material": "plastic",
+        "recyclable": True,
+        "per_case": 24,
+    },
+    {
+        "code": "PKG-BOTL-500",
+        "name": "500ml Bottle",
+        "container": "bottle",
+        "size": 500,
+        "unit": "ml",
+        "material": "plastic",
+        "recyclable": True,
+        "per_case": 12,
+    },
+    {
+        "code": "PKG-BOTL-750",
+        "name": "750ml Bottle",
+        "container": "bottle",
+        "size": 750,
+        "unit": "ml",
+        "material": "plastic",
+        "recyclable": True,
+        "per_case": 12,
+    },
+    {
+        "code": "PKG-BOTL-1L",
+        "name": "1L Bottle",
+        "container": "bottle",
+        "size": 1000,
+        "unit": "ml",
+        "material": "plastic",
+        "recyclable": True,
+        "per_case": 6,
+    },
+    # Body wash bottles
+    {
+        "code": "PKG-PUMP-250",
+        "name": "250ml Pump Bottle",
+        "container": "bottle",
+        "size": 250,
+        "unit": "ml",
+        "material": "plastic",
+        "recyclable": False,
+        "per_case": 24,
+    },
+    {
+        "code": "PKG-PUMP-500",
+        "name": "500ml Pump Bottle",
+        "container": "bottle",
+        "size": 500,
+        "unit": "ml",
+        "material": "plastic",
+        "recyclable": False,
+        "per_case": 12,
+    },
+    {
+        "code": "PKG-PUMP-750",
+        "name": "750ml Pump Bottle",
+        "container": "bottle",
+        "size": 750,
+        "unit": "ml",
+        "material": "plastic",
+        "recyclable": False,
+        "per_case": 8,
+    },
+    # Travel/trial sizes
+    {
+        "code": "PKG-SACHET-10",
+        "name": "10ml Sachet",
+        "container": "pouch",
+        "size": 10,
+        "unit": "ml",
+        "material": "plastic",
+        "recyclable": False,
+        "per_case": 100,
+    },
+    {
+        "code": "PKG-TRIAL-30",
+        "name": "30ml Trial",
+        "container": "tube",
+        "size": 30,
+        "unit": "ml",
+        "material": "plastic",
+        "recyclable": True,
+        "per_case": 48,
+    },
+    # Refills
+    {
+        "code": "PKG-REFILL-1L",
+        "name": "1L Refill Pouch",
+        "container": "pouch",
+        "size": 1000,
+        "unit": "ml",
+        "material": "plastic",
+        "recyclable": True,
+        "per_case": 12,
+    },
+    {
+        "code": "PKG-REFILL-2L",
+        "name": "2L Refill Pouch",
+        "container": "pouch",
+        "size": 2000,
+        "unit": "ml",
+        "material": "plastic",
+        "recyclable": True,
+        "per_case": 6,
+    },
+    # Premium
+    {
+        "code": "PKG-GLASS-200",
+        "name": "200ml Glass Bottle",
+        "container": "bottle",
+        "size": 200,
+        "unit": "ml",
+        "material": "glass",
+        "recyclable": True,
+        "per_case": 12,
+    },
+]

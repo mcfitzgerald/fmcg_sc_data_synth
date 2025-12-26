@@ -1,0 +1,303 @@
+{
+  "supply_chain_profile": "Prism_Global_FMCG_2025",
+  "description": "Ground truth manifest for FMCG Digital Twin kinetic simulation",
+
+  "benchmarks": {
+    "level_0_3_network": {
+      "preferential_attachment_alpha": 1.1,
+      "top_account_market_share": 0.25,
+      "dc_to_store_avg_distance_km": 450,
+      "primary_source_reliance_pct": 0.85,
+      "hub_node_minimum_share": 0.20,
+      "spof_ingredient_count": 2
+    },
+    "level_4_skus": {
+      "zipf_popularity_alpha": 1.05,
+      "margin_mix_target": { "high": 0.15, "mid": 0.50, "low": 0.35 },
+      "cogs_revenue_ratio": 0.45,
+      "sku_lifecycle_months": { "intro": 3, "growth": 12, "maturity": 36, "decline": 12 }
+    },
+    "level_5_7_production": {
+      "yield_loss_rate_std": 0.015,
+      "manufacturing_lead_time_days": { "mu": 3, "sigma": 1 },
+      "qc_rejection_rate": 0.02,
+      "batch_size_variance_pct": 0.10,
+      "mass_balance_tolerance_pct": 0.02
+    },
+    "level_8_9_demand": {
+      "pos_cv_range": [0.15, 0.50],
+      "order_cv_range": [2.0, 3.0],
+      "bullwhip_multiplier_target": 4.5,
+      "promo_lift_mean": 2.5,
+      "promo_hangover_mean": 0.7,
+      "seasonality_amplitude": 0.25,
+      "new_product_forecast_bias": 0.15
+    },
+    "level_10_11_logistics": {
+      "global_otif_target": 0.95,
+      "carrier_delay_poisson_lambda": 1.6,
+      "damage_rate_per_case": 0.005,
+      "intermodal_utilization": 0.15,
+      "ocean_schedule_reliability": 0.53,
+      "trucking_schedule_reliability": 0.94,
+      "air_schedule_reliability": 0.88,
+      "lane_utilization_target": 0.82,
+      "pallet_cost_tiers": {
+        "ltl_1_6_pallets": { "min": 100, "max": 300, "description": "LTL premium pricing" },
+        "volume_ltl_7_12_pallets": { "min": 60, "max": 150, "description": "Volume discount" },
+        "partial_tl_13_20_pallets": { "min": 40, "max": 100, "description": "Partial truckload" },
+        "ftl_21_plus_pallets": { "min": 30, "max": 80, "description": "Full truckload efficiency" }
+      },
+      "ftl_pallet_capacity": 26,
+      "cases_per_pallet": 50,
+      "cost_per_case_target": 1.50
+    },
+    "level_12_13_returns": {
+      "consumer_return_rate": 0.02,
+      "rma_approval_cycle_days": 4,
+      "recommerce_disposition_pct": 0.12,
+      "destroy_disposition_pct": 0.05,
+      "restock_disposition_pct": 0.83
+    },
+    "level_14_kpis": {
+      "inventory_turns_target": 8.5,
+      "inventory_turns_range": [8.2, 12.0],
+      "osa_target_pct": 0.93,
+      "scope_3_kg_co2_per_case": 0.25,
+      "perfect_order_rate": 0.92,
+      "cash_to_cash_days": 45
+    }
+  },
+
+  "named_entities": {
+    "ACCT-MEGA-001": {
+      "description": "MegaMart - Hub concentration test",
+      "store_count": 4500,
+      "order_share_target": [0.20, 0.30]
+    },
+    "DC-NAM-CHI-001": {
+      "description": "Chicago DC - Bottleneck stress test",
+      "nam_volume_share": 0.40,
+      "store_coverage": 2000
+    },
+    "B-2024-RECALL-001": {
+      "description": "Contaminated batch - Recall trace test",
+      "affected_stores_target": 500,
+      "affected_orders_target": 47500
+    },
+    "SUP-PALM-MY-001": {
+      "description": "Malaysian Palm Oil - Single source SPOF",
+      "ingredient": "ING-PALM-001",
+      "is_sole_source": true
+    },
+    "PROMO-BF-2024": {
+      "description": "Black Friday 2024 - Bullwhip test",
+      "week_number": 48,
+      "lift_multiplier": 3.0,
+      "hangover_week": 49,
+      "hangover_multiplier": 0.6
+    },
+    "LANE-SH-LA-001": {
+      "description": "Shanghai-LA route - Seasonal capacity test",
+      "peak_months": [10, 11, 12],
+      "capacity_reduction_pct": 0.50
+    }
+  },
+
+  "quirks": {
+    "bullwhip_whip_crack": {
+      "description": "Order batching during promos (1 big order vs 10 small)",
+      "enabled": true,
+      "batching_factor": 3.0,
+      "affected_promos": ["PROMO-BF-2024"]
+    },
+    "phantom_inventory": {
+      "description": "Shrinkage creating inventory discrepancy",
+      "enabled": true,
+      "shrinkage_pct": 0.02,
+      "detection_lag_days": 14
+    },
+    "port_congestion_flicker": {
+      "description": "Autoregressive delays - late shipments cluster",
+      "enabled": true,
+      "autoregressive_coefficient": 0.70,
+      "affected_ports": ["USLAX", "CNSHA"],
+      "cluster_size": 3
+    },
+    "single_source_fragility": {
+      "description": "SPOF suppliers cause cascading lead time violations",
+      "enabled": true,
+      "cascade_delay_multiplier": 2.5
+    },
+    "human_optimism_bias": {
+      "description": "Planners over-forecast new product launches",
+      "enabled": true,
+      "bias_pct": 0.15,
+      "affected_sku_age_months": 6
+    },
+    "data_decay": {
+      "description": "Older batches have higher QC rejection probability",
+      "enabled": true,
+      "base_rejection_rate": 0.02,
+      "days_to_expiry_threshold": 30,
+      "elevated_rejection_rate": 0.05
+    }
+  },
+
+  "risk_events": {
+    "RSK-BIO-001": {
+      "event_type": "contamination",
+      "description": "Sorbitol contamination triggering mass recall",
+      "target_ingredient": "ING-SORB-001",
+      "qc_status_override": "REJECTED",
+      "return_lines_target": 500,
+      "probability_per_run": 1.0
+    },
+    "RSK-LOG-002": {
+      "event_type": "port_strike",
+      "description": "West coast port disruption",
+      "affected_ports": ["USLAX"],
+      "delay_multiplier": 4.0,
+      "delay_distribution": "gamma",
+      "gamma_shape": 2.0,
+      "duration_days": 14
+    },
+    "RSK-SUP-003": {
+      "event_type": "supplier_opacity",
+      "description": "Sole source supplier delivery degradation",
+      "target_supplier": "SUP-PALM-MY-001",
+      "degraded_otd_rate": 0.40,
+      "normal_otd_rate": 0.92
+    },
+    "RSK-CYB-004": {
+      "event_type": "cyber_outage",
+      "description": "WMS outage at major DC creating inventory fog",
+      "target_dc": "DC-NAM-CHI-001",
+      "hold_duration_hours": 72,
+      "inventory_visibility_pct": 0.0
+    },
+    "RSK-ENV-005": {
+      "event_type": "carbon_tax_spike",
+      "description": "Regulatory carbon cost increase",
+      "co2_cost_multiplier": 3.0,
+      "triggers_modal_shift": true
+    }
+  },
+
+  "validation_tolerances": {
+    "pareto_alpha_drift_max": 0.05,
+    "pareto_top20_range": [0.75, 0.85],
+    "hub_concentration_range": [0.20, 0.30],
+    "bullwhip_ratio_range": [4.0, 6.0],
+    "mass_balance_drift_max": 0.02,
+    "row_count_tolerance_pct": 0.25,
+    "referential_integrity_sample_size": 1000,
+    "check_interval_rows": 10000,
+
+    "yield_mean_range": [0.96, 0.99],
+    "yield_std_max": 0.02,
+    "qc_rejection_rate_range": [0.01, 0.04],
+
+    "pos_cv_range": [0.15, 0.80],
+    "order_cv_range": [
+      0.5,
+      3.5
+    ],
+    "bullwhip_multiplier_range": [1.0, 5.0],
+    "promo_lift_range": [1.5, 3.5],
+    "forecast_bias_max": 20.0,
+    "forecast_bias_warning": 5.0,
+
+    "otif_range": [0.85, 0.99],
+    "delay_mean_max_hours": 24,
+    "delay_std_max_hours": 48,
+    "ocean_reliability_range": [0.45, 0.65],
+    "trucking_reliability_range": [0.88, 0.98],
+
+    "return_rate_range": [0.01, 0.06],
+    "disposition_restock_min": 0.70,
+    "disposition_destroy_max": 0.10,
+
+    "osa_range": [0.88, 0.96],
+    "inventory_turns_range": [6.0, 14.0],
+    "max_discount_percent": 55,
+    "shrinkage_rate_range": [0.01, 0.04],
+
+    "schedule_adherence_tolerance_days": 1.1,
+    "truck_fill_rate_target": 0.50,
+    "slob_inventory_max_pct": 0.30,
+    "forecast_value_added_min": 0.0,
+    "oee_range": [0.65, 0.85],
+    "mape_range": [0.20, 0.50],
+    "cost_per_case_range": [1.00, 3.00],
+    "cost_variance_max_ratio": 4.0,
+    "ltl_cost_per_pallet_range": [80, 350],
+    "ftl_cost_per_pallet_range": [25, 100],
+    "pallet_cost_ratio_ltl_ftl_range": [2.0, 6.0]
+  },
+
+  "chaos_validation": {
+    "RSK-BIO-001": {
+      "check": "recall_batch_rejected",
+      "batch_id": "B-2024-RECALL-001",
+      "expected_status": "REJECTED"
+    },
+    "RSK-LOG-002": {
+      "check": "port_strike_delays",
+      "min_affected_legs": 40,
+      "delay_multiplier_min": 2.0,
+      "affected_ports": ["USLAX"]
+    },
+    "RSK-SUP-003": {
+      "check": "supplier_otd_degradation",
+      "target_supplier": "SUP-PALM-MY-001",
+      "degraded_otd_max": 0.50
+    },
+    "RSK-CYB-004": {
+      "check": "dc_pick_waves_hold",
+      "target_dc": "DC-NAM-CHI-001",
+      "min_hold_waves": 100
+    },
+    "RSK-ENV-005": {
+      "check": "carbon_multiplier_applied",
+      "co2_multiplier_min": 2.0
+    },
+    "phantom_inventory": {
+      "check": "shrinkage_applied",
+      "shrinkage_rate_range": [0.01, 0.04]
+    },
+    "data_decay": {
+      "check": "batch_decay_applied",
+      "min_affected_batches": 10
+    },
+    "bullwhip_whip_crack": {
+      "check": "promo_batching_applied",
+      "min_batched_orders": 10
+    },
+    "port_congestion_flicker": {
+      "check": "correlated_delays",
+      "min_correlated_legs": 40
+    }
+  },
+
+  "generation_targets": {
+    "total_rows": 15000000,
+    "levels": {
+      "0": { "name": "reference", "rows": 1200 },
+      "1": { "name": "master", "rows": 500 },
+      "2": { "name": "relationships", "rows": 6000 },
+      "3": { "name": "locations", "rows": 10000 },
+      "4": { "name": "products", "rows": 20000 },
+      "5": { "name": "procurement", "rows": 80000 },
+      "6": { "name": "manufacturing", "rows": 550000 },
+      "7": { "name": "consumption", "rows": 400000 },
+      "8": { "name": "demand", "rows": 2500000 },
+      "9": { "name": "order_lines", "rows": 10000000 },
+      "10": { "name": "fulfillment", "rows": 800000 },
+      "11": { "name": "shipment_lines", "rows": 1000000 },
+      "12": { "name": "returns", "rows": 140000 },
+      "13": { "name": "disposition", "rows": 100000 },
+      "14": { "name": "kpis", "rows": 1000000 }
+    }
+  }
+}
