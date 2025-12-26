@@ -21,10 +21,10 @@ This roadmap outlines the sequential milestones to transition from a statistical
 
 ## Milestone 3: The Time Loop & Demand Physics
 *   **Goal:** Implement the Orchestrator and the "Pull" signal (Levels 8-9) using **Atomic Agents**.
-*   **Task 3.1:** **Orchestrator:** Build the daily time-stepper loop.
-*   **Task 3.2:** **Promo Calendar:** Port the vectorized "Lift & Hangover" logic to drive POS demand.
-*   **Task 3.3:** **POS Engine:** Generate daily consumer sales based on Seasonality + Promo.
-*   **Task 3.4:** **Replenishment Agent:** Implement a pluggable `MinMaxReplenisher` to create the **Bullwhip Effect** (Order Batching).
+*   **Task 3.1:** [x] **Orchestrator:** Build the daily time-stepper loop.
+*   **Task 3.2:** [x] **Promo Calendar:** Port the vectorized "Lift & Hangover" logic to drive POS demand.
+*   **Task 3.3:** [x] **POS Engine:** Generate daily consumer sales based on Seasonality + Promo.
+*   **Task 3.4:** [x] **Replenishment Agent:** Implement a pluggable `MinMaxReplenisher` to create the **Bullwhip Effect** (Order Batching).
 
 ## Milestone 4: Fulfill & Logistics Physics
 *   **Goal:** Move the goods and enforce constraints (Levels 10-11).

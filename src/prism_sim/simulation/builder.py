@@ -1,6 +1,6 @@
 from typing import Dict, Any
 from prism_sim.simulation.world import World
-from prism_sim.network.core import Node, NodeType
+from prism_sim.network.core import Node, Link, NodeType
 from prism_sim.product.core import Product, ProductCategory, Recipe
 from prism_sim.config.loader import load_manifest
 
@@ -117,3 +117,38 @@ class WorldBuilder:
             location="Hamburg, DE",
             throughput_capacity=float('inf')
         ))
+
+        # --- Retail Stores ---
+        # 1. MegaMart (National Chain) - Assigned to RDCs
+        # For simulation scale, we'll create one "Aggregate Store" per RDC
+        # in a real run, this would be thousands of nodes.
+        
+        rdc_map = {
+            "RDC-NAM-NE": ["STORE-MEGA-NE-001", "MegaMart Northeast"],
+            "RDC-NAM-ATL": ["STORE-MEGA-ATL-001", "MegaMart South"],
+            "RDC-NAM-CHI": ["STORE-MEGA-CHI-001", "MegaMart Midwest"],
+            "RDC-NAM-CAL": ["STORE-MEGA-CAL-001", "MegaMart West"],
+        }
+        
+        for rdc_id, (store_id, store_name) in rdc_map.items():
+            self.world.add_node(Node(
+                id=store_id,
+                name=store_name,
+                type=NodeType.STORE,
+                location="Various",
+                storage_capacity=5000, # Backroom capacity
+            ))
+            
+            # Establish Link (RDC -> Store)
+            # In a full model, this is explicit. For now, we imply it via logic, 
+            # but let's create the link object for completeness.
+            self.world.add_link(
+                Link(
+                    id=f"LINK-{rdc_id}-{store_id}",
+                    source_id=rdc_id,
+                    target_id=store_id,
+                    mode="truck",
+                    lead_time_days=2.0, # Standard retail replenishment
+                    variability_sigma=0.5
+                )
+            )

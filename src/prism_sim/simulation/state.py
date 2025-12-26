@@ -63,3 +63,12 @@ class StateManager:
         n_idx = self.get_node_idx(node_id)
         p_idx = self.get_product_idx(product_id)
         self.inventory[n_idx, p_idx] += delta
+
+    def update_inventory_batch(self, delta_tensor: np.ndarray):
+        """
+        Updates inventory for all nodes and products using a tensor of deltas.
+        delta_tensor shape must match (n_nodes, n_products).
+        """
+        if delta_tensor.shape != self.inventory.shape:
+            raise ValueError(f"Shape mismatch: {delta_tensor.shape} != {self.inventory.shape}")
+        self.inventory += delta_tensor

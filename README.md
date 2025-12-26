@@ -10,9 +10,10 @@ This project adheres strictly to the laws of Supply Chain Physics to ensure kine
 
 The simulation uses a hybrid **Discrete-Event Simulation (DES)** architecture with a modular component design:
 
-- **`src/prism_sim/network`**: Defines the physical topology (Nodes, Links).
+- **`src/prism_sim/network`**: Defines the physical topology (Nodes, Links, Orders).
 - **`src/prism_sim/product`**: Defines the physical goods (Products, Recipes) with Weight/Cube constraints.
-- **`src/prism_sim/simulation`**: Contains the `World` container and `StateManager` for vectorized physics.
+- **`src/prism_sim/simulation`**: Contains the `Orchestrator`, `POSEngine`, and `StateManager` for vectorized physics.
+- **`src/prism_sim/agents`**: Pluggable replenishment and planning logic (e.g., `MinMaxReplenisher`).
 - **`src/prism_sim/config`**: Manages configuration and the "Gold Standard" benchmark manifest.
 
 ## Key Frameworks

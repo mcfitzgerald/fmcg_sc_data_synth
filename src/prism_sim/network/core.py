@@ -48,3 +48,17 @@ class Link:
     def __post_init__(self):
         if not self.id:
             raise ValueError("Link ID cannot be empty")
+
+@dataclass
+class OrderLine:
+    product_id: str
+    quantity: float
+
+@dataclass
+class Order:
+    id: str
+    source_id: str  # Who is shipping (Supplier/RDC)
+    target_id: str  # Who is ordering (Store/RDC)
+    creation_day: int
+    lines: List[OrderLine] = field(default_factory=list)
+    status: str = "OPEN" # OPEN, IN_TRANSIT, CLOSED
