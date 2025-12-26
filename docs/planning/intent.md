@@ -48,10 +48,6 @@ We reject "cartoonish" risks in favor of realistic FMCG vulnerabilities:
 3.  **Cyber Event (WMS Outage):** A ransomware event locks the **Northeast DTC Node** for 48 hours.
     *   *Effect:* Instant backlog accumulation. TTR depends on "Catch-up Capacity" (Overtime labor).
 
-## 3. The Financial Core: Desmet's Triangle
-The simulation is not just moving boxes; it is balancing the **Supply Chain Triangle** to optimize **ROCE (Return on Capital Employed)**.
-*(Rest of section remains unchanged...)*
-
 ## 3. Data Ontology & Richness
 To match the fidelity of a real ERP, the simulation will generate data across the full **SCOR-DS** spectrum, modeled after the reference schema:
 
@@ -63,7 +59,7 @@ To match the fidelity of a real ERP, the simulation will generate data across th
 *   **Logistics:** Carriers, Contracts, Rates, Emission Factors (Scope 3 Carbon).
 *   **Plan:** Forecasts (Statistical vs. Consensus), Capacity Plans, DRP/MRP logic.
 
-## 2. Architecture: Hybrid DES & Data Richness
+## 4. Architecture: Hybrid DES & Data Richness
 
 To achieve the "Reference Level" fidelity within a physics-driven simulation, we adopt a **Hybrid Architecture**. We reject the linear "batch generation" of the legacy system in favor of a time-stepped loop, but we retain the strict **Ontological Dependency** to ensure the world makes sense.
 
@@ -113,7 +109,7 @@ We do not just "hope" the physics work. We run a real-time monitor that validate
 | **Forecast MAPE** | 20% - 50% | The "Optimism Bias" quirk layer vs. actual POS volatility. |
 | **Cost-to-Serve** | $1 - $3 per case | Emerges from freight distance + carrier rates + fuel surcharges. |
 
-## 3. Performance Engineering
+## 5. Performance Engineering
 To simulate 365 days across 2,000+ nodes and 500+ SKUs (~10M data points) efficiently, we mandate:
 
 1.  **Vectorized Operations:** Loops are banned for heavy lifting. All state transitions (e.g., `Inv_t = Inv_t-1 - Sales`) must use `numpy` vectorization.
@@ -121,11 +117,11 @@ To simulate 365 days across 2,000+ nodes and 500+ SKUs (~10M data points) effici
 3.  **Zero-Copy Views:** Pass data views, not copies, between engines.
 4.  **O(1) Lookups:** All Entity IDs (SKU, Location) are mapped to integer indices (0...N) to allow direct array indexing, avoiding slow dictionary hash lookups during the inner loop.
 
-## 4. The Financial Core: Desmet's Triangle
+## 6. The Financial Core: Desmet's Triangle
 The simulation is not just moving boxes; it is balancing the **Supply Chain Triangle** to optimize **ROCE (Return on Capital Employed)**.
 *(Rest of section remains unchanged...)*
 
-## 5. Preserving Reference Fidelity
+## 7. Preserving Reference Fidelity
 The reference implementation contains highly tuned business logic that must be ported to the new `QuirkLayer` and `Orchestrator` to prevent the simulation from becoming "physically accurate but behaviorally sterile."
 
 ### A. Behavioral Quirks (The "Human" Element)
@@ -141,5 +137,28 @@ The simulation must converge to these specific "Named Entities" defined in the r
 2.  **`SUP-MY-PALM` (SPOF):** The single Malaysian Palm Oil supplier must exist with its specific Long Lead Time + High Variance profile.
 3.  **`B-2024-RECALL-001`:** The `Transform_Engine` must deterministically create this contaminated batch of Sorbitol to trigger the recall trace scenario.
 
-## 6. The Supply Chain Physics Rubric
+## 8. The Supply Chain Physics Rubric
 The simulation is validated against five non-negotiable physical laws:
+1.  **Kinematic Consistency:** Trucks cannot teleport. Travel time = Distance / Speed.
+2.  **Mass Balance:** `Input (kg) = Output (kg) + Scrap`. Matter is neither created nor destroyed.
+3.  **Little's Law:** `Inventory = Throughput * Flow Time`.
+4.  **Capacity Constraints:** You cannot produce more than `Rate * Time`.
+5.  **Inventory Positivity:** You cannot ship what you do not have (unless Backlog logic is explicitly enabled).
+
+## 9. Engineering Standards & Quality
+To ensure the robustness and maintainability of the simulation engine, the following engineering standards are strictly enforced:
+
+### A. Coding Standards
+*   **Modularity:** Concerns must be separated into first-principle components (e.g., `network`, `product`, `simulation`). Files exceeding 700-1000 lines should be refactored.
+*   **Configuration Paradigm:** No hardcoded variables. All simulation parameters (policies, thresholds, constraints) must be loaded from external configuration files (e.g., `simulation_config.json`).
+*   **Type Safety:** All code in `src/` must be fully typed and pass `mypy --strict`. `Any` should be avoided.
+*   **Linting & Formatting:** Code must adhere to `ruff` standards for formatting and linting.
+
+### B. Testing Strategy
+*   **Integration over Unit:** Prefer integration tests that verify the *emergence* of supply chain behaviors (e.g., "Does the Bullwhip effect appear?") over isolated unit tests.
+*   **Validation:** Use `semgrep` to detect hardcoded values and security risks.
+*   **Reference Parity:** Changes must not regress the ability to reproduce the statistical properties of the reference implementation.
+
+### C. Tooling
+*   **Environment:** All Python execution is managed via `poetry`.
+*   **Context7:** Use standard library documentation and tools for code generation to ensure idiomatic usage.
