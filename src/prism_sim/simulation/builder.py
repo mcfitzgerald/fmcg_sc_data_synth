@@ -95,7 +95,7 @@ class WorldBuilder:
         )
 
     def _build_recipes(self) -> None:
-        # Recipe for Detergent (Requires SPOF)
+        # Recipe for Detergent (Requires SPOF - Specialty Surfactant)
         self.world.add_recipe(
             Recipe(
                 product_id="SKU-DET-001",
@@ -105,6 +105,30 @@ class WorldBuilder:
                 },
                 run_rate_cases_per_hour=1200,
                 changeover_time_hours=4.0,
+            )
+        )
+
+        # Recipe for Toothpaste (Generic ingredients)
+        self.world.add_recipe(
+            Recipe(
+                product_id="SKU-PASTE-001",
+                ingredients={
+                    "ING-BASE-LIQ": 1.0,  # Simplified: 1 unit base per case
+                },
+                run_rate_cases_per_hour=1500,
+                changeover_time_hours=2.0,
+            )
+        )
+
+        # Recipe for Soap (Generic ingredients)
+        self.world.add_recipe(
+            Recipe(
+                product_id="SKU-SOAP-001",
+                ingredients={
+                    "ING-BASE-LIQ": 1.0,  # Simplified: 1 unit base per case
+                },
+                run_rate_cases_per_hour=1800,
+                changeover_time_hours=3.0,
             )
         )
 
@@ -128,7 +152,7 @@ class WorldBuilder:
                 )
             )
 
-        # Add the Specialty Ingredient Supplier (SPOF)
+        # Add the Specialty Ingredient Supplier (SPOF - Primary)
         self.world.add_node(
             Node(
                 id="SUP-SURF-SPEC",
@@ -138,6 +162,110 @@ class WorldBuilder:
                 throughput_capacity=float("inf"),
             )
         )
+
+        # Add Backup Supplier (Mexico - 25% cost premium, 2x variability)
+        self.world.add_node(
+            Node(
+                id="SUP-SURF-BACKUP",
+                name="Mexican Chemicals SA",
+                type=NodeType.SUPPLIER,
+                location="Monterrey, MX",
+                throughput_capacity=float("inf"),
+            )
+        )
+
+        # Add Generic Base Liquid Supplier
+        self.world.add_node(
+            Node(
+                id="SUP-BASE-LIQ",
+                name="Industrial Water Works",
+                type=NodeType.SUPPLIER,
+                location="Houston, TX",
+                throughput_capacity=float("inf"),
+            )
+        )
+
+        # --- Manufacturing Plants ---
+        plants = [
+            ("PLANT-OH", "Ohio Plant", "Columbus, OH"),
+            ("PLANT-TX", "Texas Plant", "Houston, TX"),
+        ]
+
+        for plant_id, name, location in plants:
+            self.world.add_node(
+                Node(
+                    id=plant_id,
+                    name=name,
+                    type=NodeType.PLANT,
+                    location=location,
+                    throughput_capacity=50_000,  # Cases per day
+                    storage_capacity=10_000,  # Pallets
+                )
+            )
+
+        # --- Links: Suppliers -> Plants ---
+        # Primary Surfactant Supplier -> Plants (Long lead time - transatlantic)
+        for plant_id in ["PLANT-OH", "PLANT-TX"]:
+            self.world.add_link(
+                Link(
+                    id=f"LINK-SUP-SURF-{plant_id}",
+                    source_id="SUP-SURF-SPEC",
+                    target_id=plant_id,
+                    mode="ocean",
+                    lead_time_days=21.0,  # Transatlantic shipping
+                    variability_sigma=3.0,
+                )
+            )
+
+        # Backup Surfactant Supplier -> Plants (Shorter lead time - domestic)
+        for plant_id in ["PLANT-OH", "PLANT-TX"]:
+            self.world.add_link(
+                Link(
+                    id=f"LINK-SUP-SURF-BACKUP-{plant_id}",
+                    source_id="SUP-SURF-BACKUP",
+                    target_id=plant_id,
+                    mode="truck",
+                    lead_time_days=5.0,
+                    variability_sigma=2.0,  # 2x variability vs normal
+                )
+            )
+
+        # Base Liquid Supplier -> Plants
+        for plant_id in ["PLANT-OH", "PLANT-TX"]:
+            self.world.add_link(
+                Link(
+                    id=f"LINK-SUP-BASE-{plant_id}",
+                    source_id="SUP-BASE-LIQ",
+                    target_id=plant_id,
+                    mode="truck",
+                    lead_time_days=2.0,
+                    variability_sigma=0.5,
+                )
+            )
+
+        # --- Links: Plants -> RDCs ---
+        plant_rdc_distances = [
+            ("PLANT-OH", "RDC-NAM-NE", 3.0),
+            ("PLANT-OH", "RDC-NAM-ATL", 4.0),
+            ("PLANT-OH", "RDC-NAM-CHI", 2.0),
+            ("PLANT-OH", "RDC-NAM-CAL", 5.0),
+            ("PLANT-TX", "RDC-NAM-NE", 5.0),
+            ("PLANT-TX", "RDC-NAM-ATL", 3.0),
+            ("PLANT-TX", "RDC-NAM-CHI", 3.0),
+            ("PLANT-TX", "RDC-NAM-CAL", 4.0),
+        ]
+
+        for plant_id, rdc_id, lead_time in plant_rdc_distances:
+            self.world.add_link(
+                Link(
+                    id=f"LINK-{plant_id}-{rdc_id}",
+                    source_id=plant_id,
+                    target_id=rdc_id,
+                    mode="truck",
+                    lead_time_days=lead_time,
+                    variability_sigma=0.5,
+                )
+            )
 
         # --- Retail Stores ---
         # 1. MegaMart (National Chain) - Assigned to RDCs

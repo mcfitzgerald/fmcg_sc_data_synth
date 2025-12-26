@@ -1,4 +1,3 @@
-
 from prism_sim.network.core import Link, Node
 from prism_sim.product.core import Product, Recipe
 

@@ -18,6 +18,7 @@ def test_state_manager_initialization():
     assert state.n_nodes == n_nodes
     assert state.n_products == n_products
 
+
 def test_state_operations():
     manifest = load_manifest()
     builder = WorldBuilder(manifest)

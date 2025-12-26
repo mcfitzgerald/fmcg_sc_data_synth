@@ -21,11 +21,15 @@ def minimal_world():
 
     # 1. Products
     # Soap: Heavy (10kg), Small (0.01 m3) -> Weighs out
-    soap = Product("SOAP-001", "Soap", ProductCategory.PERSONAL_WASH, 10.0, 20, 20, 25, 100)
+    soap = Product(
+        "SOAP-001", "Soap", ProductCategory.PERSONAL_WASH, 10.0, 20, 20, 25, 100
+    )
     world.add_product(soap)
 
     # Tissue: Light (1kg), Big (0.1 m3) -> Cubes out
-    tissue = Product("TISS-001", "Tissue", ProductCategory.HOME_CARE, 1.0, 50, 50, 40, 50)
+    tissue = Product(
+        "TISS-001", "Tissue", ProductCategory.HOME_CARE, 1.0, 50, 50, 40, 50
+    )
     world.add_product(tissue)
 
     # 2. Nodes
@@ -40,6 +44,7 @@ def minimal_world():
 
     return world
 
+
 def test_allocation_shortage(minimal_world):
     state = StateManager(minimal_world)
     allocator = AllocationAgent(state)
@@ -53,7 +58,7 @@ def test_allocation_shortage(minimal_world):
     # Note: Using same store ID just for simplicity of order generation logic check
     orders = [
         Order("O1", "DC-01", "STORE-01", 1, [OrderLine("SOAP-001", 80.0)]),
-        Order("O2", "DC-01", "STORE-01", 1, [OrderLine("SOAP-001", 80.0)])
+        Order("O2", "DC-01", "STORE-01", 1, [OrderLine("SOAP-001", 80.0)]),
     ]
 
     # Run Allocation
@@ -61,7 +66,7 @@ def test_allocation_shortage(minimal_world):
 
     # Check Fair Share
     # Total Demand 160, Avail 100. Ratio = 0.625
-    expected_qty = 80.0 * (100.0 / 160.0) # 50.0
+    expected_qty = 80.0 * (100.0 / 160.0)  # 50.0
 
     assert len(allocated) == 2
     assert allocated[0].lines[0].quantity == pytest.approx(expected_qty)
@@ -70,15 +75,14 @@ def test_allocation_shortage(minimal_world):
     # Check Inventory Decrement
     assert state.inventory[dc_idx, soap_idx] == pytest.approx(0.0)
 
+
 def test_tetris_weight_out(minimal_world):
     state = StateManager(minimal_world)
     logistics = LogisticsEngine(minimal_world, state, {})
 
     # Order: 2500 units of Soap (10kg each) = 25,000 kg
     # Limit: 20,000 kg
-    orders = [
-        Order("O1", "DC-01", "STORE-01", 1, [OrderLine("SOAP-001", 2500.0)])
-    ]
+    orders = [Order("O1", "DC-01", "STORE-01", 1, [OrderLine("SOAP-001", 2500.0)])]
 
     shipments = logistics.create_shipments(orders, current_day=1)
 
@@ -96,15 +100,14 @@ def test_tetris_weight_out(minimal_world):
     assert s2.total_weight_kg == pytest.approx(5000.0)
     assert s2.lines[0].quantity == 500
 
+
 def test_tetris_cube_out(minimal_world):
     state = StateManager(minimal_world)
     logistics = LogisticsEngine(minimal_world, state, {})
 
     # Order: 700 units of Tissue (0.1 m3 each) = 70 m3
     # Limit: 60 m3
-    orders = [
-        Order("O1", "DC-01", "STORE-01", 1, [OrderLine("TISS-001", 700.0)])
-    ]
+    orders = [Order("O1", "DC-01", "STORE-01", 1, [OrderLine("TISS-001", 700.0)])]
 
     shipments = logistics.create_shipments(orders, current_day=1)
 
@@ -116,6 +119,7 @@ def test_tetris_cube_out(minimal_world):
     assert shipments[0].total_volume_m3 == pytest.approx(60.0, rel=1e-3)
     assert shipments[0].lines[0].quantity == 600
 
+
 def test_transit_physics(minimal_world):
     state = StateManager(minimal_world)
     logistics = LogisticsEngine(minimal_world, state, {})
@@ -126,7 +130,7 @@ def test_transit_physics(minimal_world):
     shipments = logistics.create_shipments(orders, current_day=1)
 
     assert len(shipments) == 1
-    assert shipments[0].arrival_day == 3 # 1 + 2
+    assert shipments[0].arrival_day == 3  # 1 + 2
 
     # Day 1 Check
     active, arrived = logistics.update_shipments(shipments, current_day=1)

@@ -1,4 +1,3 @@
-
 from typing import Any
 
 import numpy as np
@@ -14,7 +13,9 @@ class MinMaxReplenisher:
     Triggers the Bullwhip effect via order batching.
     """
 
-    def __init__(self, world: World, state: StateManager, config: dict[str, Any]) -> None:
+    def __init__(
+        self, world: World, state: StateManager, config: dict[str, Any]
+    ) -> None:
         self.world = world
         self.state = state
 
@@ -25,14 +26,20 @@ class MinMaxReplenisher:
         )
 
         # Policy Parameters (Config driven)
-        self.target_days = float(params.get("target_days_supply", 7.0))  # Order Up To (S)
-        self.reorder_point_days = float(params.get(
-            "reorder_point_days", 3.0
-        ))  # Reorder Point (s)
+        self.target_days = float(
+            params.get("target_days_supply", 7.0)
+        )  # Order Up To (S)
+        self.reorder_point_days = float(
+            params.get("reorder_point_days", 3.0)
+        )  # Reorder Point (s)
 
         # Bullwhip parameters
-        self.min_order_qty = float(params.get("min_order_qty", 10.0))  # Minimum order size
-        self.batch_size = float(params.get("batch_size_cases", 50.0))  # Pallet size approx
+        self.min_order_qty = float(
+            params.get("min_order_qty", 10.0)
+        )  # Minimum order size
+        self.batch_size = float(
+            params.get("batch_size_cases", 50.0)
+        )  # Pallet size approx
 
     def generate_orders(self, day: int, demand_history: np.ndarray) -> list[Order]:
         """

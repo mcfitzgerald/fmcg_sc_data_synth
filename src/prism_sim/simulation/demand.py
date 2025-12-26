@@ -63,9 +63,9 @@ class PromoCalendar:
                     if p_idx is None:
                         continue
                     # Apply max lift for overlapping promos
-                    self.promo_index[week][n_idx, p_idx] = float(np.maximum(
-                        self.promo_index[week][n_idx, p_idx], lift
-                    ))
+                    self.promo_index[week][n_idx, p_idx] = float(
+                        np.maximum(self.promo_index[week][n_idx, p_idx], lift)
+                    )
 
         # Apply hangover effect to the following week
         h_week = end_week + 1
@@ -95,7 +95,9 @@ class PromoCalendar:
 class POSEngine:
     """Point-of-Sale Engine. Generates daily consumer demand."""
 
-    def __init__(self, world: World, state: StateManager, config: dict[str, Any]) -> None:
+    def __init__(
+        self, world: World, state: StateManager, config: dict[str, Any]
+    ) -> None:
         self.world = world
         self.state = state
         self.config = config
@@ -103,9 +105,7 @@ class POSEngine:
 
         # Base Demand (Cases per day) - Randomized for now per Store/SKU
         # Shape: [Nodes, Products]
-        self.base_demand = np.zeros(
-            (state.n_nodes, state.n_products), dtype=np.float32
-        )
+        self.base_demand = np.zeros((state.n_nodes, state.n_products), dtype=np.float32)
         self._init_base_demand()
 
     def _init_base_demand(self) -> None:
@@ -133,21 +133,21 @@ class POSEngine:
 
                 # Check category match (rough logic based on ID string)
                 if "PASTE" in p_id:
-                    mean_demand = float(profiles.get("ORAL_CARE", {}).get(
-                        "base_daily_demand", 50.0
-                    ))
+                    mean_demand = float(
+                        profiles.get("ORAL_CARE", {}).get("base_daily_demand", 50.0)
+                    )
                 elif "SOAP" in p_id:
-                    mean_demand = float(profiles.get("PERSONAL_WASH", {}).get(
-                        "base_daily_demand", 30.0
-                    ))
+                    mean_demand = float(
+                        profiles.get("PERSONAL_WASH", {}).get("base_daily_demand", 30.0)
+                    )
                 elif "DET" in p_id:
-                    mean_demand = float(profiles.get("HOME_CARE", {}).get(
-                        "base_daily_demand", 20.0
-                    ))
+                    mean_demand = float(
+                        profiles.get("HOME_CARE", {}).get("base_daily_demand", 20.0)
+                    )
                 elif "ING" in p_id:
-                    mean_demand = float(profiles.get("INGREDIENT", {}).get(
-                        "base_daily_demand", 0.0
-                    ))
+                    mean_demand = float(
+                        profiles.get("INGREDIENT", {}).get("base_daily_demand", 0.0)
+                    )
 
                 self.base_demand[n_idx, p_idx] = mean_demand
 
@@ -171,4 +171,3 @@ class POSEngine:
         demand = self.base_demand * seasonality * promo_mult * noise
 
         return cast(np.ndarray, demand.astype(np.float32))
-

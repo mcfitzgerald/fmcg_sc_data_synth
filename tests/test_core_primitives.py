@@ -10,11 +10,12 @@ def test_node_creation():
         name="Northeast RDC",
         type=NodeType.DC,
         location="Pennsylvania",
-        storage_capacity=50000
+        storage_capacity=50000,
     )
     assert node.id == "RDC-NAM-NE"
     assert node.type == NodeType.DC
     assert node.storage_capacity == 50000
+
 
 def test_link_creation():
     link = Link(
@@ -22,10 +23,11 @@ def test_link_creation():
         source_id="RDC-NAM-NE",
         target_id="STORE-NY-001",
         distance_km=150,
-        lead_time_days=1
+        lead_time_days=1,
     )
     assert link.source_id == "RDC-NAM-NE"
     assert link.distance_km == 150
+
 
 def test_product_physics():
     # Test "The Brick" (Soap)
@@ -37,7 +39,7 @@ def test_product_physics():
         length_cm=30,
         width_cm=20,
         height_cm=15,
-        cases_per_pallet=80
+        cases_per_pallet=80,
     )
 
     assert soap.category == ProductCategory.PERSONAL_WASH

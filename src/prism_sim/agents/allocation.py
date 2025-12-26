@@ -1,4 +1,3 @@
-
 import numpy as np
 
 from prism_sim.constants import EPSILON

@@ -32,6 +32,7 @@ def test_world_builder_initialization():
     assert recipe.ingredients["ING-SURF-SPEC"] == 0.05
     assert recipe.run_rate_cases_per_hour == 1200
 
+
 def test_named_entities_exist():
     # Verify the specific "Named Entities" from the Intent are present
     manifest = load_manifest()

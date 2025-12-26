@@ -1,4 +1,3 @@
-
 import numpy as np
 
 from prism_sim.network.core import Shipment

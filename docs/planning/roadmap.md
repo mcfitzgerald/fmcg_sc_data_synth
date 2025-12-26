@@ -35,10 +35,10 @@ This roadmap outlines the sequential milestones to transition from a statistical
 
 ## Milestone 5: Manufacturing & Supply (Transform)
 *   **Goal:** Make the goods (Levels 5-7).
-*   **Task 5.1:** **MRP Engine:** Translate DRP requirements into Production Orders.
-*   **Task 5.2:** **Production Physics:** Enforce Finite Capacity and Changeover Times (Little's Law).
+*   **Task 5.1:** [x] **MRP Engine:** Translate DRP requirements into Production Orders.
+*   **Task 5.2:** [x] **Production Physics:** Enforce Finite Capacity and Changeover Times (Little's Law).
     *   *Constraint:* Ensure **Batch B-2024-RECALL-001** is deterministically scheduled.
-*   **Task 5.3:** **SPOF Simulation:** Simulate the "Specialty Surfactant" bottleneck and the "Backup Supplier" margin penalty.
+*   **Task 5.3:** [x] **SPOF Simulation:** Simulate the "Specialty Surfactant" bottleneck and the "Backup Supplier" margin penalty.
 
 ## Milestone 6: Validation, Quirks & Realism
 *   **Goal:** Verify "Emergent Properties" and stress-test the system.

@@ -12,12 +12,18 @@ class LogisticsEngine:
     Implements 'Tetris' logic (Bin Packing) and Lead Time delays.
     """
 
-    def __init__(self, world: World, state: StateManager, config: dict[str, Any]) -> None:
+    def __init__(
+        self, world: World, state: StateManager, config: dict[str, Any]
+    ) -> None:
         self.world = world
         self.state = state
         self.config = config
 
-        constraints = config.get("simulation_parameters", {}).get("logistics", {}).get("constraints", {})
+        constraints = (
+            config.get("simulation_parameters", {})
+            .get("logistics", {})
+            .get("constraints", {})
+        )
         self.max_weight_kg = float(constraints.get("truck_max_weight_kg", 20000.0))
         self.max_volume_m3 = float(constraints.get("truck_max_volume_m3", 60.0))
 

@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2025-12-26
+
+### Added
+- **MRP Engine (Task 5.1):** Implemented `MRPEngine` in `src/prism_sim/simulation/mrp.py` to translate DRP (Distribution Requirements Planning) into Production Orders for Plants.
+- **Transform Engine (Task 5.2):** Implemented `TransformEngine` in `src/prism_sim/simulation/transform.py` with full production physics:
+  - **Finite Capacity:** Enforces `run_rate_cases_per_hour` from Recipe definitions.
+  - **Changeover Penalty:** Implements Little's Law friction when switching products, consuming capacity based on `changeover_time_hours`.
+  - **Batch Tracking:** Creates `Batch` records with ingredient genealogy for traceability.
+  - **Deterministic Batch:** Schedules `B-2024-RECALL-001` contaminated batch as per roadmap.
+- **SPOF Simulation (Task 5.3):** Implemented raw material constraints for `ING-SURF-SPEC` (Specialty Surfactant). Production fails when ingredients are unavailable.
+- **Network Expansion:** Added Plant nodes (`PLANT-OH`, `PLANT-TX`), backup supplier (`SUP-SURF-BACKUP`), and complete supplier-plant-RDC link topology.
+- **Manufacturing Primitives:** Added `ProductionOrder`, `ProductionOrderStatus`, `Batch`, and `BatchStatus` to `network/core.py`.
+- **Testing:** Added comprehensive integration tests in `tests/test_milestone_5.py` covering MRP, finite capacity, changeover penalties, SPOF, and recall batch scheduling.
+
+### Changed
+- **Orchestrator:** Extended daily loop to include MRP planning and production execution steps.
+- **WorldBuilder:** Added recipes for all finished goods (Toothpaste, Soap, Detergent).
+- **Configuration:** Added `manufacturing` section to `simulation_config.json` with production parameters and SPOF settings.
+
 ## [0.3.0] - 2025-12-26
 
 ### Added
