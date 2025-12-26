@@ -1,8 +1,9 @@
-from typing import List, Dict, Tuple
 import math
-from prism_sim.simulation.world import World
-from prism_sim.network.core import Order, OrderLine, Shipment, ShipmentStatus, Link
+from typing import Any
+
+from prism_sim.network.core import Link, Order, OrderLine, Shipment, ShipmentStatus
 from prism_sim.simulation.state import StateManager
+from prism_sim.simulation.world import World
 
 
 class LogisticsEngine:
@@ -11,29 +12,29 @@ class LogisticsEngine:
     Implements 'Tetris' logic (Bin Packing) and Lead Time delays.
     """
 
-    def __init__(self, world: World, state: StateManager, config: Dict):
+    def __init__(self, world: World, state: StateManager, config: dict[str, Any]) -> None:
         self.world = world
         self.state = state
         self.config = config
-        
+
         constraints = config.get("simulation_parameters", {}).get("logistics", {}).get("constraints", {})
-        self.max_weight_kg = constraints.get("truck_max_weight_kg", 20000.0)
-        self.max_volume_m3 = constraints.get("truck_max_volume_m3", 60.0)
-        
-        self.route_map: Dict[Tuple[str, str], Link] = {}
+        self.max_weight_kg = float(constraints.get("truck_max_weight_kg", 20000.0))
+        self.max_volume_m3 = float(constraints.get("truck_max_volume_m3", 60.0))
+
+        self.route_map: dict[tuple[str, str], Link] = {}
         self._build_route_map()
 
-    def _build_route_map(self):
+    def _build_route_map(self) -> None:
         for link in self.world.links.values():
             self.route_map[(link.source_id, link.target_id)] = link
 
-    def create_shipments(self, orders: List[Order], current_day: int) -> List[Shipment]:
+    def create_shipments(self, orders: list[Order], current_day: int) -> list[Shipment]:
         """
         Converts Allocations (Orders) into Shipments (Trucks).
         Applies Weight/Cube constraints.
         """
         # Group by Route
-        lines_by_route: Dict[Tuple[str, str], List[OrderLine]] = {}
+        lines_by_route: dict[tuple[str, str], list[OrderLine]] = {}
 
         # We decompose Orders into Lines for packing
         for order in orders:
@@ -126,8 +127,8 @@ class LogisticsEngine:
         return new_shipments
 
     def update_shipments(
-        self, shipments: List[Shipment], current_day: int
-    ) -> Tuple[List[Shipment], List[Shipment]]:
+        self, shipments: list[Shipment], current_day: int
+    ) -> tuple[list[Shipment], list[Shipment]]:
         """
         Advances shipment state.
         Returns (active_shipments, arrived_shipments)
@@ -142,7 +143,9 @@ class LogisticsEngine:
                 active.append(s)
         return active, arrived
 
-    def _new_shipment(self, source, target, day, arrival, counter):
+    def _new_shipment(
+        self, source: str, target: str, day: int, arrival: int, counter: int
+    ) -> Shipment:
         return Shipment(
             id=f"SHP-{day}-{source}-{target}-{counter}",
             source_id=source,

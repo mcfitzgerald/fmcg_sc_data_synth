@@ -1,21 +1,20 @@
-from typing import List
+
 import numpy as np
-from prism_sim.simulation.state import StateManager
+
+from prism_sim.agents.allocation import AllocationAgent
+from prism_sim.agents.replenishment import MinMaxReplenisher
+from prism_sim.config.loader import load_manifest, load_simulation_config
+from prism_sim.network.core import Order, Shipment
 from prism_sim.simulation.builder import WorldBuilder
 from prism_sim.simulation.demand import POSEngine
-from prism_sim.agents.replenishment import MinMaxReplenisher
-from prism_sim.agents.allocation import AllocationAgent
 from prism_sim.simulation.logistics import LogisticsEngine
-from prism_sim.config.loader import load_manifest, load_simulation_config
-from prism_sim.network.core import Shipment
+from prism_sim.simulation.state import StateManager
 
 
 class Orchestrator:
-    """
-    The main time-stepper loop for the Prism Digital Twin.
-    """
+    """The main time-stepper loop for the Prism Digital Twin."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         # 1. Initialize World
         manifest = load_manifest()
         self.config = load_simulation_config()
@@ -32,12 +31,12 @@ class Orchestrator:
         self.allocator = AllocationAgent(self.state)
         self.logistics = LogisticsEngine(self.world, self.state, self.config)
 
-    def _initialize_inventory(self):
+    def _initialize_inventory(self) -> None:
         # Seed some initial inventory to avoid massive day 1 orders
         # For now, just set everything to 100 cases
         self.state.inventory.fill(100.0)
 
-    def run(self, days: int = 30):
+    def run(self, days: int = 30) -> None:
         print(f"Starting Simulation for {days} days...")
 
         for day in range(1, days + 1):
@@ -45,7 +44,7 @@ class Orchestrator:
 
         print("Simulation Complete.")
 
-    def _step(self, day: int):
+    def _step(self, day: int) -> None:
         # 1. Generate Demand (POS)
         # Shape: [Nodes, Products]
         daily_demand = self.pos_engine.generate_demand(day)
@@ -91,16 +90,31 @@ class Orchestrator:
         )
 
         print(
-            f"Day {day:03}: Demand={total_demand:.1f}, Ordered={total_ordered:.1f}, Shipped={total_shipped:.1f}, Arrived={total_arrived:.1f}, InTransit={len(self.state.active_shipments)} trucks"
+            f"Day {day:03}: Demand={total_demand:.1f}, "
+            f"Ordered={total_ordered:.1f}, "
+            f"Shipped={total_shipped:.1f}, "
+            f"Arrived={total_arrived:.1f}, "
+            f"InTransit={len(self.state.active_shipments)} trucks"
         )
 
-    def _process_arrivals(self, arrived_shipments: List[Shipment]):
+    def _process_arrivals(self, arrived_shipments: list[Shipment]) -> None:
         for shipment in arrived_shipments:
             target_idx = self.state.node_id_to_idx.get(shipment.target_id)
             if target_idx is None:
                 continue
 
             for line in shipment.lines:
+                p_idx = self.state.product_id_to_idx.get(line.product_id)
+                if p_idx is not None:
+                    self.state.inventory[target_idx, p_idx] += line.quantity
+
+    def _magic_fulfillment(self, orders: list[Order]) -> None:
+        """Immediately fulfills orders for testing purposes."""
+        for order in orders:
+            target_idx = self.state.node_id_to_idx.get(order.target_id)
+            if target_idx is None:
+                continue
+            for line in order.lines:
                 p_idx = self.state.product_id_to_idx.get(line.product_id)
                 if p_idx is not None:
                     self.state.inventory[target_idx, p_idx] += line.quantity

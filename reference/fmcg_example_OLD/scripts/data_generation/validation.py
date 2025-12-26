@@ -16,7 +16,7 @@ These validators are designed to work with the GeneratorContext pattern.
 
 from collections import Counter
 from datetime import date
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from .generators import GeneratorContext
@@ -42,8 +42,9 @@ class DataValidator:
         self.ctx = ctx
         self._manifest = {}
         try:
-            from . import BENCHMARK_MANIFEST_PATH
             import json
+
+            from . import BENCHMARK_MANIFEST_PATH
             with open(BENCHMARK_MANIFEST_PATH) as f:
                 self._manifest = json.load(f)
         except Exception:
@@ -73,12 +74,12 @@ class DataValidator:
             Tuple of (passed, message)
         """
         total = sum(len(rows) for rows in self.data.values())
-        
+
         # Prefer manifest target, fallback to helper
         target = self._manifest.get("generation_targets", {}).get("total_rows")
         if not target:
             target = sum(TARGET_ROW_COUNTS.values())
-            
+
         pct_diff = abs(total - target) / target * 100 if target > 0 else 0
         tolerance = self._get_tolerance("row_count_tolerance_pct", 0.25) * 100
 
@@ -124,7 +125,7 @@ class DataValidator:
         top_n = max(1, len(sorted_skus) // 5)
         top_qty = sum(q for _, q in sorted_skus[:top_n])
         top_pct = top_qty / total_qty if total_qty > 0 else 0
-        
+
         target_range = self._get_tolerance("pareto_top20_range", [0.75, 0.85])
 
         if target_range[0] <= top_pct <= target_range[1]:
@@ -150,7 +151,7 @@ class DataValidator:
 
         mega_orders = sum(1 for o in orders if o.get("retail_account_id") == mega_id)
         pct = mega_orders / len(orders) if orders else 0
-        
+
         target_range = self._get_tolerance("hub_concentration_range", [0.20, 0.30])
 
         if target_range[0] <= pct <= target_range[1]:
@@ -268,7 +269,7 @@ class DataValidator:
             )
         else:
             lift_ratio = 0
-            
+
         target_lift = self._get_tolerance("promo_lift_range", [1.5, 3.5])[0]
 
         if lift_ratio < target_lift * 0.8: # Allow some drift
@@ -457,10 +458,9 @@ class DataValidator:
                 else:
                     checks.append(True)
                     details.append(f"phantom_inventory: {rate:.1%} shrinkage (drifted)")
-            else:
-                if len(self.data.get("inventory", [])) > 0:
-                    checks.append(False)
-                    details.append("phantom_inventory: No shrinkage applied")
+            elif len(self.data.get("inventory", [])) > 0:
+                checks.append(False)
+                details.append("phantom_inventory: No shrinkage applied")
 
         # Check data_decay quirk
         config_decay = self._get_chaos_config("data_decay")

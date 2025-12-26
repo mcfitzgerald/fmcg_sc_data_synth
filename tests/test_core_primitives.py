@@ -1,6 +1,8 @@
 import pytest
-from prism_sim.network.core import Node, Link, NodeType
+
+from prism_sim.network.core import Link, Node, NodeType
 from prism_sim.product.core import Product, ProductCategory
+
 
 def test_node_creation():
     node = Node(
@@ -37,7 +39,7 @@ def test_product_physics():
         height_cm=15,
         cases_per_pallet=80
     )
-    
+
     assert soap.category == ProductCategory.PERSONAL_WASH
     assert soap.weight_kg == 8.5
     assert soap.volume_m3 == pytest.approx(0.009, rel=1e-3)

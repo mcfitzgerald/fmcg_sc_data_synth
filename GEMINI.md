@@ -1,5 +1,3 @@
-# PRIME DIRECTIVE
-
 ## Spec-Driven Development
 
 We are using intent and roadmap spec-driven development 
@@ -18,13 +16,13 @@ We have included the code base from a previous simulation in `reference/fmcg_exa
 
 ## Coding and Engineering Standards
 
-Build modularly, separating concerns and first-principle components for reusabiltiy and extensibility
+Build modularly, separating concerns and first-principle components for reusability and extensibility
 
 When python files reach 700-1000 lines, that is a good indication it is time to split into modules.
 
-Create and maintain robost documentation for all code.
+Create and maintain robust documentation for all code.
 
-When running validations and tests, if there is a bug or something seems of, don't just skip or assume it's fine. Alert me and we will determine course of action, which typicall means we must find root cause.
+When running validations and tests, if there is a bug or something seems of, don't just skip or assume it's fine. Alert me and we will determine course of action, which typically means we must find root cause.
 
 Do not hardcode variables or values. Always use a config paradigm (a config file or files so variables can be easily located and changed)
 
@@ -38,7 +36,7 @@ Always use context7 when I need code generation, setup or configuration steps, o
 library/API documentation. This means you should automatically use the Context7 MCP
 tools to resolve library id and get library docs without me having to explicitly ask.
 
-Don't reinvent the wheel. Search web for robust libraries that are fit for the purpse, and always opt for simple (but complete and correct) implementation vs complex. Don't over-engineer.
+Don't reinvent the wheel. Search web for robust libraries that are fit for the purpose, and always opt for simple (but complete and correct) implementation vs complex. Don't over-engineer.
 
 Commit and push changes with git after new code, code changes, bug fixes, new features. 
 

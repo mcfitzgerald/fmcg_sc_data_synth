@@ -67,46 +67,18 @@ Phase B - Constants Package (see effervescent-shimmying-blum.md):
 from pathlib import Path
 
 from .bottleneck_fixes import LookupCache, PooledFaker
-from .promo_calendar import PromoCalendar, PromoEffect, date_to_week
-from .quirks import Quirk, QuirksManager
-from .risk_events import RiskEvent, RiskEventManager
-from .lookup_builder import LookupBuilder, LookupIndex
-from .realism_monitor import (
-    CardinalityEstimator,
-    DegreeMonitor,
-    FrequencySketch,
-    RealismMonitor,
-    RealismViolationError,
-    StochasticMode,
-    WelfordAccumulator,
-)
-from .static_pool import StaticDataPool
-from .streaming_writer import (
-    DependencyTracker,
-    StreamingWriter,
-    copy_bool,
-    copy_date,
-    copy_num,
-    copy_str,
-    copy_timestamp,
-    format_copy_value,
-)
-from .vectorized import (
-    ORDER_LINES_COLUMNS,
-    ORDER_LINES_DTYPE,
-    POS_SALES_COLUMNS,
-    POS_SALES_DTYPE,
-    SHIPMENT_LEGS_COLUMNS,
-    SHIPMENT_LEGS_DTYPE,
-    OrderLinesGenerator,
-    POSSalesGenerator,
-    ShipmentLegsGenerator,
-    VectorizedGenerator,
-    apply_promo_effects,
-    lumpy_demand,
-    structured_to_copy_lines,
-    structured_to_dicts,
-    zipf_weights,
+from .constants import (
+    BUSINESS_RULES,
+    CARRIERS,
+    CHANNELS,
+    DCS,
+    DIVISIONS,
+    INGREDIENTS,
+    KPI_THRESHOLDS,
+    PACKAGING_TYPES,
+    PLANTS,
+    PORTS,
+    PRODUCTS,
 )
 from .generators import (
     BaseLevelGenerator,
@@ -127,22 +99,53 @@ from .generators import (
     Level13Generator,
     Level14Generator,
 )
-from .validation import DataValidator
-from .helpers import barabasi_albert_attachment
-from .constants import (
-    BUSINESS_RULES,
-    CARRIERS,
-    CHANNELS,
-    DCS,
-    DIVISIONS,
-    INGREDIENTS,
-    KPI_THRESHOLDS,
-    PACKAGING_TYPES,
-    PLANTS,
-    PORTS,
-    PRODUCTS,
+from .helpers import (
+    TARGET_ROW_COUNTS,
+    barabasi_albert_attachment,
+    create_named_entities,
 )
-from .helpers import TARGET_ROW_COUNTS, create_named_entities
+from .lookup_builder import LookupBuilder, LookupIndex
+from .promo_calendar import PromoCalendar, PromoEffect, date_to_week
+from .quirks import Quirk, QuirksManager
+from .realism_monitor import (
+    CardinalityEstimator,
+    DegreeMonitor,
+    FrequencySketch,
+    RealismMonitor,
+    RealismViolationError,
+    StochasticMode,
+    WelfordAccumulator,
+)
+from .risk_events import RiskEvent, RiskEventManager
+from .static_pool import StaticDataPool
+from .streaming_writer import (
+    DependencyTracker,
+    StreamingWriter,
+    copy_bool,
+    copy_date,
+    copy_num,
+    copy_str,
+    copy_timestamp,
+    format_copy_value,
+)
+from .validation import DataValidator
+from .vectorized import (
+    ORDER_LINES_COLUMNS,
+    ORDER_LINES_DTYPE,
+    POS_SALES_COLUMNS,
+    POS_SALES_DTYPE,
+    SHIPMENT_LEGS_COLUMNS,
+    SHIPMENT_LEGS_DTYPE,
+    OrderLinesGenerator,
+    POSSalesGenerator,
+    ShipmentLegsGenerator,
+    VectorizedGenerator,
+    apply_promo_effects,
+    lumpy_demand,
+    structured_to_copy_lines,
+    structured_to_dicts,
+    zipf_weights,
+)
 
 # Path to default benchmark manifest
 BENCHMARK_MANIFEST_PATH = Path(__file__).parent / "benchmark_manifest.json"

@@ -21,9 +21,9 @@ Level 2 Tables:
 import random
 from datetime import date, datetime, timedelta
 
-from .base import BaseLevelGenerator
-from ..constants import DCS, INGREDIENTS, PLANTS
+from ..constants import INGREDIENTS, PLANTS
 from ..helpers import barabasi_albert_attachment
+from .base import BaseLevelGenerator
 
 
 class Level1Generator(BaseLevelGenerator):

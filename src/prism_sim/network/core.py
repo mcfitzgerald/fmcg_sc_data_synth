@@ -1,6 +1,5 @@
-from dataclasses import dataclass, field
-from typing import List
 import enum
+from dataclasses import dataclass, field
 
 
 class NodeType(enum.Enum):
@@ -29,7 +28,7 @@ class Node:
     # State (will be vectorized later, but kept here for object clarity)
     current_inventory: float = 0.0
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if not self.id:
             raise ValueError("Node ID cannot be empty")
 
@@ -50,7 +49,7 @@ class Link:
     lead_time_days: float = 0.0
     variability_sigma: float = 0.0
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if not self.id:
             raise ValueError("Link ID cannot be empty")
 
@@ -67,7 +66,7 @@ class Order:
     source_id: str  # Who is shipping (Supplier/RDC)
     target_id: str  # Who is ordering (Store/RDC)
     creation_day: int
-    lines: List[OrderLine] = field(default_factory=list)
+    lines: list[OrderLine] = field(default_factory=list)
     status: str = "OPEN"  # OPEN, IN_TRANSIT, CLOSED
 
 
@@ -84,7 +83,7 @@ class Shipment:
     target_id: str
     creation_day: int
     arrival_day: int
-    lines: List[OrderLine] = field(default_factory=list)
+    lines: list[OrderLine] = field(default_factory=list)
     status: ShipmentStatus = ShipmentStatus.PENDING
 
     # Physicals

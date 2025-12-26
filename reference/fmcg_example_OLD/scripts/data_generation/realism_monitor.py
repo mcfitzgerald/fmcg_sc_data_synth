@@ -1268,7 +1268,7 @@ class RealismMonitor:
         if self._qc_total > 100:
             qc_rate = self._qc_rejected / self._qc_total
             qc_range = self._get_range("qc_rejection_rate_range", (0.01, 0.04))
-            
+
             # Dynamic tolerance for data_decay quirk
             if "data_decay" in self.active_quirks:
                 # Base 2% + Elevated 8% -> Weighted avg increases

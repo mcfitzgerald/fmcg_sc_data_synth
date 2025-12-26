@@ -25,7 +25,6 @@ from datetime import date, datetime, timedelta
 
 import numpy as np
 
-from .base import BaseLevelGenerator
 from ..lookup_builder import LookupBuilder
 from ..promo_calendar import PromoCalendar
 from ..vectorized import (
@@ -34,6 +33,7 @@ from ..vectorized import (
     structured_to_dicts,
     zipf_weights,
 )
+from .base import BaseLevelGenerator
 
 
 class Level8Generator(BaseLevelGenerator):
@@ -129,16 +129,16 @@ class Level8Generator(BaseLevelGenerator):
         """
         forecast_id = 1
         sku_ids = list(self.ctx.sku_ids.values())
-        
+
         # Calculate SKU multipliers to match POS generation (Zipf)
         # Multiplier = weight * N (scales relative to "average" SKU)
         weights = zipf_weights(len(sku_ids), alpha=1.05)
         sku_multipliers = weights * len(sku_ids)
         sku_mult_map = {sku_id: mult for sku_id, mult in zip(sku_ids, sku_multipliers)}
-        
+
         forecast_versions = [f"{self.ctx.base_year}-W{w:02d}-STAT" for w in range(1, 53)]
         location_types = ["dc", "account", "division"]
-        
+
         # Base weekly volume for an "average" SKU at a single store (derived from POS settings)
         # Reduced from 8.0 to 0.5 to account for RealismMonitor summing overlapping hierarchy levels
         base_store_weekly_vol = 0.5
@@ -146,7 +146,7 @@ class Level8Generator(BaseLevelGenerator):
         for _ in range(100000):
             sku_id = random.choice(sku_ids)
             loc_type = random.choice(location_types)
-            
+
             # Scale by hierarchy level (Aggregation)
             if loc_type == "division": # ~2000 stores
                 level_mult = 2000.0
@@ -161,13 +161,13 @@ class Level8Generator(BaseLevelGenerator):
             # Calculate expected demand
             sku_mult = sku_mult_map.get(sku_id, 1.0)
             expected_demand = base_store_weekly_vol * level_mult * sku_mult
-            
+
             # Apply Bias and Error
             # Bias: Forecasts tend to be higher than actuals (Optimism Bias)
             # Target: +10-25% bias (not 1200%!)
-            bias_factor = random.uniform(1.10, 1.25) 
+            bias_factor = random.uniform(1.10, 1.25)
             error_factor = random.uniform(0.85, 1.15)
-            
+
             qty = int(expected_demand * bias_factor * error_factor)
             qty = max(10, qty) # Minimum threshold
 

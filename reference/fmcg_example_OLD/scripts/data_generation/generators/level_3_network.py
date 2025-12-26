@@ -14,9 +14,9 @@ Named entities:
 import random
 from datetime import datetime
 
-from .base import BaseLevelGenerator
 from ..constants import DCS
 from ..helpers import barabasi_albert_attachment
+from .base import BaseLevelGenerator
 
 
 class Level3Generator(BaseLevelGenerator):

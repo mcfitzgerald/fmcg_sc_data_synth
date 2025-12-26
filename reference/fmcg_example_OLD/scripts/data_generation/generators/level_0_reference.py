@@ -19,7 +19,6 @@ This is the foundation level - all other levels depend on Level 0 data.
 import random
 from datetime import date, datetime
 
-from .base import BaseLevelGenerator, GeneratorContext
 from ..constants import (
     BUSINESS_RULES,
     CARRIERS,
@@ -31,6 +30,7 @@ from ..constants import (
     PORTS,
     PRODUCTS,
 )
+from .base import BaseLevelGenerator
 
 
 class Level0Generator(BaseLevelGenerator):

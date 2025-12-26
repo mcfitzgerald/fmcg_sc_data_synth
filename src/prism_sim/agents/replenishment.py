@@ -1,8 +1,11 @@
-from typing import List, Dict
+
+from typing import Any
+
 import numpy as np
-from prism_sim.simulation.world import World
+
+from prism_sim.network.core import NodeType, Order, OrderLine
 from prism_sim.simulation.state import StateManager
-from prism_sim.network.core import Order, OrderLine, NodeType
+from prism_sim.simulation.world import World
 
 
 class MinMaxReplenisher:
@@ -11,21 +14,27 @@ class MinMaxReplenisher:
     Triggers the Bullwhip effect via order batching.
     """
 
-    def __init__(self, world: World, state: StateManager, config: Dict):
+    def __init__(self, world: World, state: StateManager, config: dict[str, Any]) -> None:
         self.world = world
         self.state = state
-        
-        params = config.get("simulation_parameters", {}).get("agents", {}).get("replenishment", {})
+
+        params = (
+            config.get("simulation_parameters", {})
+            .get("agents", {})
+            .get("replenishment", {})
+        )
 
         # Policy Parameters (Config driven)
-        self.target_days = params.get("target_days_supply", 7.0)  # Order Up To (S)
-        self.reorder_point_days = params.get("reorder_point_days", 3.0)  # Reorder Point (s)
+        self.target_days = float(params.get("target_days_supply", 7.0))  # Order Up To (S)
+        self.reorder_point_days = float(params.get(
+            "reorder_point_days", 3.0
+        ))  # Reorder Point (s)
 
         # Bullwhip parameters
-        self.min_order_qty = params.get("min_order_qty", 10.0)  # Minimum order size
-        self.batch_size = params.get("batch_size_cases", 50.0)  # Pallet size approx
+        self.min_order_qty = float(params.get("min_order_qty", 10.0))  # Minimum order size
+        self.batch_size = float(params.get("batch_size_cases", 50.0))  # Pallet size approx
 
-    def generate_orders(self, day: int, demand_history: np.ndarray) -> List[Order]:
+    def generate_orders(self, day: int, demand_history: np.ndarray) -> list[Order]:
         """
         Generates replenishment orders for Retail Stores.
 
@@ -36,8 +45,8 @@ class MinMaxReplenisher:
         """
         orders = []
 
-        # Iterate over stores (vectorized logic is harder for order generation due to object creation,
-        # so we iterate. The math can be vectorized though).
+        # Iterate over stores (vectorized logic is harder for order generation
+        # due to object creation, so we iterate. The math can be vectorized though).
 
         # 1. Identify Stores
         store_indices = []
@@ -90,9 +99,9 @@ class MinMaxReplenisher:
         rows, cols = np.nonzero(batched_qty)
 
         # Group by Store (Row) to create one order per store
-        orders_by_store: Dict[int, List[OrderLine]] = {}
+        orders_by_store: dict[int, list[OrderLine]] = {}
 
-        for r, c in zip(rows, cols):
+        for r, c in zip(rows, cols, strict=True):
             qty = batched_qty[r, c]
             if qty <= 0:
                 continue

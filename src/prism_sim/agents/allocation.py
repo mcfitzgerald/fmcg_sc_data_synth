@@ -1,7 +1,9 @@
-from typing import List, Dict
+
 import numpy as np
-from prism_sim.simulation.state import StateManager
+
+from prism_sim.constants import EPSILON
 from prism_sim.network.core import Order
+from prism_sim.simulation.state import StateManager
 
 
 class AllocationAgent:
@@ -10,10 +12,10 @@ class AllocationAgent:
     Implements 'Fair Share' logic when demand > supply.
     """
 
-    def __init__(self, state: StateManager):
+    def __init__(self, state: StateManager) -> None:
         self.state = state
 
-    def allocate_orders(self, orders: List[Order]) -> List[Order]:
+    def allocate_orders(self, orders: list[Order]) -> list[Order]:
         """
         Processes orders against available inventory at the source.
         Modifies order quantities in-place based on availability.
@@ -24,7 +26,7 @@ class AllocationAgent:
             though typically we just reduce qty to 0).
         """
         # 1. Group by Source Node
-        orders_by_source: Dict[str, List[Order]] = {}
+        orders_by_source: dict[str, list[Order]] = {}
         for order in orders:
             if order.source_id not in orders_by_source:
                 orders_by_source[order.source_id] = []
@@ -86,7 +88,7 @@ class AllocationAgent:
                     if p_idx is not None:
                         ratio = fill_ratios[p_idx]
                         new_qty = line.quantity * ratio
-                        if new_qty > 0.001:  # Filter out near-zero
+                        if new_qty > EPSILON:  # Filter out near-zero
                             line.quantity = new_qty
                             new_lines.append(line)
                     else:

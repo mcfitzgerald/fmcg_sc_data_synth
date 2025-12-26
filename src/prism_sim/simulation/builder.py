@@ -1,11 +1,12 @@
-from typing import Dict, Any
-from prism_sim.simulation.world import World
-from prism_sim.network.core import Node, Link, NodeType
+from typing import Any
+
+from prism_sim.network.core import Link, Node, NodeType
 from prism_sim.product.core import Product, ProductCategory, Recipe
+from prism_sim.simulation.world import World
 
 
 class WorldBuilder:
-    def __init__(self, manifest: Dict[str, Any]):
+    def __init__(self, manifest: dict[str, Any]) -> None:
         self.manifest = manifest
         self.world = World()
 
@@ -15,7 +16,7 @@ class WorldBuilder:
         self._build_network()
         return self.world
 
-    def _build_products(self):
+    def _build_products(self) -> None:
         # --- Ingredients ---
         # 1. SPOF Ingredient
         self.world.add_product(
@@ -93,7 +94,7 @@ class WorldBuilder:
             )
         )
 
-    def _build_recipes(self):
+    def _build_recipes(self) -> None:
         # Recipe for Detergent (Requires SPOF)
         self.world.add_recipe(
             Recipe(
@@ -107,7 +108,7 @@ class WorldBuilder:
             )
         )
 
-    def _build_network(self):
+    def _build_network(self) -> None:
         # The Big 4 RDCs
         rdcs = [
             ("RDC-NAM-NE", "Northeast RDC", "Pennsylvania"),

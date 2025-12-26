@@ -19,17 +19,14 @@ from datetime import date, datetime, timedelta
 
 import numpy as np
 
-from .base import BaseLevelGenerator
 from ..lookup_builder import LookupBuilder
 from ..vectorized import (
-    zipf_weights, 
-    ShipmentsGenerator,
     ShipmentLegsGenerator,
-    ShipmentLinesGenerator, 
+    ShipmentLinesGenerator,
+    ShipmentsGenerator,
     structured_to_dicts,
-    SHIPMENTS_COLUMNS,
-    SHIPMENT_LEGS_COLUMNS
 )
+from .base import BaseLevelGenerator
 
 
 class Level10Generator(BaseLevelGenerator):
@@ -148,7 +145,7 @@ class Level10Generator(BaseLevelGenerator):
         # 2. Demand-Pull Supply Distribution
         supply_by_sku = {}
         formula_to_skus = LookupBuilder.build(self.data["skus"], key_field="formula_id")
-        
+
         # Physics: Map which SKUs are available at which plants
         plant_to_skus = {pid: set() for pid in plant_ids}
         # production_lines have plant_id
@@ -177,7 +174,7 @@ class Level10Generator(BaseLevelGenerator):
             skus_for_formula = formula_to_skus.get(formula_id, [])
             if not skus_for_formula:
                 continue
-            
+
             pid = batch_to_plant.get(bid)
             if pid:
                 for s in skus_for_formula:
@@ -186,7 +183,7 @@ class Level10Generator(BaseLevelGenerator):
             total_cases = b.get("output_cases", 0)
             sku_ids = [s["id"] for s in skus_for_formula]
             formula_demand = sum(demand_by_sku.get(sid, 0) for sid in sku_ids)
-            
+
             if formula_demand > 0:
                 for sid in sku_ids:
                     share = demand_by_sku.get(sid, 0) / formula_demand
@@ -219,7 +216,7 @@ class Level10Generator(BaseLevelGenerator):
         TRUCK_CAPACITY_KG = 20000
         TARGET_FILL_RATE = random.uniform(0.85, 0.95)
         num_shipments = max(100, int(total_production_weight / (TRUCK_CAPACITY_KG * TARGET_FILL_RATE)))
-        
+
         print(f"    [Physics] Derived {num_shipments:,} shipments from {total_production_weight/1000:,.1f} tons")
 
         # Prepare for ShipmentsGenerator
@@ -258,23 +255,23 @@ class Level10Generator(BaseLevelGenerator):
 
         # Vectorized generation
         gen = ShipmentsGenerator(seed=self.ctx.seed)
-        
+
         # Prepare distances from route_segments
         distances = {}
         for seg in self.data.get("route_segments", []):
             key = (seg["origin_type"], seg["origin_id"], seg["destination_type"], seg["destination_id"])
             distances[key] = float(seg.get("distance_km", 500.0))
-            
+
         # Carrier rates: need to join carrier_rates -> carrier_contracts -> carrier_id
         contract_to_carrier = {c["id"]: c["carrier_id"] for c in self.data.get("carrier_contracts", [])}
         carrier_rates = {}
         for r in self.data.get("carrier_rates", []):
             cid = contract_to_carrier.get(r["contract_id"])
             if cid:
-                # Use rate_per_case as a proxy for per-km rate if missing, 
+                # Use rate_per_case as a proxy for per-km rate if missing,
                 # or just a reasonable default if multiple rates exist.
                 carrier_rates[cid] = float(r.get("rate_per_case", 1.50)) / 100.0 + 1.0 # arbitrary scaling
-        
+
         gen.configure(carrier_rates=carrier_rates, distances=distances)
 
         # Mass Balance Fix: Only store-bound shipments count toward shipped cases
@@ -343,7 +340,7 @@ class Level10Generator(BaseLevelGenerator):
             is_temperature_controlled=is_temperature_controlled,
             carrier_is_preferred=carrier_is_preferred,
         )
-        
+
         self.data["shipments"] = structured_to_dicts(shipments_array)
         for s in self.data["shipments"]:
             self.ctx.shipment_ids[s["shipment_number"]] = s["id"]
@@ -619,13 +616,13 @@ class Level11Generator(BaseLevelGenerator):
         # We need plant_to_skus from Level 10
         # Actually, let's just use the saved plant_to_skus if origin is plant
         # For DCs, we can assume all SKUs for now or filter by DC inventory
-        origin_skus = getattr(self.ctx, "plant_to_skus", {}) # Assuming we might have it in context? 
+        origin_skus = getattr(self.ctx, "plant_to_skus", {}) # Assuming we might have it in context?
         # Wait, I saved it to self.plant_to_skus in Level10Generator, but Level11 is a different object.
         # I should save it to self.ctx.
-        
+
         # Let's check Level10Generator again. I saved it to self.plant_to_skus.
         # I'll modify Level10Generator to save it to self.ctx.plant_to_skus.
-        
+
         # For now, I'll rebuild it or assume it's in ctx.
         if not hasattr(self.ctx, "plant_to_skus"):
             # Rebuild if missing (shouldn't happen if Level 10 ran)

@@ -1,5 +1,3 @@
-# PRIME DIRECTIVE
-
 ## Spec-Driven Development
 
 We are using intent and roadmap spec-driven development 

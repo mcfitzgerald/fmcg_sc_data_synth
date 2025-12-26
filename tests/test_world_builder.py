@@ -1,8 +1,8 @@
-import pytest
-from prism_sim.simulation.builder import WorldBuilder
 from prism_sim.config.loader import load_manifest
-from prism_sim.product.core import ProductCategory
 from prism_sim.network.core import NodeType
+from prism_sim.product.core import ProductCategory
+from prism_sim.simulation.builder import WorldBuilder
+
 
 def test_world_builder_initialization():
     manifest = load_manifest()
@@ -22,7 +22,7 @@ def test_world_builder_initialization():
 
     paste = world.get_product("SKU-PASTE-001")
     assert paste.category == ProductCategory.ORAL_CARE
-    
+
     det = world.get_product("SKU-DET-001")
     assert det.category == ProductCategory.HOME_CARE
 
@@ -37,6 +37,6 @@ def test_named_entities_exist():
     manifest = load_manifest()
     builder = WorldBuilder(manifest)
     world = builder.build()
-    
+
     # West RDC check
     assert world.get_node("RDC-NAM-CAL") is not None

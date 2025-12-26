@@ -13,18 +13,18 @@ Key Techniques:
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
-from enum import Enum
-from typing import Any, Iterator
+from datetime import date, datetime
+
+# Import PromoCalendar for type hints (avoid circular import with TYPE_CHECKING)
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from numpy.random import Generator
 
 from .realism_monitor import StochasticMode
 
-# Import PromoCalendar for type hints (avoid circular import with TYPE_CHECKING)
-from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from .promo_calendar import PromoCalendar
 
@@ -183,7 +183,7 @@ class POSSalesGenerator(VectorizedGenerator):
     location_ids: np.ndarray = field(default_factory=lambda: np.array([], dtype=np.int64))
     sku_weights: np.ndarray | None = None
     sku_prices: dict[int, float] = field(default_factory=dict)
-    promo_calendar: "PromoCalendar | None" = None
+    promo_calendar: PromoCalendar | None = None
     base_year: int = 2024
     weeks_per_year: int = 52
     zipf_alpha: float = 1.05
@@ -635,7 +635,7 @@ class ShipmentLinesGenerator(VectorizedGenerator):
         for count in lines_per_shipment:
             line_nums.extend(range(1, int(count) + 1))
         batch["line_number"] = np.array(line_nums, dtype=np.int32)
-        
+
         # Location physics
         unique_origins = np.unique(expanded_origins)
         batch_sku_ids = np.zeros(total_lines, dtype=np.int64)

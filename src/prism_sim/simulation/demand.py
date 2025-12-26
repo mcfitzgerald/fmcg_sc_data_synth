@@ -1,17 +1,16 @@
-import numpy as np
 from dataclasses import dataclass
-from typing import Dict, List, Set
-from collections import defaultdict
-from prism_sim.simulation.world import World
-from prism_sim.simulation.state import StateManager
+from typing import Any, cast
+
+import numpy as np
+
 from prism_sim.network.core import NodeType
+from prism_sim.simulation.state import StateManager
+from prism_sim.simulation.world import World
 
 
 @dataclass(frozen=True)
 class PromoEffect:
-    """
-    Represents the impact of a promotion on a specific week/store/SKU.
-    """
+    """Represents the impact of a promotion on a specific week/store/SKU."""
 
     promo_id: str
     lift_multiplier: float
@@ -20,17 +19,25 @@ class PromoEffect:
 
 
 class PromoCalendar:
-    """
-    Manages promotional events and their lift/hangover effects.
-    """
+    """Manages promotional events and their lift/hangover effects."""
 
-    def __init__(self, world: World):
+    def __init__(self, world: World) -> None:
         self.world = world
-        # Map: week_num -> node_id -> product_id -> PromoEffect
-        self._calendar: Dict[int, Dict[str, Dict[str, PromoEffect]]] = defaultdict(
-            lambda: defaultdict(dict)
-        )
-        self._active_weeks: Set[int] = set()
+        self.n_nodes = len(world.nodes)
+        self.n_products = len(world.products)
+        # week -> [Nodes, Products] multiplier tensor
+        self.promo_index: dict[int, np.ndarray] = {}
+
+        # Pre-calculate ID to index maps to match StateManager
+        self.node_to_idx = {
+            id: i for i, id in enumerate(sorted(self.world.nodes.keys()))
+        }
+        self.prod_to_idx = {
+            id: i for i, id in enumerate(sorted(self.world.products.keys()))
+        }
+
+    def _get_week_array(self) -> np.ndarray:
+        return np.ones((self.n_nodes, self.n_products), dtype=np.float32)
 
     def add_promo(
         self,
@@ -39,90 +46,56 @@ class PromoCalendar:
         end_week: int,
         lift: float,
         hangover_lift: float,
-        products: List[str],
-        stores: List[str],
-    ):
-        """
-        Registers a promotion.
-        """
-        # 1. Active Period
+        products: list[str],
+        stores: list[str],
+    ) -> None:
+        """Adds a promotional event to the calendar."""
         for week in range(start_week, end_week + 1):
-            self._active_weeks.add(week)
-            for store_id in stores:
-                for prod_id in products:
-                    # Logic: Max Lift wins if overlapping
-                    existing = self._calendar[week][store_id].get(prod_id)
-                    if (
-                        existing
-                        and existing.lift_multiplier > lift
-                        and not existing.is_hangover
-                    ):
+            if week not in self.promo_index:
+                self.promo_index[week] = self._get_week_array()
+
+            for s_id in stores:
+                n_idx = self.node_to_idx.get(s_id)
+                if n_idx is None:
+                    continue
+                for p_id in products:
+                    p_idx = self.prod_to_idx.get(p_id)
+                    if p_idx is None:
                         continue
+                    # Apply max lift for overlapping promos
+                    self.promo_index[week][n_idx, p_idx] = float(np.maximum(
+                        self.promo_index[week][n_idx, p_idx], lift
+                    ))
 
-                    self._calendar[week][store_id][prod_id] = PromoEffect(
-                        promo_id=promo_id,
-                        lift_multiplier=lift,
-                        hangover_multiplier=hangover_lift,
-                        is_hangover=False,
-                    )
+        # Apply hangover effect to the following week
+        h_week = end_week + 1
+        if h_week <= 52:
+            if h_week not in self.promo_index:
+                self.promo_index[h_week] = self._get_week_array()
 
-        # 2. Hangover Period (1 week post-promo)
-        hangover_week = end_week + 1
-        if hangover_week <= 52:
-            self._active_weeks.add(hangover_week)
-            for store_id in stores:
-                for prod_id in products:
-                    # Logic: Active promo beats hangover
-                    existing = self._calendar[hangover_week][store_id].get(prod_id)
-                    if existing and not existing.is_hangover:
+            for s_id in stores:
+                n_idx = self.node_to_idx.get(s_id)
+                if n_idx is None:
+                    continue
+                for p_id in products:
+                    p_idx = self.prod_to_idx.get(p_id)
+                    if p_idx is None:
                         continue
-
-                    self._calendar[hangover_week][store_id][prod_id] = PromoEffect(
-                        promo_id=promo_id,
-                        lift_multiplier=1.0,  # No lift during hangover
-                        hangover_multiplier=hangover_lift,
-                        is_hangover=True,
-                    )
+                    # Only apply hangover if no active promo exists
+                    if self.promo_index[h_week][n_idx, p_idx] == 1.0:
+                        self.promo_index[h_week][n_idx, p_idx] = hangover_lift
 
     def get_weekly_multipliers(self, week: int, state: StateManager) -> np.ndarray:
-        """
-        Returns a (Nodes, Products) tensor of demand multipliers for the given week.
-        Default multiplier is 1.0.
-        """
-        # Initialize with 1.0
-        multipliers = np.ones((state.n_nodes, state.n_products), dtype=np.float32)
-
-        if week not in self._calendar:
-            return multipliers
-
-        week_data = self._calendar[week]
-
-        # Iterate through sparse calendar entries and update dense tensor
-        # This is efficient because promos are sparse compared to full NxM space
-        for store_id, prod_map in week_data.items():
-            if store_id not in state.node_id_to_idx:
-                continue
-            n_idx = state.node_id_to_idx[store_id]
-
-            for prod_id, effect in prod_map.items():
-                if prod_id not in state.product_id_to_idx:
-                    continue
-                p_idx = state.product_id_to_idx[prod_id]
-
-                if effect.is_hangover:
-                    multipliers[n_idx, p_idx] = effect.hangover_multiplier
-                else:
-                    multipliers[n_idx, p_idx] = effect.lift_multiplier
-
-        return multipliers
+        """Returns the demand multipliers for a given week."""
+        if week in self.promo_index:
+            return self.promo_index[week]
+        return np.ones((state.n_nodes, state.n_products), dtype=np.float32)
 
 
 class POSEngine:
-    """
-    Point-of-Sale Engine. Generates daily consumer demand.
-    """
+    """Point-of-Sale Engine. Generates daily consumer demand."""
 
-    def __init__(self, world: World, state: StateManager, config: Dict):
+    def __init__(self, world: World, state: StateManager, config: dict[str, Any]) -> None:
         self.world = world
         self.state = state
         self.config = config
@@ -130,46 +103,56 @@ class POSEngine:
 
         # Base Demand (Cases per day) - Randomized for now per Store/SKU
         # Shape: [Nodes, Products]
-        self.base_demand = np.zeros((state.n_nodes, state.n_products), dtype=np.float32)
+        self.base_demand = np.zeros(
+            (state.n_nodes, state.n_products), dtype=np.float32
+        )
         self._init_base_demand()
 
-    def _init_base_demand(self):
+    def _init_base_demand(self) -> None:
         """
         Initializes base demand for Retail Stores.
         RDCs and Suppliers have 0 consumer demand.
         """
-        profiles = self.config.get("simulation_parameters", {}).get("demand", {}).get("category_profiles", {})
-        
+        profiles = (
+            self.config.get("simulation_parameters", {})
+            .get("demand", {})
+            .get("category_profiles", {})
+        )
+
         for n_id, node in self.world.nodes.items():
             if node.type != NodeType.STORE:
                 continue
 
             n_idx = self.state.node_id_to_idx[n_id]
 
-            for p_id, product in self.world.products.items():
+            for p_id, _ in self.world.products.items():
                 p_idx = self.state.product_id_to_idx[p_id]
 
                 # Assign base demand based on category
                 mean_demand = 0.0
-                
-                # Check category match (rough logic based on ID string or category enum if available)
-                # Ideally we use product.category, but for now matching ID strings as per previous logic
+
+                # Check category match (rough logic based on ID string)
                 if "PASTE" in p_id:
-                     mean_demand = profiles.get("ORAL_CARE", {}).get("base_daily_demand", 50.0)
+                    mean_demand = float(profiles.get("ORAL_CARE", {}).get(
+                        "base_daily_demand", 50.0
+                    ))
                 elif "SOAP" in p_id:
-                     mean_demand = profiles.get("PERSONAL_WASH", {}).get("base_daily_demand", 30.0)
+                    mean_demand = float(profiles.get("PERSONAL_WASH", {}).get(
+                        "base_daily_demand", 30.0
+                    ))
                 elif "DET" in p_id:
-                     mean_demand = profiles.get("HOME_CARE", {}).get("base_daily_demand", 20.0)
+                    mean_demand = float(profiles.get("HOME_CARE", {}).get(
+                        "base_daily_demand", 20.0
+                    ))
                 elif "ING" in p_id:
-                     mean_demand = profiles.get("INGREDIENT", {}).get("base_daily_demand", 0.0)
+                    mean_demand = float(profiles.get("INGREDIENT", {}).get(
+                        "base_daily_demand", 0.0
+                    ))
 
                 self.base_demand[n_idx, p_idx] = mean_demand
 
     def generate_demand(self, day: int) -> np.ndarray:
-        """
-        Generates demand for a specific day.
-        Formula: Base * Seasonality * Promo * Randomness
-        """
+        """Generates demand for a specific day."""
         week = (day // 7) + 1
 
         # 1. Seasonality (Sine wave peaking in summer/Q3)
@@ -187,4 +170,5 @@ class POSEngine:
         # Demand = Base * Seasonality * Promo * Noise
         demand = self.base_demand * seasonality * promo_mult * noise
 
-        return demand.astype(np.float32)
+        return cast(np.ndarray, demand.astype(np.float32))
+

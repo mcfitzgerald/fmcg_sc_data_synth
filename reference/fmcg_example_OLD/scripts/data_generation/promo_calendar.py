@@ -102,7 +102,7 @@ class PromoCalendar:
         promotion_skus: list[dict[str, Any]],
         promotion_accounts: list[dict[str, Any]],
         retail_locations: list[dict[str, Any]],
-    ) -> "PromoCalendar":
+    ) -> PromoCalendar:
         """
         Build promo calendar from promotion data.
 

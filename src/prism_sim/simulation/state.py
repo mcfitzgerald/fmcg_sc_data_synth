@@ -1,7 +1,8 @@
+
 import numpy as np
-from typing import Dict, List
-from prism_sim.simulation.world import World
+
 from prism_sim.network.core import Shipment
+from prism_sim.simulation.world import World
 
 
 class StateManager:
@@ -10,15 +11,15 @@ class StateManager:
     Maps object IDs to integer indices for O(1) access.
     """
 
-    def __init__(self, world: World):
+    def __init__(self, world: World) -> None:
         self.world = world
 
         # 1. Create Index Maps
-        self.node_id_to_idx: Dict[str, int] = {}
-        self.node_idx_to_id: Dict[int, str] = {}
+        self.node_id_to_idx: dict[str, int] = {}
+        self.node_idx_to_id: dict[int, str] = {}
 
-        self.product_id_to_idx: Dict[str, int] = {}
-        self.product_idx_to_id: Dict[int, str] = {}
+        self.product_id_to_idx: dict[str, int] = {}
+        self.product_idx_to_id: dict[int, str] = {}
 
         self._index_entities()
 
@@ -40,9 +41,9 @@ class StateManager:
         self.cash = np.zeros((self.n_nodes,), dtype=np.float32)
 
         # Discrete State (Levels 10-11)
-        self.active_shipments: List[Shipment] = []
+        self.active_shipments: list[Shipment] = []
 
-    def _index_entities(self):
+    def _index_entities(self) -> None:
         # Sort keys for deterministic indexing
         sorted_nodes = sorted(self.world.nodes.keys())
         for i, node_id in enumerate(sorted_nodes):
@@ -65,12 +66,12 @@ class StateManager:
         p_idx = self.get_product_idx(product_id)
         return float(self.inventory[n_idx, p_idx])
 
-    def update_inventory(self, node_id: str, product_id: str, delta: float):
+    def update_inventory(self, node_id: str, product_id: str, delta: float) -> None:
         n_idx = self.get_node_idx(node_id)
         p_idx = self.get_product_idx(product_id)
         self.inventory[n_idx, p_idx] += delta
 
-    def update_inventory_batch(self, delta_tensor: np.ndarray):
+    def update_inventory_batch(self, delta_tensor: np.ndarray) -> None:
         """
         Updates inventory for all nodes and products using a tensor of deltas.
         delta_tensor shape must match (n_nodes, n_products).

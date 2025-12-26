@@ -14,7 +14,7 @@ import random
 import time
 from datetime import date, datetime, timedelta
 
-from .base import BaseLevelGenerator, GeneratorContext
+from .base import BaseLevelGenerator
 
 
 class Level14Generator(BaseLevelGenerator):
@@ -81,12 +81,11 @@ class Level14Generator(BaseLevelGenerator):
                 if random.random() < 0.85:
                     # Within target range
                     actual = round(target + random.uniform(-5, 5), 2)
+                # Miss (either high or low)
+                elif random.random() < 0.5:
+                    actual = round(target - random.uniform(8, 20), 2)
                 else:
-                    # Miss (either high or low)
-                    if random.random() < 0.5:
-                        actual = round(target - random.uniform(8, 20), 2)
-                    else:
-                        actual = round(target + random.uniform(8, 20), 2)
+                    actual = round(target + random.uniform(8, 20), 2)
 
                 # Variance
                 variance = round(actual - target, 2)

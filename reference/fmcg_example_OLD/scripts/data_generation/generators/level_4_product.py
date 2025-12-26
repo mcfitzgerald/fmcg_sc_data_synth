@@ -16,8 +16,8 @@ Named entities:
 import random
 from datetime import date, datetime, timedelta
 
-from .base import BaseLevelGenerator
 from ..constants import PACKAGING_TYPES, PRODUCTS
+from .base import BaseLevelGenerator
 
 
 class Level4Generator(BaseLevelGenerator):

@@ -496,7 +496,7 @@ class StreamingWriter:
             self._file.close()
             self._file = None
 
-    def __enter__(self) -> "StreamingWriter":
+    def __enter__(self) -> StreamingWriter:
         """Context manager entry."""
         return self
 

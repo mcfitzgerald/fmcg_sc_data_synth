@@ -9,8 +9,9 @@ Provides:
 - Test data fixtures (named entities)
 """
 
-import pytest
 from pathlib import Path
+
+import pytest
 
 # Connection settings (different ports from supply_chain_example)
 PG_DSN = "postgresql://virt_graph:dev_password@localhost:5433/prism_fmcg"

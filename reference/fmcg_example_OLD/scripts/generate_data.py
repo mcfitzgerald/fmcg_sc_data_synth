@@ -126,11 +126,14 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-from faker import Faker
 
 # Import from modular data_generation package
 from data_generation import (
     BENCHMARK_MANIFEST_PATH,
+    # Helpers
+    TARGET_ROW_COUNTS,
+    # Validation
+    DataValidator,
     # Level Generators (0-14)
     GeneratorContext,
     Level0Generator,
@@ -148,18 +151,15 @@ from data_generation import (
     Level12Generator,
     Level13Generator,
     Level14Generator,
-    # Validation
-    DataValidator,
     # Performance modules
     PooledFaker,
     QuirksManager,
     RealismMonitor,
     RiskEventManager,
     StaticDataPool,
-    # Helpers
-    TARGET_ROW_COUNTS,
     create_named_entities,
 )
+from faker import Faker
 
 # Output path
 OUTPUT_PATH = Path(__file__).parent.parent / "postgres" / "seed.sql"
@@ -200,7 +200,7 @@ class FMCGDataGenerator:
         # Trigger risk events and get stochastic mode
         triggered_events = risk_manager.trigger_all()
         stochastic_mode = risk_manager.get_stochastic_mode()
-        
+
         # Configure monitor with active quirks
         if realism_monitor:
             realism_monitor.set_active_quirks(quirks_manager.get_enabled_quirks())
@@ -516,11 +516,11 @@ class FMCGDataGenerator:
             else:
                 passed = value <= target_range
                 t_str = f"[<{target_range:.0%}]" if is_pct else f"[<{target_range}]"
-            
+
             status = "PASS" if passed else "FAIL"
             if not passed:
                 all_passed = False
-            
+
             v_str = f"{value:.1%}" if is_pct else f"{value:.3f}"
             print(f"  {label:<22} {v_str:<8} {t_str:<12} {status}")
 
@@ -550,11 +550,11 @@ class FMCGDataGenerator:
         prod = stats.get("production", {})
         if prod:
             check_stat("Yield mean", prod.get("yield_mean", 0), get_range("yield_mean_range", (0.96, 0.99)))
-            
+
             # QC Rejection Rate - Check for dynamic tolerance due to data_decay
             qc_rate = prod.get("qc_rejection_rate", 0)
             qc_range = get_range("qc_rejection_rate_range", (0.01, 0.04))
-            
+
             # If data_decay is active, elevate tolerance
             if self.ctx.quirks_manager and self.ctx.quirks_manager.is_enabled("data_decay"):
                 decay_config = self.ctx.quirks_manager.get_params("data_decay")
@@ -563,7 +563,7 @@ class FMCGDataGenerator:
                 # Weighted average depends on age distribution, but max shouldn't exceed elevated
                 # Allow up to 1.5x elevated rate to be safe
                 qc_range = (qc_range[0], elevated * 1.5)
-                
+
             check_stat("QC rejection rate", qc_rate, qc_range)
 
         # Logistics
@@ -647,7 +647,7 @@ class FMCGDataGenerator:
             print(f"  Port strike legs:      {chaos.get('port_strike_delayed_legs', 0):,}")
             print(f"  Congestion legs:       {chaos.get('congestion_correlated_legs', 0):,}")
             print(f"  Batched promo orders:  {chaos.get('batched_promo_orders', 0):,}")
-            
+
         return all_passed
 
     def write_sql(self, output_path: Path = OUTPUT_PATH) -> None:

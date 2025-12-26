@@ -30,7 +30,8 @@ Usage:
 from __future__ import annotations
 
 from collections import defaultdict
-from typing import Any, Generic, Hashable, TypeVar
+from collections.abc import Hashable
+from typing import Any, Generic, TypeVar
 
 # Type variables for generic index
 K = TypeVar("K", bound=Hashable)  # Key type (must be hashable)

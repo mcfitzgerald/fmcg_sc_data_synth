@@ -346,7 +346,7 @@ class QuirksManager:
                 if current_delay > 0:
                     leg["delay_hours"] = leg.get("delay_hours", 0) + max(0, current_delay)
                     leg["congestion_affected"] = True
-                    
+
                     existing_notes = leg.get("notes") or ""
                     if "congestion" not in existing_notes:
                         leg["notes"] = f"{existing_notes} [Quirk: Port congestion correlated delay]".strip()

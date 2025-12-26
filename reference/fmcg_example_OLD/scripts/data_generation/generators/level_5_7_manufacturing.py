@@ -24,8 +24,8 @@ import random
 import time
 from datetime import date, datetime, timedelta
 
-from .base import BaseLevelGenerator
 from ..lookup_builder import LookupBuilder
+from .base import BaseLevelGenerator
 
 
 class Level5Generator(BaseLevelGenerator):

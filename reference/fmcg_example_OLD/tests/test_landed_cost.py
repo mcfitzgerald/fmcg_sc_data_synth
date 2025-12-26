@@ -29,7 +29,6 @@ TODO: Implement after schema and data generation complete
 """
 
 import time
-from decimal import Decimal
 
 import pytest
 

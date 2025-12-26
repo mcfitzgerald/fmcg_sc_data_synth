@@ -1,6 +1,5 @@
-from dataclasses import dataclass
-from typing import Dict
 import enum
+from dataclasses import dataclass
 
 
 class ProductCategory(enum.Enum):
@@ -39,7 +38,7 @@ class Product:
         """Calculates volume in cubic meters."""
         return (self.length_cm * self.width_cm * self.height_cm) / 1_000_000
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if not self.id:
             raise ValueError("Product ID cannot be empty")
 
@@ -52,7 +51,7 @@ class Recipe:
 
     product_id: str
     # Map of Ingredient ID -> Quantity Required per Case
-    ingredients: Dict[str, float]
+    ingredients: dict[str, float]
 
     # Manufacturing Physics
     run_rate_cases_per_hour: float
