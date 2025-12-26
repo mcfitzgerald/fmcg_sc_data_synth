@@ -8,8 +8,10 @@ from prism_sim.network.core import (
     Link,
     NodeType,
     Order,
+    OrderLine,
     ProductionOrder,
     Shipment,
+    ShipmentStatus,
 )
 from prism_sim.simulation.builder import WorldBuilder
 from prism_sim.simulation.demand import POSEngine
@@ -182,9 +184,14 @@ class Orchestrator:
 
         Distributes produced goods evenly across RDCs (simplified logic).
         """
-        from prism_sim.network.core import OrderLine, ShipmentStatus
-
         shipments: list[Shipment] = []
+
+        # Get default lead time from config
+        default_lead_time = (
+            self.config.get("simulation_parameters", {})
+            .get("logistics", {})
+            .get("default_lead_time_days", 3.0)
+        )
 
         # Get list of RDC IDs
         rdc_ids = [
@@ -197,7 +204,7 @@ class Orchestrator:
         shipment_counter = 0
 
         for batch in batches:
-            if batch.status.value == "hold" or batch.status.value == "rejected":
+            if batch.status.value in {"hold", "rejected"}:
                 # Don't ship held/rejected batches
                 continue
 
@@ -207,7 +214,7 @@ class Orchestrator:
             for rdc_id in rdc_ids:
                 # Find the link from plant to RDC
                 link = self._find_link(batch.plant_id, rdc_id)
-                lead_time = link.lead_time_days if link else 3.0
+                lead_time = link.lead_time_days if link else default_lead_time
 
                 shipment_counter += 1
                 shipment = Shipment(

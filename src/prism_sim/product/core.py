@@ -11,9 +11,7 @@ class ProductCategory(enum.Enum):
 
 @dataclass
 class Product:
-    """
-    Represents a SKU (Stock Keeping Unit) with physical supply chain attributes.
-    """
+    """Represents a SKU (Stock Keeping Unit) with physical supply chain attributes."""
 
     id: str
     name: str
@@ -45,9 +43,7 @@ class Product:
 
 @dataclass
 class Recipe:
-    """
-    Bill of Materials (BOM) for producing a Product.
-    """
+    """Bill of Materials (BOM) for producing a Product."""
 
     product_id: str
     # Map of Ingredient ID -> Quantity Required per Case

@@ -60,6 +60,8 @@ class TransformEngine:
         self.backup_supplier_cost_premium = mfg_config.get(
             "backup_supplier_cost_premium", 0.25
         )
+        self.default_yield_percent = mfg_config.get("default_yield_percent", 98.5)
+        self.recall_batch_trigger_day = mfg_config.get("recall_batch_trigger_day", 30)
 
         # SPOF Configuration
         spof_config = mfg_config.get("spof", {})
@@ -70,6 +72,7 @@ class TransformEngine:
         self.backup_supplier_id = spof_config.get(
             "backup_supplier_id", "SUP-SURF-BACKUP"
         )
+        self.spof_warning_threshold = spof_config.get("warning_threshold", 10.0)
 
         # Initialize plant states
         self._plant_states: dict[str, PlantState] = {}
@@ -144,7 +147,7 @@ class TransformEngine:
             return None
 
         # Check raw material availability (SPOF logic)
-        material_available, material_shortage = self._check_material_availability(
+        material_available, _material_shortage = self._check_material_availability(
             order.plant_id, order.product_id, order.quantity_cases
         )
 
@@ -243,7 +246,7 @@ class TransformEngine:
             ing_idx = self.state.product_id_to_idx.get(ingredient_id)
 
             if plant_idx is None or ing_idx is None:
-                # Can't find indices - assume unlimited supply for non-tracked ingredients
+                # Can't find indices - assume unlimited for non-tracked ingredients
                 continue
 
             available_qty = float(self.state.inventory[plant_idx, ing_idx])
@@ -302,7 +305,7 @@ class TransformEngine:
         if (
             not self._recall_batch_created
             and order.product_id == "SKU-DET-001"
-            and current_day >= 30  # Schedule recall batch after day 30
+            and current_day >= self.recall_batch_trigger_day
         ):
             self._recall_batch_created = True
             batch_id = "B-2024-RECALL-001"
@@ -330,7 +333,7 @@ class TransformEngine:
             quantity_cases=quantity,
             status=status,
             ingredients_consumed=ingredients_consumed,
-            yield_percent=98.5,  # Typical yield
+            yield_percent=self.default_yield_percent,
             notes=notes,
         )
 
@@ -355,7 +358,7 @@ class TransformEngine:
                 available = float(self.state.inventory[plant_idx, ing_idx])
                 spof_status["plants"][plant_id] = {
                     "available_qty": available,
-                    "is_constrained": available < 10.0,  # Threshold for SPOF warning
+                    "is_constrained": available < self.spof_warning_threshold,
                 }
 
         return spof_status

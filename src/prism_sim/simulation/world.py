@@ -3,9 +3,7 @@ from prism_sim.product.core import Product, Recipe
 
 
 class World:
-    """
-    The container for the static structure of the supply chain.
-    """
+    """The container for the static structure of the supply chain."""
 
     def __init__(self) -> None:
         self.nodes: dict[str, Node] = {}

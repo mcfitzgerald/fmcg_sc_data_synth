@@ -12,9 +12,7 @@ class NodeType(enum.Enum):
 
 @dataclass
 class Node:
-    """
-    Abstract base representing a location in the supply chain network.
-    """
+    """Abstract base representing a location in the supply chain network."""
 
     id: str
     name: str
@@ -35,9 +33,7 @@ class Node:
 
 @dataclass
 class Link:
-    """
-    Abstract base representing a logistics route between two nodes.
-    """
+    """Abstract base representing a logistics route between two nodes."""
 
     id: str
     source_id: str

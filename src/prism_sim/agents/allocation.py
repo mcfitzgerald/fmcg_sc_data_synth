@@ -14,88 +14,90 @@ class AllocationAgent:
     def __init__(self, state: StateManager) -> None:
         self.state = state
 
-    def allocate_orders(self, orders: list[Order]) -> list[Order]:
-        """
-        Processes orders against available inventory at the source.
-        Modifies order quantities in-place based on availability.
-        Updates (decrements) source inventory immediately.
-
-        Returns:
-            List of allocated orders (may be fewer if some are fully cancelled,
-            though typically we just reduce qty to 0).
-        """
-        # 1. Group by Source Node
+    def _group_orders_by_source(
+        self, orders: list[Order]
+    ) -> dict[str, list[Order]]:
+        """Group orders by their source node."""
         orders_by_source: dict[str, list[Order]] = {}
         for order in orders:
             if order.source_id not in orders_by_source:
                 orders_by_source[order.source_id] = []
             orders_by_source[order.source_id].append(order)
+        return orders_by_source
 
-        allocated_orders = []
+    def _calculate_demand_vector(self, source_orders: list[Order]) -> np.ndarray:
+        """Calculate total demand per product for a list of orders."""
+        demand_vector = np.zeros(self.state.n_products)
+        for order in source_orders:
+            for line in order.lines:
+                p_idx = self.state.product_id_to_idx.get(line.product_id)
+                if p_idx is not None:
+                    demand_vector[p_idx] += line.quantity
+        return demand_vector
 
-        # 2. Process each source independently
+    def _calculate_fill_ratios(
+        self, demand_vector: np.ndarray, current_inv: np.ndarray
+    ) -> np.ndarray:
+        """Calculate fill ratios based on demand vs inventory."""
+        with np.errstate(divide="ignore", invalid="ignore"):
+            fill_ratios = np.where(
+                demand_vector > current_inv, current_inv / demand_vector, 1.0
+            )
+            return np.nan_to_num(fill_ratios, nan=1.0)
+
+    def _apply_ratios_to_orders(
+        self, source_orders: list[Order], fill_ratios: np.ndarray
+    ) -> list[Order]:
+        """Apply fill ratios to orders and return non-empty orders."""
+        allocated = []
+        for order in source_orders:
+            new_lines = []
+            for line in order.lines:
+                p_idx = self.state.product_id_to_idx.get(line.product_id)
+                if p_idx is not None:
+                    ratio = fill_ratios[p_idx]
+                    new_qty = line.quantity * ratio
+                    if new_qty > EPSILON:
+                        line.quantity = new_qty
+                        new_lines.append(line)
+                else:
+                    new_lines.append(line)
+            order.lines = new_lines
+            if new_lines:
+                allocated.append(order)
+        return allocated
+
+    def allocate_orders(self, orders: list[Order]) -> list[Order]:
+        """
+        Processes orders against available inventory at the source.
+
+        Modifies order quantities in-place based on availability.
+        Updates (decrements) source inventory immediately.
+
+        Returns:
+            List of allocated orders (may be fewer if some are fully cancelled).
+        """
+        orders_by_source = self._group_orders_by_source(orders)
+        allocated_orders: list[Order] = []
+
         for source_id, source_orders in orders_by_source.items():
             source_idx = self.state.node_id_to_idx.get(source_id)
             if source_idx is None:
-                # Source not found in state (e.g. external supplier infinite capacity?)
-                # For now, assume infinite if not in state tracking (or log warning)
-                # But our RDCs are in state. Suppliers might not be fully tracked yet.
-                # If source is external supplier, we might assume 100% fill for now
-                # unless we track supplier inventory.
-                # Let's check if it's in the state mapping.
+                # External supplier - assume 100% fill
                 allocated_orders.extend(source_orders)
                 continue
 
-            # 3. Calculate Total Demand per Product for this Source
-            # We need a vector of demand: [Products]
-            demand_vector = np.zeros(self.state.n_products)
-
-            # Map to keep track of which order requested what for easy update
-            # order_requests[order_idx][product_idx] = qty
-            # This is slightly expensive, but Python loops over orders are inevitable here
-
-            for order in source_orders:
-                for line in order.lines:
-                    p_idx = self.state.product_id_to_idx.get(line.product_id)
-                    if p_idx is not None:
-                        demand_vector[p_idx] += line.quantity
-
-            # 4. Check Inventory
+            # Calculate demand and fill ratios
+            demand_vector = self._calculate_demand_vector(source_orders)
             current_inv = self.state.inventory[source_idx, :]
+            fill_ratios = self._calculate_fill_ratios(demand_vector, current_inv)
 
-            # 5. Calculate Fill Rates (Vectorized)
-            # if demand > inv: ratio = inv / demand, else 1.0
-            # Handle divide by zero
-            with np.errstate(divide="ignore", invalid="ignore"):
-                fill_ratios = np.where(
-                    demand_vector > current_inv, current_inv / demand_vector, 1.0
-                )
-                # Clean up NaNs from 0/0
-                fill_ratios = np.nan_to_num(fill_ratios, nan=1.0)
-
-            # 6. Decrement Inventory
-            # We remove what we are about to ship
-            # allocated_qty = min(demand, inv) -> effectively demand * fill_ratio
+            # Decrement inventory
             allocated_total = demand_vector * fill_ratios
             self.state.inventory[source_idx, :] -= allocated_total
 
-            # 7. Update Orders
-            for order in source_orders:
-                new_lines = []
-                for line in order.lines:
-                    p_idx = self.state.product_id_to_idx.get(line.product_id)
-                    if p_idx is not None:
-                        ratio = fill_ratios[p_idx]
-                        new_qty = line.quantity * ratio
-                        if new_qty > EPSILON:  # Filter out near-zero
-                            line.quantity = new_qty
-                            new_lines.append(line)
-                    else:
-                        # Product not tracked? Keep it?
-                        new_lines.append(line)
-
-                order.lines = new_lines
-                if new_lines:
-                    allocated_orders.append(order)
+            # Apply ratios to orders
+            allocated = self._apply_ratios_to_orders(source_orders, fill_ratios)
+            allocated_orders.extend(allocated)
 
         return allocated_orders

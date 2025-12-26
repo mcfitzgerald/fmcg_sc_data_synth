@@ -1,5 +1,6 @@
 import numpy as np
 
+from prism_sim.simulation.demand import PromoConfig
 from prism_sim.simulation.orchestrator import Orchestrator
 
 
@@ -25,13 +26,15 @@ def test_promo_lift():
     store_id = "STORE-MEGA-NE-001"
 
     engine.calendar.add_promo(
-        promo_id="PROMO-TEST",
-        start_week=1,
-        end_week=1,
-        lift=3.0,
-        hangover_lift=0.5,
-        products=[product_id],
-        stores=[store_id],
+        PromoConfig(
+            promo_id="PROMO-TEST",
+            start_week=1,
+            end_week=1,
+            lift=3.0,
+            hangover_lift=0.5,
+            products=[product_id],
+            stores=[store_id],
+        )
     )
 
     promo_demand = engine.generate_demand(day=1)

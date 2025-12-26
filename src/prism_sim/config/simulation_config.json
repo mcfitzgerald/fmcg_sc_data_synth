@@ -1,5 +1,8 @@
 {
   "simulation_parameters": {
+    "calendar": {
+      "weeks_per_year": 52
+    },
     "agents": {
       "replenishment": {
         "target_days_supply": 7.0,
@@ -20,7 +23,8 @@
       "constraints": {
         "truck_max_weight_kg": 20000.0,
         "truck_max_volume_m3": 60.0
-      }
+      },
+      "default_lead_time_days": 3.0
     },
     "manufacturing": {
       "target_days_supply": 14.0,
@@ -29,10 +33,13 @@
       "production_lead_time_days": 3,
       "production_hours_per_day": 16.0,
       "backup_supplier_cost_premium": 0.25,
+      "default_yield_percent": 98.5,
+      "recall_batch_trigger_day": 30,
       "spof": {
         "ingredient_id": "ING-SURF-SPEC",
         "primary_supplier_id": "SUP-SURF-SPEC",
-        "backup_supplier_id": "SUP-SURF-BACKUP"
+        "backup_supplier_id": "SUP-SURF-BACKUP",
+        "warning_threshold": 10.0
       },
       "initial_plant_inventory": {
         "ING-SURF-SPEC": 1000.0,

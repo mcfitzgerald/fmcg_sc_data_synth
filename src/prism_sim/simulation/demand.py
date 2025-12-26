@@ -18,11 +18,25 @@ class PromoEffect:
     is_hangover: bool = False
 
 
+@dataclass
+class PromoConfig:
+    """Configuration for a promotional event."""
+
+    promo_id: str
+    start_week: int
+    end_week: int
+    lift: float
+    hangover_lift: float
+    products: list[str]
+    stores: list[str]
+
+
 class PromoCalendar:
     """Manages promotional events and their lift/hangover effects."""
 
-    def __init__(self, world: World) -> None:
+    def __init__(self, world: World, weeks_per_year: int = 52) -> None:
         self.world = world
+        self.weeks_per_year = weeks_per_year
         self.n_nodes = len(world.nodes)
         self.n_products = len(world.products)
         # week -> [Nodes, Products] multiplier tensor
@@ -39,51 +53,54 @@ class PromoCalendar:
     def _get_week_array(self) -> np.ndarray:
         return np.ones((self.n_nodes, self.n_products), dtype=np.float32)
 
-    def add_promo(
+    def _apply_multiplier_to_cells(
         self,
-        promo_id: str,
-        start_week: int,
-        end_week: int,
-        lift: float,
-        hangover_lift: float,
-        products: list[str],
+        week: int,
         stores: list[str],
+        products: list[str],
+        multiplier: float,
+        only_if_default: bool = False,
     ) -> None:
-        """Adds a promotional event to the calendar."""
-        for week in range(start_week, end_week + 1):
-            if week not in self.promo_index:
-                self.promo_index[week] = self._get_week_array()
+        """Apply a multiplier to specific store/product combinations for a week."""
+        if week not in self.promo_index:
+            self.promo_index[week] = self._get_week_array()
 
-            for s_id in stores:
-                n_idx = self.node_to_idx.get(s_id)
-                if n_idx is None:
+        for s_id in stores:
+            n_idx = self.node_to_idx.get(s_id)
+            if n_idx is None:
+                continue
+            for p_id in products:
+                p_idx = self.prod_to_idx.get(p_id)
+                if p_idx is None:
                     continue
-                for p_id in products:
-                    p_idx = self.prod_to_idx.get(p_id)
-                    if p_idx is None:
-                        continue
+                if only_if_default:
+                    # Only apply if no active promo exists
+                    if self.promo_index[week][n_idx, p_idx] == 1.0:
+                        self.promo_index[week][n_idx, p_idx] = multiplier
+                else:
                     # Apply max lift for overlapping promos
                     self.promo_index[week][n_idx, p_idx] = float(
-                        np.maximum(self.promo_index[week][n_idx, p_idx], lift)
+                        np.maximum(self.promo_index[week][n_idx, p_idx], multiplier)
                     )
 
-        # Apply hangover effect to the following week
-        h_week = end_week + 1
-        if h_week <= 52:
-            if h_week not in self.promo_index:
-                self.promo_index[h_week] = self._get_week_array()
+    def add_promo(self, config: PromoConfig) -> None:
+        """Adds a promotional event to the calendar."""
+        # Apply lift for promo weeks
+        for week in range(config.start_week, config.end_week + 1):
+            self._apply_multiplier_to_cells(
+                week, config.stores, config.products, config.lift
+            )
 
-            for s_id in stores:
-                n_idx = self.node_to_idx.get(s_id)
-                if n_idx is None:
-                    continue
-                for p_id in products:
-                    p_idx = self.prod_to_idx.get(p_id)
-                    if p_idx is None:
-                        continue
-                    # Only apply hangover if no active promo exists
-                    if self.promo_index[h_week][n_idx, p_idx] == 1.0:
-                        self.promo_index[h_week][n_idx, p_idx] = hangover_lift
+        # Apply hangover effect to the following week
+        h_week = config.end_week + 1
+        if h_week <= self.weeks_per_year:
+            self._apply_multiplier_to_cells(
+                h_week,
+                config.stores,
+                config.products,
+                config.hangover_lift,
+                only_if_default=True,
+            )
 
     def get_weekly_multipliers(self, week: int, state: StateManager) -> np.ndarray:
         """Returns the demand multipliers for a given week."""
@@ -101,7 +118,11 @@ class POSEngine:
         self.world = world
         self.state = state
         self.config = config
-        self.calendar = PromoCalendar(world)
+
+        # Get calendar config
+        calendar_config = config.get("simulation_parameters", {}).get("calendar", {})
+        weeks_per_year = calendar_config.get("weeks_per_year", 52)
+        self.calendar = PromoCalendar(world, weeks_per_year)
 
         # Base Demand (Cases per day) - Randomized for now per Store/SKU
         # Shape: [Nodes, Products]
