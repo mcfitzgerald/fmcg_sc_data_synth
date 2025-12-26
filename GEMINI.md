@@ -1,5 +1,13 @@
 # PRIME DIRECTIVE
 
+## "Specflow" Spec-Driven Development
+
+We are using intent and roadmap spec-driven development as desribed by the specflow standard: https://www.specflow.com
+
+Key reference documents are located in `./docs/planning/`
+
+Always read `./docs/planning/intent.md` and `./docs/planning/roadmap.md`
+
 ## Coding and Engineering Standards
 
 Build modularly, separating concerns and first-principle components for reusabiltiy and extensibility

@@ -1,5 +1,13 @@
 # PRIME DIRECTIVE
 
+## "Specflow" Spec-Driven Development
+
+We are using intent and roadmap spec-driven development as desribed by the specflow standard: https://www.specflow.com
+
+Key reference documents are located in `./docs/planning/`
+
+Always read `./docs/planning/intent.md` and `./docs/planning/roadmap.md`
+
 ## Coding and Engineering Standards
 
 Build modularly, separating concerns and first-principle components for reusabiltiy and extensibility
@@ -22,7 +30,7 @@ Don't reinvent the wheel. Search web for robust libraries that are fit for the p
 
 Commit and push changes with git after new code, code changes, bug fixes, new features. 
 
-Update `CHANGELOG.md`, `README.md`, `docs/`, and `pyproject.toml` when committing changes. Use semantic versioning
+Update `CHANGELOG.md`, `README.md`, `docs/`, and `pyproject.toml` when committing changes. Use semantic versioning.
 
 Unless noted otherwise, do not plan or code for backwards compatibility
 
