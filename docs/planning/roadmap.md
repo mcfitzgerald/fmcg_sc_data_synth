@@ -28,10 +28,10 @@ This roadmap outlines the sequential milestones to transition from a statistical
 
 ## Milestone 4: Fulfill & Logistics Physics
 *   **Goal:** Move the goods and enforce constraints (Levels 10-11).
-*   **Task 4.1:** **Allocation Agent:** Implement the "Triangle Decision" logic (Fill, Short, or Transfer?) for the "Big 4" network.
-*   **Task 4.2:** **Tetris Engine:** Implement the Truck Bin-Packing logic (Weigh Out vs. Cube Out).
-*   **Task 4.3:** **Logistics Costing:** Calculate freight costs based on real shipment profiles (Weight/Distance).
-*   **Task 4.4:** **Transit Physics:** Enforce lead times via `Link` objects; inventory must sit in `In_Transit` state before arriving.
+*   **Task 4.1:** [x] **Allocation Agent:** Implement the "Triangle Decision" logic (Fill, Short, or Transfer?) for the "Big 4" network.
+*   **Task 4.2:** [x] **Tetris Engine:** Implement the Truck Bin-Packing logic (Weigh Out vs. Cube Out).
+*   **Task 4.3:** [x] **Logistics Costing:** Calculate freight costs based on real shipment profiles (Weight/Distance).
+*   **Task 4.4:** [x] **Transit Physics:** Enforce lead times via `Link` objects; inventory must sit in `In_Transit` state before arriving.
 
 ## Milestone 5: Manufacturing & Supply (Transform)
 *   **Goal:** Make the goods (Levels 5-7).
