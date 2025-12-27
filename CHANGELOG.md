@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2025-12-27
+
+### Added
+- **Simulation Writer (Task 7.2):** Implemented `SimulationWriter` to export SCOR-DS compatible datasets (Orders, Shipments, Batches, Inventory) to CSV/JSON.
+- **Triangle Report (Task 7.3):** Added automated generation of "The Triangle Report," summarizing Service (Fill Rate), Cost (Truck Fill), and Cash (Inventory Turns) performance.
+- **Reporting Infrastructure:** Integrated data collection directly into the `Orchestrator` loop for seamless end-of-run reporting.
+
 ## [0.5.0] - 2025-12-26
 
 ### Added
