@@ -302,11 +302,7 @@ class PhantomInventoryQuirk:
             shrink_qty = current_qty * shrink_factor
 
             # Apply to actual inventory
-            if hasattr(state, "actual_inventory"):
-                state.actual_inventory[node_idx, prod_idx] -= shrink_qty
-            else:
-                # Fallback: apply directly to inventory
-                state.inventory[node_idx, prod_idx] -= shrink_qty
+            state.actual_inventory[node_idx, prod_idx] -= shrink_qty
 
             self.total_shrinkage += shrink_qty
 
@@ -357,13 +353,9 @@ class PhantomInventoryQuirk:
             prod_idx = state.product_id_to_idx.get(event.product_id)
 
             if node_idx is not None and prod_idx is not None:
-                has_actual = hasattr(state, "actual_inventory")
-                has_perceived = hasattr(state, "perceived_inventory")
-                if has_actual and has_perceived:
-                    # Copy actual to perceived for this cell
-                    # Note: These attrs added dynamically when phantom_inventory enabled
-                    actual_val = state.actual_inventory[node_idx, prod_idx]  # type: ignore[attr-defined]
-                    state.perceived_inventory[node_idx, prod_idx] = actual_val  # type: ignore[attr-defined]
+                # Sync perceived to actual for this cell
+                actual_val = state.actual_inventory[node_idx, prod_idx]
+                state.perceived_inventory[node_idx, prod_idx] = actual_val
 
         return events
 
@@ -373,17 +365,11 @@ class PhantomInventoryQuirk:
 
         Phantom stock is inventory the system thinks exists but doesn't.
         """
-        has_actual = hasattr(state, "actual_inventory")
-        has_perceived = hasattr(state, "perceived_inventory")
-        if has_actual and has_perceived:
-            # Note: These attrs added dynamically when phantom_inventory enabled
-            perceived = state.perceived_inventory  # type: ignore[attr-defined]
-            actual = state.actual_inventory  # type: ignore[attr-defined]
-            result: np.ndarray = perceived - actual
-            return result
-
-        # No dual tracking, return zeros
-        return np.zeros_like(state.inventory)
+        # Note: These attrs added dynamically when phantom_inventory enabled
+        perceived = state.perceived_inventory
+        actual = state.actual_inventory
+        result: np.ndarray = perceived - actual
+        return result
 
     def get_total_phantom_stock(self, state: StateManager) -> float:
         """Returns total phantom stock across all positions."""

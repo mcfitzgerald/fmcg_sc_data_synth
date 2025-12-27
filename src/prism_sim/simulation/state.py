@@ -29,11 +29,15 @@ class StateManager:
         # Shape: [Nodes, Products]
         # Represents: Inventory level of Product P at Node N
         # Perceived Inventory: What the WMS/ERP thinks we have
-        self.perceived_inventory = np.zeros((self.n_nodes, self.n_products), dtype=np.float32)
+        self.perceived_inventory = np.zeros(
+            (self.n_nodes, self.n_products), dtype=np.float32
+        )
 
         # Actual Inventory: What is physically in the bin (Ground Truth)
         # In a perfect world, Perceived == Actual.
-        self.actual_inventory = np.zeros((self.n_nodes, self.n_products), dtype=np.float32)
+        self.actual_inventory = np.zeros(
+            (self.n_nodes, self.n_products), dtype=np.float32
+        )
 
         # Shape: [Nodes, Products]
         # Represents: Backlog quantity

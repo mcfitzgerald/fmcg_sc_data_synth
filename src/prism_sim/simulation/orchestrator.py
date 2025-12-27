@@ -113,72 +113,28 @@ class Orchestrator:
         print("Simulation Complete.")
 
     def _step(self, day: int) -> None:
-        # --- Milestone 6: Risk & Quirks Start ---
-        # 0. Trigger Risk Events
-        triggered_risks = self.risks.check_triggers(day)
-        if triggered_risks:
-            print(
-                f"Day {day:03}: RISK EVENTS TRIGGERED: "
-                f"{[e.event_code for e in triggered_risks]}"
-            )
-
-        # Track active disruptions for Resilience
-        for _ in triggered_risks:
-            # Assuming event implies disruption at some node?
-            # For now, generic disruption start.
-            pass
-
-        # Apply Phantom Inventory Shrinkage & Discovery
-        self.quirks.apply_shrinkage(self.state, day)
-        self.quirks.process_discoveries(self.state, day)
-        # ----------------------------------------
+        # 0. Risk & Quirks: Start of Day
+        self._apply_pre_step_quirks(day)
 
         # 1. Generate Demand (POS)
-        # Shape: [Nodes, Products]
         daily_demand = self.pos_engine.generate_demand(day)
-
-        # --- Milestone 6: Optimism Bias ---
-        product_ids = [
-            self.state.product_idx_to_id[i] for i in range(self.state.n_products)
-        ]
-        daily_demand = self.quirks.apply_optimism_bias(daily_demand, product_ids, day)
-        # ----------------------------------
+        daily_demand = self._apply_demand_quirks(daily_demand, day)
 
         # 2. Consume Inventory (Sales)
-        # Note: In real life, you can only sell what you have (OSA).
-        # For now, we allow negative inventory (Backlog)
         self.state.update_inventory_batch(-daily_demand)
 
         # 3. Replenishment Decision (The "Pull" Signal)
-        # Agents look at current state and place orders
         raw_orders = self.replenisher.generate_orders(day, daily_demand)
 
         # 4. Allocation (Milestone 4.1)
-        # Check source inventory, apply rationing
         allocated_orders = self.allocator.allocate_orders(raw_orders)
 
         # 5. Logistics (Milestone 4.2)
-        # Create shipments (Tetris)
         new_shipments = self.logistics.create_shipments(allocated_orders, day)
-
-        # --- Milestone 6: Logistics Quirks & Risks ---
-        delay_multiplier = self.risks.get_logistics_delay_multiplier()
-        
-        # Apply Port Congestion (adds days)
-        self.quirks.apply_port_congestion(new_shipments)
-
-        for shipment in new_shipments:
-            # Apply Risk Multiplier to transit time
-            if delay_multiplier > 1.0:
-                original_duration = shipment.arrival_day - shipment.creation_day
-                new_duration = original_duration * delay_multiplier
-                shipment.arrival_day = shipment.creation_day + int(new_duration)
-        # ---------------------------------------------
-
+        self._apply_logistics_quirks_and_risks(new_shipments)
         self.state.active_shipments.extend(new_shipments)
 
         # 6. Transit & Arrival (Milestone 4.3)
-        # Advance shipment states
         active, arrived = self.logistics.update_shipments(
             self.state.active_shipments, day
         )
@@ -188,19 +144,15 @@ class Orchestrator:
         self._process_arrivals(arrived)
 
         # 8. Manufacturing: MRP (Milestone 5.1)
-        # Generate Production Orders based on RDC inventory
         new_production_orders = self.mrp_engine.generate_production_orders(
             day, daily_demand
         )
         self.active_production_orders.extend(new_production_orders)
 
         # 9. Manufacturing: Production (Milestone 5.2)
-        # Process Production Orders with finite capacity and changeover
         updated_orders, new_batches = self.transform_engine.process_production_orders(
             self.active_production_orders, day
         )
-
-        # Filter out completed orders
         self.active_production_orders = [
             o for o in updated_orders if o.status.value != "complete"
         ]
@@ -208,57 +160,106 @@ class Orchestrator:
 
         # 10. Ship finished goods from Plants to RDCs
         plant_shipments = self._create_plant_shipments(new_batches, day)
-
-        # --- Milestone 6: Plant Shipment Delays ---
-        # Apply Port Congestion (adds days)
-        self.quirks.apply_port_congestion(plant_shipments)
-        
-        for shipment in plant_shipments:
-             # Risk multiplier
-             if delay_multiplier > 1.0:
-                 original_duration = shipment.arrival_day - shipment.creation_day
-                 new_duration = original_duration * delay_multiplier
-                 shipment.arrival_day = shipment.creation_day + int(new_duration)
-        # ------------------------------------------
-
+        self._apply_logistics_quirks_and_risks(plant_shipments)
         self.state.active_shipments.extend(plant_shipments)
 
-        # --- Milestone 6: Validation & Resilience ---
-        # 11. Resilience Check
-        # Check active risks recovery
+        # 11. Validation & Resilience
+        self._apply_post_step_validation(day, arrived)
+
+        # 12. Monitors & Data Logging
+        self._record_daily_metrics(new_shipments, plant_shipments, arrived, day)
+        self._log_daily_data(
+            raw_orders, new_shipments, plant_shipments, new_batches, day
+        )
+
+        # 13. Logging / Metrics (Simple Print)
+        self._print_daily_status(
+            day, daily_demand, raw_orders, new_shipments, arrived, new_batches
+        )
+
+    def _apply_pre_step_quirks(self, day: int) -> None:
+        """Trigger risk events and apply inventory quirks."""
+        triggered_risks = self.risks.check_triggers(day)
+        if triggered_risks:
+            print(
+                f"Day {day:03}: RISK EVENTS TRIGGERED: "
+                f"{[e.event_code for e in triggered_risks]}"
+            )
+        self.quirks.apply_shrinkage(self.state, day)
+        self.quirks.process_discoveries(self.state, day)
+
+    def _apply_demand_quirks(self, demand: np.ndarray, day: int) -> np.ndarray:
+        """Apply optimism bias to generated demand."""
+        product_ids = [
+            self.state.product_idx_to_id[i] for i in range(self.state.n_products)
+        ]
+        return self.quirks.apply_optimism_bias(demand, product_ids, day)
+
+    def _apply_logistics_quirks_and_risks(self, shipments: list[Shipment]) -> None:
+        """Apply delays and risk multipliers to shipments."""
+        if not shipments:
+            return
+
+        delay_multiplier = self.risks.get_logistics_delay_multiplier()
+        self.quirks.apply_port_congestion(shipments)
+
+        if delay_multiplier > 1.0:
+            for shipment in shipments:
+                original_duration = shipment.arrival_day - shipment.creation_day
+                new_duration = original_duration * delay_multiplier
+                shipment.arrival_day = shipment.creation_day + int(new_duration)
+
+    def _apply_post_step_validation(self, day: int, arrived: list[Shipment]) -> None:
+        """Check for risk recovery and run physics audit."""
         recovered = self.risks.check_recovery(day)
         if recovered:
-             print(f"Day {day:03}: RISK RECOVERY: {recovered}")
+            print(f"Day {day:03}: RISK RECOVERY: {recovered}")
 
-        # TTS/TTR (Placeholder logic for now, needs Node disruption state mapping)
-        # self.resilience.check_survival(day)
-
-        # 12. Monitors
-        # Truck Fill
-        log_config = self.config.get("simulation_parameters", {}).get("logistics", {})
-        max_weight = log_config.get("constraints", {}).get("truck_max_weight_kg", 20000.0)
-
-        for s in new_shipments + plant_shipments:
-             # Calculate fill rate (Weight)
-             fill_rate = min(1.0, s.total_weight_kg / max_weight)
-             self.monitor.record_truck_fill(fill_rate)
-
-        # Physics Audit
         violations = self.auditor.check_kinematic_consistency(arrived, day)
         if violations:
             print(f"Day {day:03}: PHYSICS VIOLATIONS: {violations}")
 
-        # --------------------------------------------
+    def _record_daily_metrics(
+        self,
+        new_shipments: list[Shipment],
+        plant_shipments: list[Shipment],
+        arrived: list[Shipment],
+        day: int
+    ) -> None:
+        """Record simulation metrics for monitoring."""
+        log_config = self.config.get("simulation_parameters", {}).get("logistics", {})
+        constraints = log_config.get("constraints", {})
+        max_weight = constraints.get("truck_max_weight_kg", 20000.0)
 
-        # 13. Data Logging (Milestone 7)
+        for s in new_shipments + plant_shipments:
+            fill_rate = min(1.0, s.total_weight_kg / max_weight)
+            self.monitor.record_truck_fill(fill_rate)
+
+    def _log_daily_data(
+        self,
+        raw_orders: list[Order],
+        new_shipments: list[Shipment],
+        plant_shipments: list[Shipment],
+        new_batches: list[Batch],
+        day: int
+    ) -> None:
+        """Log data to the simulation writer."""
         self.writer.log_orders(raw_orders, day)
         self.writer.log_shipments(new_shipments + plant_shipments, day)
         self.writer.log_batches(new_batches, day)
-        # Log inventory every 7 days to keep file size manageable
         if day % 7 == 0:
             self.writer.log_inventory(self.state, self.world, day)
 
-        # 14. Logging / Metrics (Simple Print)
+    def _print_daily_status(  # noqa: PLR0913
+        self,
+        day: int,
+        daily_demand: np.ndarray,
+        raw_orders: list[Order],
+        new_shipments: list[Shipment],
+        arrived: list[Shipment],
+        new_batches: list[Batch]
+    ) -> None:
+        """Print high-level daily simulation status."""
         total_demand = np.sum(daily_demand)
         total_ordered = sum(
             line.quantity for order in raw_orders for line in order.lines
@@ -280,6 +281,7 @@ class Orchestrator:
             f"InTransit={len(self.state.active_shipments)} trucks"
         )
 
+
     def save_results(self) -> None:
         """Export all collected data."""
         report = self.monitor.get_report()
@@ -291,31 +293,34 @@ class Orchestrator:
         [Task 7.3]
         """
         report = self.monitor.get_report()
-        
+
         # Calculate Service (LIFR approx from backlogs)
         # Note: In our current simple state, negative inventory is backlog.
         # So we can look at actual vs perceived or just positive vs negative.
         total_backlog = np.sum(np.maximum(0, -self.state.actual_inventory))
         total_inventory = np.sum(np.maximum(0, self.state.actual_inventory))
-        
+
         oee = report.get("oee", {}).get("mean", 0)
         truck_fill = report.get("truck_fill", {}).get("mean", 0)
-        
+
+        # Arbitrary scaling for demo
+        service_index = 100.0 - (total_backlog / 1000.0)
+        inv_turns = report.get("inventory_turns", {}).get("mean", 0)
+
         summary = [
             "==================================================",
             "        THE SUPPLY CHAIN TRIANGLE REPORT          ",
             "==================================================",
-            f"1. SERVICE (Fill Rate Index):   {100.0 - (total_backlog/1000.0):.2f}%", # Arbitrary scaling for demo
-            f"2. CASH (Inventory Turns):      {report.get('inventory_turns', {}).get('mean', 0):.2f}x",
-            f"3. COST (Truck Fill Rate):      {truck_fill*100.0:.1f}%",
+            f"1. SERVICE (Fill Rate Index):   {service_index:.2f}%",
+            f"2. CASH (Inventory Turns):      {inv_turns:.2f}x",
+            f"3. COST (Truck Fill Rate):      {truck_fill * 100.0:.1f}%",
             "--------------------------------------------------",
-            f"Manufacturing OEE:              {oee*100.0:.1f}%",
+            f"Manufacturing OEE:              {oee * 100.0:.1f}%",
             f"Total System Inventory:         {total_inventory:,.0f} cases",
             f"Total Backlog:                  {total_backlog:,.0f} cases",
-            "=================================================="
+            "==================================================",
         ]
         return "\n".join(summary)
-
 
     def _process_arrivals(self, arrived_shipments: list[Shipment]) -> None:
         for shipment in arrived_shipments:
@@ -327,7 +332,9 @@ class Orchestrator:
                 p_idx = self.state.product_id_to_idx.get(line.product_id)
                 if p_idx is not None:
                     # Update both perceived and actual inventory
-                    self.state.update_inventory(shipment.target_id, line.product_id, line.quantity)
+                    self.state.update_inventory(
+                        shipment.target_id, line.product_id, line.quantity
+                    )
 
     def _create_plant_shipments(
         self, batches: list[Batch], current_day: int
@@ -384,7 +391,9 @@ class Orchestrator:
                 plant_idx = self.state.node_id_to_idx.get(batch.plant_id)
                 prod_idx = self.state.product_id_to_idx.get(batch.product_id)
                 if plant_idx is not None and prod_idx is not None:
-                    self.state.update_inventory(batch.plant_id, batch.product_id, -qty_per_rdc)
+                    self.state.update_inventory(
+                        batch.plant_id, batch.product_id, -qty_per_rdc
+                    )
 
                 shipments.append(shipment)
 
@@ -406,7 +415,9 @@ class Orchestrator:
             for line in order.lines:
                 p_idx = self.state.product_id_to_idx.get(line.product_id)
                 if p_idx is not None:
-                    self.state.update_inventory(order.target_id, line.product_id, line.quantity)
+                    self.state.update_inventory(
+                        order.target_id, line.product_id, line.quantity
+                    )
 
 
 if __name__ == "__main__":

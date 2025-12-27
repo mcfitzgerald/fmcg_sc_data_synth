@@ -63,6 +63,17 @@ class TransformEngine:
         self.default_yield_percent = mfg_config.get("default_yield_percent", 98.5)
         self.recall_batch_trigger_day = mfg_config.get("recall_batch_trigger_day", 30)
 
+        # Recall Scenario Config
+        self.recall_scenario = mfg_config.get("recall_scenario", {})
+        self.recall_product_id = self.recall_scenario.get("product_id", "SKU-DET-001")
+        self.recall_batch_id = self.recall_scenario.get(
+            "batch_id", "B-2024-RECALL-001"
+        )
+        self.recall_status_str = self.recall_scenario.get("status", "hold")
+        self.recall_notes = self.recall_scenario.get(
+            "notes", "RECALL: Contaminated sorbitol detected"
+        )
+
         # SPOF Configuration
         spof_config = mfg_config.get("spof", {})
         self.spof_ingredient_id = spof_config.get("ingredient_id", "ING-SURF-SPEC")
@@ -304,13 +315,18 @@ class TransformEngine:
         # Check for deterministic recall batch (Task 5.2 constraint)
         if (
             not self._recall_batch_created
-            and order.product_id == "SKU-DET-001"
+            and order.product_id == self.recall_product_id
             and current_day >= self.recall_batch_trigger_day
         ):
             self._recall_batch_created = True
-            batch_id = "B-2024-RECALL-001"
-            notes = "RECALL: Contaminated sorbitol detected - isolate and quarantine"
-            status = BatchStatus.HOLD
+            batch_id = self.recall_batch_id
+            notes = self.recall_notes
+
+            # Map config string to Enum
+            try:
+                status = BatchStatus(self.recall_status_str.lower())
+            except ValueError:
+                status = BatchStatus.HOLD
         else:
             self._batch_counter += 1
             batch_id = f"B-{current_day:03d}-{self._batch_counter:06d}"

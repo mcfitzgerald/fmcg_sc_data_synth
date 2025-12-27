@@ -1,7 +1,6 @@
 import csv
 import json
 import os
-from dataclasses import asdict
 from typing import Any
 
 from prism_sim.network.core import Batch, Order, Shipment
@@ -92,13 +91,13 @@ class SimulationWriter:
 
         with open(os.path.join(self.output_dir, "metrics.json"), "w") as f:
             json.dump(final_metrics, f, indent=2)
-            
+
         print(f"Simulation data exported to {self.output_dir}")
 
     def _write_csv(self, filename: str, data: list[dict[str, Any]]) -> None:
         if not data:
             return
-            
+
         filepath = os.path.join(self.output_dir, filename)
         keys = data[0].keys()
         with open(filepath, "w", newline="") as f:

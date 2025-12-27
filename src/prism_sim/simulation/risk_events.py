@@ -16,9 +16,7 @@ class RiskEvent:
 
 
 class RiskEventManager:
-    """
-    Manages deterministic risk events that disrupt the supply chain.
-    """
+    """Manages deterministic risk events that disrupt the supply chain."""
 
     def __init__(self, config: dict[str, Any]):
         self.config = config.get("risk_events", {})
@@ -74,7 +72,7 @@ class RiskEventManager:
     def get_logistics_delay_multiplier(self) -> float:
         """
         Calculate cumulative delay multiplier from all active events.
-        
+
         Reads 'delay_multiplier' from event parameters.
         """
         multiplier = 1.0

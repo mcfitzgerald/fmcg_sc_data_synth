@@ -38,6 +38,12 @@
       "backup_supplier_cost_premium": 0.25,
       "default_yield_percent": 98.5,
       "recall_batch_trigger_day": 30,
+      "recall_scenario": {
+        "product_id": "SKU-DET-001",
+        "batch_id": "B-2024-RECALL-001",
+        "status": "hold",
+        "notes": "RECALL: Contaminated sorbitol detected - isolate and quarantine"
+      },
       "spof": {
         "ingredient_id": "ING-SURF-SPEC",
         "primary_supplier_id": "SUP-SURF-SPEC",

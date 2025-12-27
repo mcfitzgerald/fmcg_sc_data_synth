@@ -7,6 +7,8 @@ from prism_sim.network.core import Batch, Shipment, ShipmentStatus
 from prism_sim.simulation.state import StateManager
 from prism_sim.simulation.world import World
 
+MIN_SAMPLES_FOR_VARIANCE = 2
+
 
 @dataclass
 class WelfordAccumulator:
@@ -14,6 +16,7 @@ class WelfordAccumulator:
     Implements Welford's online algorithm for calculating mean and variance
     in a single pass (O(1) update).
     """
+
     count: int = 0
     mean: float = 0.0
     m2: float = 0.0  # Sum of squares of differences from the current mean
@@ -27,13 +30,13 @@ class WelfordAccumulator:
 
     @property
     def variance(self) -> float:
-        if self.count < 2:
+        if self.count < MIN_SAMPLES_FOR_VARIANCE:
             return 0.0
         return self.m2 / (self.count - 1)
 
     @property
     def std_dev(self) -> float:
-        return np.sqrt(self.variance)
+        return float(np.sqrt(self.variance))
 
 
 class RealismMonitor:
@@ -93,24 +96,29 @@ class RealismMonitor:
             "slob": {
                 "mean": self.slob_tracker.mean,
                 "max": self.slob_max_pct,
-                "status": "OK" if self.slob_tracker.mean <= self.slob_max_pct else "HIGH"
+                "status": (
+                    "OK"
+                    if self.slob_tracker.mean <= self.slob_max_pct
+                    else "HIGH"
+                ),
             },
-             "cost_per_case": {
+            "cost_per_case": {
                 "mean": self.cost_tracker.mean,
                 "target": self.cost_range,
                 "status": (
                     "OK"
-                    if self.cost_range[0] <= self.cost_tracker.mean <= self.cost_range[1]
+                    if self.cost_range[0]
+                    <= self.cost_tracker.mean
+                    <= self.cost_range[1]
                     else "DRIFT"
                 ),
-            }
+            },
         }
 
 
 class PhysicsAuditor:
-    """
-    Enforces conservation laws and physical constraints.
-    """
+    """Enforces conservation laws and physical constraints."""
+
     def __init__(self, state: StateManager, world: World, config: dict[str, Any]):
         self.state = state
         self.world = world
@@ -120,19 +128,22 @@ class PhysicsAuditor:
     def check_mass_balance(
         self, batches: list[Batch], shipments: list[Shipment]
     ) -> list[str]:
-        violations = []
+        violations: list[str] = []
 
         # 1. Ingredient -> Batch Conservation
         # (Simplified check: sum of ingredients used ~= batch output * yield)
-        # Note: We need deep genealogy for this, which might be expensive to traverse every step.
-        # For now, we can check basic conversion ratios if we had ingredient usage data readily available per batch.
+        # Note: We need deep genealogy for this, which might be expensive to traverse
+        # every step. For now, we can check basic conversion ratios if we had
+        # ingredient usage data readily available per batch.
 
         # 2. Inventory Positivity
-        # We allow backlog (negative inventory) conceptually, but physical inventory cannot be negative.
-        # In our simulation, 'inventory' < 0 implies backlog.
-        # So we check if "actual" physical inventory is negative (if we were tracking it separately).
-        # Since state.inventory is net (Physical - Backlog), negative is allowed as a business state.
-        # But if we assume this check is for "Physical Reality", we'd need separate tracking.
+        # We allow backlog (negative inventory) conceptually, but physical inventory
+        # cannot be negative. In our simulation, 'inventory' < 0 implies backlog.
+        # So we check if "actual" physical inventory is negative (if we were tracking
+        # it separately).
+        # Since state.inventory is net (Physical - Backlog), negative is allowed as
+        # a business state. But if we assume this check is for "Physical Reality",
+        # we'd need separate tracking.
         # For now, we'll skip simple negativity check on the main inventory array.
 
         return violations
@@ -140,7 +151,7 @@ class PhysicsAuditor:
     def check_kinematic_consistency(
         self, shipments: list[Shipment], current_day: int
     ) -> list[str]:
-        violations = []
+        violations: list[str] = []
         # Travel time = Distance / Speed
         # In our case, check if arrival_day - creation_day >= min_lead_time
         for s in shipments:
@@ -148,7 +159,10 @@ class PhysicsAuditor:
                 transit_time = s.arrival_day - s.creation_day
                 # Simple check: no teleportation
                 if transit_time < 0:
-                     violations.append(f"Teleportation detected for {s.id}: transit_time={transit_time}")
+                    violations.append(
+                        f"Teleportation detected for {s.id}: "
+                        f"transit_time={transit_time}"
+                    )
         return violations
 
 
@@ -158,8 +172,8 @@ class ResilienceTracker:
     def __init__(self, state: StateManager, world: World):
         self.state = state
         self.world = world
-        self.disruption_start_day: dict[str, int] = {} # node_id -> day
-        self.recovery_start_day: dict[str, int] = {} # node_id -> day
+        self.disruption_start_day: dict[str, int] = {}  # node_id -> day
+        self.recovery_start_day: dict[str, int] = {}  # node_id -> day
 
         # Track recovery status
         self.node_status: dict[str, str] = {
@@ -175,14 +189,14 @@ class ResilienceTracker:
         Returns TTS (Time-to-Survive) for disrupted nodes.
         TTS = Days until stockout when node goes dark.
         """
-        tts_results = {}
+        tts_results: dict[str, int] = {}
         for node_id, status in self.node_status.items():
             if status == "DISRUPTED":
                 # Check if stockout occurred
                 node_idx = self.state.node_id_to_idx.get(node_id)
                 if node_idx is not None:
                     # If any product inventory <= 0
-                    min_inv = np.min(self.state.inventory[node_idx, :])
+                    min_inv = np.min(self.state.perceived_inventory[node_idx, :])
                     if min_inv <= 0:
                         start = self.disruption_start_day.get(node_id, day)
                         tts_results[node_id] = day - start
@@ -193,7 +207,7 @@ class ResilienceTracker:
         Returns TTR (Time-to-Recover) for recovering nodes.
         TTR = Days to restore full service after disruption.
         """
-        ttr_results = {}
+        ttr_results: dict[str, int] = {}
         # Implementation would track when node returns to stable inventory levels
         return ttr_results
 
@@ -207,12 +221,13 @@ class LegacyValidator:
 
     def check_hub_concentration(self) -> bool:
         # Check if Chicago (or main hub) handles ~20-30% volume
-        # This requires tracking accumulated flow through nodes, which we might not have in StateManager yet.
+        # This requires tracking accumulated flow through nodes, which we might not
+        # have in StateManager yet.
         # Placeholder
         return True
 
     def check_named_entities(self) -> bool:
         # Check if required entities exist
-        required = ["DC-CHI", "DC-NYC", "DC-LAX"] # Examples
+        required = ["DC-CHI", "DC-NYC", "DC-LAX"]  # Examples
         missing = [n for n in required if n not in self.world.nodes]
         return len(missing) == 0
