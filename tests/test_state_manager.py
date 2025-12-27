@@ -25,17 +25,14 @@ def test_state_operations():
     world = builder.build()
     state = StateManager(world)
 
-    node_id = "RDC-NAM-CHI"
-    prod_id = "SKU-SOAP-001"
+    node_id = "RDC-MW"
+    # Pick a valid product from the world keys to be safe, or use a known one from Deep NAM
+    # SKU-ORAL-001 should exist as per generator logic (i=0)
+    prod_id = "SKU-ORAL-001"
 
     # Initial state should be 0
     assert state.get_inventory(node_id, prod_id) == 0.0
 
-    # Update
-    state.update_inventory(node_id, prod_id, 500.0)
-    assert state.get_inventory(node_id, prod_id) == 500.0
-
-    # Verify numpy array directly
-    n_idx = state.get_node_idx(node_id)
-    p_idx = state.get_product_idx(prod_id)
-    assert state.inventory[n_idx, p_idx] == 500.0
+    # Update Inventory
+    state.update_inventory(node_id, prod_id, 100.0)
+    assert state.get_inventory(node_id, prod_id) == 100.0

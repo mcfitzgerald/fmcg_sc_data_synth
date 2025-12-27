@@ -211,6 +211,21 @@ files = [
 markers = {dev = "sys_platform == \"win32\""}
 
 [[package]]
+name = "faker"
+version = "39.0.0"
+description = "Faker is a Python package that generates fake data for you."
+optional = false
+python-versions = ">=3.10"
+groups = ["main"]
+files = [
+    {file = "faker-39.0.0-py3-none-any.whl", hash = "sha256:c72f1fca8f1a24b8da10fcaa45739135a19772218ddd61b86b7ea1b8c790dce7"},
+    {file = "faker-39.0.0.tar.gz", hash = "sha256:ddae46d3b27e01cea7894651d687b33bcbe19a45ef044042c721ceac6d3da0ff"},
+]
+
+[package.dependencies]
+tzdata = "*"
+
+[[package]]
 name = "ghp-import"
 version = "2.1.0"
 description = "Copy your docs directly to the gh-pages branch."
@@ -1652,4 +1667,4 @@ watchmedo = ["PyYAML (>=3.10)"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.12"
-content-hash = "f988c8995984b53682d25c780fe7dc4885022addca2f0bcd08b28eb1caee13ef"
+content-hash = "9dd2e59e6d778d4256a6d15175aa6722fbec6c2a6294fc4b7edccaa089564294"

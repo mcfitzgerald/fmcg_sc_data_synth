@@ -146,29 +146,33 @@ class POSEngine:
 
             n_idx = self.state.node_id_to_idx[n_id]
 
-            for p_id, _ in self.world.products.items():
+            for p_id, product in self.world.products.items():
                 p_idx = self.state.product_id_to_idx[p_id]
 
                 # Assign base demand based on category
                 mean_demand = 0.0
+                
+                # Use Category Enum name to look up profile
+                # Enum name is usually UPPERCASE (e.g. ORAL_CARE)
+                cat_name = product.category.name
+                
+                profile = profiles.get(cat_name, {})
+                if not profile:
+                    # Try fallback to string matching for legacy config if needed
+                    # or just defaults
+                    pass
 
-                # Check category match (rough logic based on ID string)
-                if "PASTE" in p_id:
-                    mean_demand = float(
-                        profiles.get("ORAL_CARE", {}).get("base_daily_demand", 50.0)
-                    )
-                elif "SOAP" in p_id:
-                    mean_demand = float(
-                        profiles.get("PERSONAL_WASH", {}).get("base_daily_demand", 30.0)
-                    )
-                elif "DET" in p_id:
-                    mean_demand = float(
-                        profiles.get("HOME_CARE", {}).get("base_daily_demand", 20.0)
-                    )
-                elif "ING" in p_id:
-                    mean_demand = float(
-                        profiles.get("INGREDIENT", {}).get("base_daily_demand", 0.0)
-                    )
+                if product.category.name == "ORAL_CARE":
+                    mean_demand = float(profile.get("base_daily_demand", 50.0))
+                elif product.category.name == "PERSONAL_WASH":
+                     mean_demand = float(profile.get("base_daily_demand", 30.0))
+                elif product.category.name == "HOME_CARE":
+                     mean_demand = float(profile.get("base_daily_demand", 20.0))
+                elif product.category.name == "INGREDIENT":
+                     mean_demand = float(profile.get("base_daily_demand", 0.0))
+                else:
+                    # Generic fallback if defined in config
+                    mean_demand = float(profile.get("base_daily_demand", 0.0))
 
                 self.base_demand[n_idx, p_idx] = mean_demand
 

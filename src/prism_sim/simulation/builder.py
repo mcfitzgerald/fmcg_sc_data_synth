@@ -1,3 +1,6 @@
+import ast
+import csv
+from pathlib import Path
 from typing import Any
 
 from prism_sim.config.loader import load_world_definition
@@ -7,16 +10,119 @@ from prism_sim.simulation.world import World
 
 
 class WorldBuilder:
-    def __init__(self, manifest: dict[str, Any]) -> None:
+    def __init__(self, manifest: dict[str, Any], load_static: bool | None = None) -> None:
         self.manifest = manifest
         self.world_config = load_world_definition()
         self.world = World()
+        
+        # Check for static world data
+        # We look for the standard output directory
+        self.static_data_dir = Path("data/output/static_world")
+        
+        if load_static is not None:
+            self.use_static_files = load_static
+        else:
+            self.use_static_files = (
+                self.static_data_dir.exists() 
+                and (self.static_data_dir / "products.csv").exists()
+            )
 
     def build(self) -> World:
-        self._build_products()
-        self._build_recipes()
-        self._build_network()
+        if self.use_static_files:
+            print(f"WorldBuilder: Loading static world from {self.static_data_dir}...")
+            self._build_from_csv()
+        else:
+            print("WorldBuilder: Loading from world_definition.json...")
+            self._build_products()
+            self._build_recipes()
+            self._build_network()
+            
         return self.world
+
+    def _build_from_csv(self) -> None:
+        """Load Level 0-4 data from CSVs."""
+        self._load_products_csv()
+        self._load_recipes_csv()
+        self._load_locations_csv()
+        self._load_links_csv()
+
+    def _load_products_csv(self) -> None:
+        path = self.static_data_dir / "products.csv"
+        with open(path, encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                # Parse Category Enum: "ProductCategory.ORAL_CARE" -> ORAL_CARE
+                cat_str = row["category"].split(".")[-1]
+                category = ProductCategory[cat_str]
+
+                self.world.add_product(
+                    Product(
+                        id=row["id"],
+                        name=row["name"],
+                        category=category,
+                        weight_kg=float(row["weight_kg"]),
+                        length_cm=float(row["length_cm"]),
+                        width_cm=float(row["width_cm"]),
+                        height_cm=float(row["height_cm"]),
+                        cases_per_pallet=int(row["cases_per_pallet"]),
+                        cost_per_case=float(row["cost_per_case"]),
+                        price_per_case=float(row["price_per_case"]),
+                    )
+                )
+
+    def _load_recipes_csv(self) -> None:
+        path = self.static_data_dir / "recipes.csv"
+        with open(path, encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                # Parse Ingredients dict string: "{'ING-1': 1.0}" -> dict
+                ingredients = ast.literal_eval(row["ingredients"])
+                
+                self.world.add_recipe(
+                    Recipe(
+                        product_id=row["product_id"],
+                        ingredients=ingredients,
+                        run_rate_cases_per_hour=float(row["run_rate_cases_per_hour"]),
+                        changeover_time_hours=float(row["changeover_time_hours"]),
+                    )
+                )
+
+    def _load_locations_csv(self) -> None:
+        path = self.static_data_dir / "locations.csv"
+        with open(path, encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                # Parse NodeType Enum: "NodeType.STORE" -> STORE
+                type_str = row["type"].split(".")[-1]
+                node_type = NodeType[type_str]
+
+                self.world.add_node(
+                    Node(
+                        id=row["id"],
+                        name=row["name"],
+                        type=node_type,
+                        location=row["location"],
+                        throughput_capacity=float(row["throughput_capacity"]),
+                        storage_capacity=float(row["storage_capacity"]),
+                    )
+                )
+
+    def _load_links_csv(self) -> None:
+        path = self.static_data_dir / "links.csv"
+        with open(path, encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                self.world.add_link(
+                    Link(
+                        id=row["id"],
+                        source_id=row["source_id"],
+                        target_id=row["target_id"],
+                        mode=row["mode"],
+                        distance_km=float(row["distance_km"]),
+                        lead_time_days=float(row["lead_time_days"]),
+                        variability_sigma=float(row["variability_sigma"]),
+                    )
+                )
 
     def _build_products(self) -> None:
         for p_data in self.world_config.get("products", []):

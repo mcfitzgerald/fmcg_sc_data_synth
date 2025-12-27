@@ -42,17 +42,31 @@ This roadmap outlines the sequential milestones to transition from a statistical
 
 ## Milestone 6: Validation, Quirks & Realism
 *   **Goal:** Verify "Emergent Properties" and stress-test the system.
-*   **Task 6.1:** **Realism Monitor:** Implement the online validator for OEE, Truck Fill, and SLOB.
-*   **Task 6.2:** **Resilience Metrics:** Measure **Time-to-Survive (TTS)** and **Time-to-Recover (TTR)** during disruption events.
-*   **Task 6.3:** **Quirk Injection:** Port the specific behavioral engines from `quirks.py`:
+*   **Task 6.1:** [x] **Realism Monitor:** Implement the online validator for OEE, Truck Fill, and SLOB.
+*   **Task 6.2:** [x] **Resilience Metrics:** Measure **Time-to-Survive (TTS)** and **Time-to-Recover (TTR)** during disruption events.
+*   **Task 6.3:** [x] **Quirk Injection:** Port the specific behavioral engines from `quirks.py`:
     *   **AR(1) Port Congestion:** Auto-regressive delays.
     *   **Optimism Bias:** Forecast inflation curve.
     *   **Phantom Inventory:** Shrinkage with detection lag.
-*   **Task 6.4:** **Risk Scenarios:** Execute deterministic risk events (e.g., "Port Strike") from `benchmark_manifest.json`.
-*   **Task 6.5:** **Legacy Validation:** Run the original `validation.py` suite against the new simulation output.
+*   **Task 6.4:** [x] **Risk Scenarios:** Execute deterministic risk events (e.g., "Port Strike") from `benchmark_manifest.json`.
+*   **Task 6.5:** **Legacy Validation:** Port legacy distribution checks (Zipf, Pareto, Hub Concentration) to `monitor.py`.
 *   **Task 6.6:** **Physics Audit:** Automated checks for Mass Balance ($Inv_{in} == Inv_{out}$).
 
-## Milestone 7: Final Delivery
-*   **Task 7.1:** Execute 365-day "Deep NAM" run.
-*   **Task 7.2:** Generate full SCOR-DS dataset (CSV/Parquet export).
-*   **Task 7.3:** Generate "The Triangle Report": A summary of Service vs. Cost vs. Cash performance.
+## Milestone 7: SCOR-DS Expansion (Deep NAM)
+*   **Goal:** Scale to 4,500 nodes and generate full ~70-table schema (Levels 0-14).
+*   **Task 7.1:** **Generators (Static):**
+    *   Port `static_pool.py` (Faker) and `distributions.py` (Zipf/Barabási).
+    *   Create `NetworkGenerator` to build the 4,500-store topology.
+*   **Task 7.2:** **Writers (Static):**
+    *   Implement `StaticWriter` to export World CSVs (Locations, Products, Partners).
+    *   Implement `SQLWriter` to generate `seed.sql` for Postgres compatibility.
+*   **Task 7.3:** **Simulation Writers (Dynamic):**
+    *   Upgrade `SimulationWriter` to support streaming Parquet/CSV for high-volume tables.
+    *   Implement **In-Memory Validation Mode** to skip I/O for rapid parameter tuning.
+*   **Task 7.4:** **Full Scale Run:**
+    *   Execute 365-day run with full topology.
+    *   Validate row counts and referential integrity against `schema.sql`.
+
+## Milestone 8: Final Delivery
+*   **Task 8.1:** Generate full SCOR-DS dataset (CSV/Parquet/SQL export).
+*   **Task 8.2:** Generate "The Triangle Report": A summary of Service vs. Cost vs. Cash performance.
