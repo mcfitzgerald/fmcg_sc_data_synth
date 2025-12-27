@@ -34,7 +34,7 @@ class SimulationWriter:
                     "target_id": order.target_id,
                     "product_id": line.product_id,
                     "quantity": line.quantity,
-                    "status": order.status.value
+                    "status": order.status
                 })
 
     def log_shipments(self, shipments: list[Shipment], day: int) -> None:
