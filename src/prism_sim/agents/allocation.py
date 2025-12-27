@@ -1,7 +1,7 @@
 import numpy as np
 from typing import Any
 
-from prism_sim.network.core import Order
+from prism_sim.network.core import Order, NodeType
 from prism_sim.simulation.state import StateManager
 
 
@@ -88,8 +88,10 @@ class AllocationAgent:
         allocated_orders: list[Order] = []
 
         for source_id, source_orders in orders_by_source.items():
+            source_node = self.state.world.nodes.get(source_id)
             source_idx = self.state.node_id_to_idx.get(source_id)
-            if source_idx is None:
+
+            if source_node is None or source_node.type == NodeType.SUPPLIER or source_idx is None:
                 # External supplier - assume 100% fill
                 allocated_orders.extend(source_orders)
                 continue

@@ -61,8 +61,32 @@
       "reorder_point_days": 7.0,
       "min_production_qty": 5000.0,
       "production_lead_time_days": 3,
-      "production_hours_per_day": 100.0,
+      "production_hours_per_day": 24.0,
+      "efficiency_factor": 0.85,
+      "unplanned_downtime_pct": 0.05,
       "backup_supplier_cost_premium": 0.25,
+      "plant_parameters": {
+        "PLANT-OH": {
+          "description": "Old legacy plant - High capacity but frequent breakdowns",
+          "efficiency_factor": 0.70,
+          "unplanned_downtime_pct": 0.15
+        },
+        "PLANT-TX": {
+          "description": "Modern high-speed facility",
+          "efficiency_factor": 0.95,
+          "unplanned_downtime_pct": 0.02
+        },
+        "PLANT-CA": {
+          "description": "Standard facility",
+          "efficiency_factor": 0.85,
+          "unplanned_downtime_pct": 0.05
+        },
+        "PLANT-GA": {
+          "description": "Standard facility",
+          "efficiency_factor": 0.85,
+          "unplanned_downtime_pct": 0.05
+        }
+      },
       "default_yield_percent": 98.5,
       "recall_batch_trigger_day": 30,
       "recall_scenario": {

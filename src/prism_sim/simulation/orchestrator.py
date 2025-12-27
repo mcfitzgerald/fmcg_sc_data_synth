@@ -140,6 +140,10 @@ class Orchestrator:
         # 3. Replenishment Decision (The "Pull" Signal)
         raw_orders = self.replenisher.generate_orders(day, daily_demand)
 
+        # Generate Purchase Orders for Ingredients at Plants (Milestone 5.1 extension)
+        ing_orders = self.mrp_engine.generate_purchase_orders(day)
+        raw_orders.extend(ing_orders)
+
         # Capture Unconstrained Demand (before Allocator modifies in-place)
         unconstrained_demand_qty = sum(
             line.quantity for order in raw_orders for line in order.lines
@@ -164,7 +168,7 @@ class Orchestrator:
 
         # 8. Manufacturing: MRP (Milestone 5.1)
         new_production_orders = self.mrp_engine.generate_production_orders(
-            day, daily_demand
+            day, daily_demand, self.active_production_orders
         )
         self.active_production_orders.extend(new_production_orders)
 

@@ -162,6 +162,8 @@ def manufacturing_config() -> dict:
                 "min_production_qty": 100.0,
                 "production_lead_time_days": 3,
                 "production_hours_per_day": 16.0,
+                "efficiency_factor": 1.0,
+                "unplanned_downtime_pct": 0.0,
                 "backup_supplier_cost_premium": 0.25,
                 "spof": {
                     "ingredient_id": "ING-SURF-SPEC",
@@ -194,7 +196,7 @@ class TestMRPEngine:
 
         # Generate orders
         orders = mrp.generate_production_orders(
-            current_day=1, daily_demand=daily_demand
+            current_day=1, daily_demand=daily_demand, active_production_orders=[]
         )
 
         # Should have at least one order
@@ -221,7 +223,7 @@ class TestMRPEngine:
         daily_demand[rdc_idx, det_idx] = 50.0
 
         orders = mrp.generate_production_orders(
-            current_day=1, daily_demand=daily_demand
+            current_day=1, daily_demand=daily_demand, active_production_orders=[]
         )
 
         # Should have no detergent orders (already above reorder point)
@@ -259,7 +261,7 @@ class TestTransformEngineCapacity:
         )
 
         # Process for day 1
-        _updated, _batches = transform.process_production_orders([order], current_day=1)
+        _updated, _batches, _ = transform.process_production_orders([order], current_day=1)
 
         # Check that we didn't exceed daily capacity
         # Max = 16 hours * 100 cases/hour = 1600 cases
@@ -343,7 +345,7 @@ class TestTransformEngineSPOF:
             due_day=5,
         )
 
-        _updated, batches = transform.process_production_orders([order], current_day=1)
+        _updated, batches, _ = transform.process_production_orders([order], current_day=1)
 
         # Should not have completed production
         assert len(batches) == 0
@@ -416,7 +418,7 @@ class TestDeterministicBatch:
             due_day=32,
         )
 
-        _updated, batches = transform.process_production_orders([order], current_day=31)
+        _updated, batches, _ = transform.process_production_orders([order], current_day=31)
 
         # Should have the recall batch
         assert len(batches) == 1
