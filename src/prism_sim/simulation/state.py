@@ -28,7 +28,12 @@ class StateManager:
 
         # Shape: [Nodes, Products]
         # Represents: Inventory level of Product P at Node N
-        self.inventory = np.zeros((self.n_nodes, self.n_products), dtype=np.float32)
+        # Perceived Inventory: What the WMS/ERP thinks we have
+        self.perceived_inventory = np.zeros((self.n_nodes, self.n_products), dtype=np.float32)
+
+        # Actual Inventory: What is physically in the bin (Ground Truth)
+        # In a perfect world, Perceived == Actual.
+        self.actual_inventory = np.zeros((self.n_nodes, self.n_products), dtype=np.float32)
 
         # Shape: [Nodes, Products]
         # Represents: Backlog quantity
@@ -41,6 +46,21 @@ class StateManager:
 
         # Discrete State (Levels 10-11)
         self.active_shipments: list[Shipment] = []
+
+    @property
+    def inventory(self) -> np.ndarray:
+        """Alias for perceived_inventory (System View)."""
+        return self.perceived_inventory
+
+    @inventory.setter
+    def inventory(self, value: np.ndarray) -> None:
+        """
+        Safety setter to prevent accidental overwrites.
+        Ideally use update_inventory_batch.
+        """
+        self.perceived_inventory = value
+        # Note: We do NOT automatically sync actual here to allow divergence.
+        # But for initialization they should be synced manually or via specific init.
 
     def _index_entities(self) -> None:
         # Sort keys for deterministic indexing
@@ -63,20 +83,25 @@ class StateManager:
     def get_inventory(self, node_id: str, product_id: str) -> float:
         n_idx = self.get_node_idx(node_id)
         p_idx = self.get_product_idx(product_id)
-        return float(self.inventory[n_idx, p_idx])
+        return float(self.perceived_inventory[n_idx, p_idx])
 
     def update_inventory(self, node_id: str, product_id: str, delta: float) -> None:
+        """Updates BOTH actual and perceived inventory (default behavior)."""
         n_idx = self.get_node_idx(node_id)
         p_idx = self.get_product_idx(product_id)
-        self.inventory[n_idx, p_idx] += delta
+        self.perceived_inventory[n_idx, p_idx] += delta
+        self.actual_inventory[n_idx, p_idx] += delta
 
     def update_inventory_batch(self, delta_tensor: np.ndarray) -> None:
         """
         Updates inventory for all nodes and products using a tensor of deltas.
+        Updates BOTH actual and perceived.
         delta_tensor shape must match (n_nodes, n_products).
         """
-        if delta_tensor.shape != self.inventory.shape:
+        if delta_tensor.shape != self.perceived_inventory.shape:
             raise ValueError(
-                f"Shape mismatch: {delta_tensor.shape} != {self.inventory.shape}"
+                f"Shape mismatch: {delta_tensor.shape} "
+                f"!= {self.perceived_inventory.shape}"
             )
-        self.inventory += delta_tensor
+        self.perceived_inventory += delta_tensor
+        self.actual_inventory += delta_tensor

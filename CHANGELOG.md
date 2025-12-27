@@ -19,6 +19,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **OptimismBiasQuirk:** 15% over-forecast for new products (<6 months old).
   - **PhantomInventoryQuirk:** 2% shrinkage with 14-day detection lag (dual inventory model).
   - **QuirkManager:** Unified interface for all quirks.
+- **Risk Scenarios (Task 6.4):** Implemented `RiskEventManager` in `src/prism_sim/simulation/risk_events.py` to trigger deterministic disruptions:
+  - **Port Strike (RSK-LOG-002):** 4x logistics delay.
+  - **Cyber Outage (RSK-CYB-004):** 10x logistics delay.
 - **Legacy Validation (Task 6.5):** Ported validation checks from reference implementation:
   - Pareto distribution check (top 20% SKUs = 75-85% volume).
   - Hub concentration check (Chicago ~20-30%).
@@ -28,7 +31,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Metrics Dataclasses:** Added `ProductionMetrics` and `ShipmentMetrics` for clean parameter passing.
 
 ### Changed
+- **Config Paradigm Enforcement:** Refactored `Orchestrator`, `RiskEventManager`, and `QuirkManager` to eliminate hardcoded simulation parameters, moving them to `simulation_config.json`.
 - **Code Quality:** All ruff and mypy strict checks pass for new modules.
+- **Inventory State:** Expanded `StateManager` to track `perceived_inventory` vs `actual_inventory` to support phantom inventory simulation.
 
 ## [0.4.1] - 2025-12-26
 

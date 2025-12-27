@@ -19,6 +19,9 @@
         "INGREDIENT": { "base_daily_demand": 0.0 }
       }
     },
+    "inventory": {
+      "initial_fg_level": 100.0
+    },
     "logistics": {
       "constraints": {
         "truck_max_weight_kg": 20000.0,
@@ -45,6 +48,53 @@
         "ING-SURF-SPEC": 1000.0,
         "ING-BASE-LIQ": 5000.0
       }
+    },
+    "validation": {
+      "oee_range": [0.65, 0.85],
+      "truck_fill_target": 0.85,
+      "slob_max_pct": 0.30,
+      "inventory_turns_range": [6.0, 14.0],
+      "cost_per_case_range": [1.00, 3.00],
+      "mass_balance_drift_max": 0.02
+    },
+    "quirks": {
+      "port_congestion": {
+        "enabled": true,
+        "ar_coefficient": 0.70,
+        "noise_std_hours": 2.0,
+        "cluster_threshold_hours": 4.0,
+        "cluster_size": 3,
+        "affected_ports": ["USLAX", "CNSHA"]
+      },
+      "optimism_bias": {
+        "enabled": true,
+        "bias_pct": 0.15,
+        "affected_age_months": 6
+      },
+      "phantom_inventory": {
+        "enabled": true,
+        "shrinkage_pct": 0.02,
+        "detection_lag_days": 14
+      }
+    },
+    "risk_events": {
+      "enabled": true,
+      "events": [
+        {
+          "code": "RSK-LOG-002",
+          "type": "port_strike",
+          "trigger_day": 120,
+          "duration_days": 14,
+          "parameters": { "delay_multiplier": 4.0 }
+        },
+        {
+          "code": "RSK-CYB-004",
+          "type": "cyber_outage",
+          "trigger_day": 200,
+          "duration_days": 3,
+          "parameters": { "delay_multiplier": 10.0 }
+        }
+      ]
     }
   }
 }
