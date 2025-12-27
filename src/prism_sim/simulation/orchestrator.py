@@ -71,29 +71,42 @@ class Orchestrator:
 
     def _initialize_inventory(self) -> None:
         """
-        Seed initial inventory across the network.
-
-        - RDCs and Stores: Initial finished goods stock
-        - Plants: Initial raw material inventory
+        Seed initial inventory across the network (Priming).
         """
         # Get manufacturing config for plant initial inventory
         sim_params = self.config.get("simulation_parameters", {})
         mfg_config = sim_params.get("manufacturing", {})
         initial_plant_inv = mfg_config.get("initial_plant_inventory", {})
 
-        # Get initial FG level from config
+        # Get priming config
         inv_config = sim_params.get("inventory", {})
-        initial_fg_level = inv_config.get("initial_fg_level", 100.0)
+        init_config = inv_config.get("initialization", {})
+        
+        # Defaults if config missing
+        store_days = init_config.get("store_days_supply", 14.0)
+        rdc_days = init_config.get("rdc_days_supply", 21.0)
+        rdc_multiplier = init_config.get("rdc_store_multiplier", 1500.0)
+        
+        # Base demand proxy (approx 1.0 case/day)
+        base_demand = 1.0
+
+        # Calculate Levels
+        store_level = base_demand * store_days
+        rdc_level = base_demand * rdc_multiplier * rdc_days
 
         # Seed finished goods at RDCs and Stores
         for node_id, node in self.world.nodes.items():
-            if node.type in (NodeType.DC, NodeType.STORE):
+            if node.type == NodeType.STORE:
                 node_idx = self.state.node_id_to_idx.get(node_id)
                 if node_idx is not None:
-                    # Set all finished goods
-                    # Initialize both Perceived (System) and Actual (Physical) inventory
-                    self.state.perceived_inventory[node_idx, :] = initial_fg_level
-                    self.state.actual_inventory[node_idx, :] = initial_fg_level
+                    self.state.perceived_inventory[node_idx, :] = store_level
+                    self.state.actual_inventory[node_idx, :] = store_level
+
+            elif node.type == NodeType.DC:
+                node_idx = self.state.node_id_to_idx.get(node_id)
+                if node_idx is not None:
+                    self.state.perceived_inventory[node_idx, :] = rdc_level
+                    self.state.actual_inventory[node_idx, :] = rdc_level
 
             # Seed raw materials at Plants
             elif node.type == NodeType.PLANT:
@@ -127,6 +140,11 @@ class Orchestrator:
         # 3. Replenishment Decision (The "Pull" Signal)
         raw_orders = self.replenisher.generate_orders(day, daily_demand)
 
+        # Capture Unconstrained Demand (before Allocator modifies in-place)
+        unconstrained_demand_qty = sum(
+            line.quantity for order in raw_orders for line in order.lines
+        )
+
         # 4. Allocation (Milestone 4.1)
         allocated_orders = self.allocator.allocate_orders(raw_orders)
 
@@ -151,7 +169,11 @@ class Orchestrator:
         self.active_production_orders.extend(new_production_orders)
 
         # 9. Manufacturing: Production (Milestone 5.2)
-        updated_orders, new_batches = self.transform_engine.process_production_orders(
+        (
+            updated_orders,
+            new_batches,
+            plant_oee,
+        ) = self.transform_engine.process_production_orders(
             self.active_production_orders, day
         )
         self.active_production_orders = [
@@ -168,14 +190,21 @@ class Orchestrator:
         self._apply_post_step_validation(day, arrived)
 
         # 12. Monitors & Data Logging
-        self._record_daily_metrics(new_shipments, plant_shipments, arrived, day)
+        self._record_daily_metrics(
+            new_shipments, plant_shipments, arrived, plant_oee, day
+        )
         self._log_daily_data(
             raw_orders, new_shipments, plant_shipments, new_batches, day
         )
 
         # 13. Logging / Metrics (Simple Print)
         self._print_daily_status(
-            day, daily_demand, raw_orders, new_shipments, arrived, new_batches
+            day,
+            daily_demand,
+            unconstrained_demand_qty,
+            new_shipments,
+            arrived,
+            new_batches,
         )
 
     def _apply_pre_step_quirks(self, day: int) -> None:
@@ -225,7 +254,8 @@ class Orchestrator:
         new_shipments: list[Shipment],
         plant_shipments: list[Shipment],
         arrived: list[Shipment],
-        day: int
+        plant_oee: dict[str, float],
+        day: int,
     ) -> None:
         """Record simulation metrics for monitoring."""
         log_config = self.config.get("simulation_parameters", {}).get("logistics", {})
@@ -235,6 +265,11 @@ class Orchestrator:
         for s in new_shipments + plant_shipments:
             fill_rate = min(1.0, s.total_weight_kg / max_weight)
             self.monitor.record_truck_fill(fill_rate)
+
+        # Record OEE
+        if plant_oee:
+            avg_oee = sum(plant_oee.values()) / len(plant_oee)
+            self.monitor.record_oee(avg_oee)
 
     def _log_daily_data(
         self,
@@ -255,16 +290,14 @@ class Orchestrator:
         self,
         day: int,
         daily_demand: np.ndarray,
-        raw_orders: list[Order],
+        unconstrained_demand_qty: float,
         new_shipments: list[Shipment],
         arrived: list[Shipment],
-        new_batches: list[Batch]
+        new_batches: list[Batch],
     ) -> None:
         """Print high-level daily simulation status."""
         total_demand = np.sum(daily_demand)
-        total_ordered = sum(
-            line.quantity for order in raw_orders for line in order.lines
-        )
+        total_ordered = unconstrained_demand_qty
         total_shipped = sum(
             line.quantity for shipment in new_shipments for line in shipment.lines
         )
@@ -327,7 +360,7 @@ class Orchestrator:
         truck_fill = report.get("truck_fill", {}).get("mean", 0)
 
         # Arbitrary scaling for demo
-        service_index = base_service - (total_backlog / backlog_penalty)
+        service_index = max(0.0, base_service - (total_backlog / backlog_penalty))
         inv_turns = report.get("inventory_turns", {}).get("mean", 0)
 
         summary = [

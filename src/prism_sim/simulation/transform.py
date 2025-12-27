@@ -107,7 +107,7 @@ class TransformEngine:
 
     def process_production_orders(
         self, orders: list[ProductionOrder], current_day: int
-    ) -> tuple[list[ProductionOrder], list[Batch]]:
+    ) -> tuple[list[ProductionOrder], list[Batch], dict[str, float]]:
         """
         Process Production Orders for the current day.
 
@@ -116,9 +116,10 @@ class TransformEngine:
             current_day: Current simulation day
 
         Returns:
-            Tuple of (updated_orders, new_batches)
+            Tuple of (updated_orders, new_batches, plant_oee)
         """
         new_batches: list[Batch] = []
+        plant_oee: dict[str, float] = {}
 
         # Reset daily capacity for all plants
         for plant_state in self._plant_states.values():
@@ -137,7 +138,13 @@ class TransformEngine:
                 new_batches.append(batch)
                 self.batches.append(batch)
 
-        return sorted_orders, new_batches
+        # Calculate OEE for each plant (Utilization)
+        for plant_id, plant_state in self._plant_states.items():
+            used_capacity = self.hours_per_day - plant_state.remaining_capacity_hours
+            oee = used_capacity / self.hours_per_day
+            plant_oee[plant_id] = oee
+
+        return sorted_orders, new_batches, plant_oee
 
     def _process_single_order(
         self, order: ProductionOrder, current_day: int

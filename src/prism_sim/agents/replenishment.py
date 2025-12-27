@@ -43,10 +43,6 @@ class MinMaxReplenisher:
 
         # Optimization: Cache Store->Supplier map
         self.store_supplier_map = self._build_supplier_map()
-        print(f"DEBUG REPL: Mapped {len(self.store_supplier_map)} targets to sources.")
-        # Print sample to verify IDs
-        sample_keys = list(self.store_supplier_map.keys())[:5]
-        print(f"DEBUG REPL Sample Keys: {sample_keys}")
 
     def _build_supplier_map(self) -> dict[str, str]:
         """Builds a lookup map for Store -> Source ID."""
@@ -105,16 +101,6 @@ class MinMaxReplenisher:
         # Mask where Inv < ReorderPoint
         needs_order = current_inv < reorder_point
         
-        # DEBUG: Print Replenishment Stats
-        if day <= 15: # Limit spam
-             print(f"DEBUG REPL Day {day}: "
-                   f"Stores={len(store_indices)}, "
-                   f"MeanInv={np.mean(current_inv):.2f}, "
-                   f"MeanDmd={np.mean(avg_demand):.2f}, "
-                   f"MeanRP={np.mean(reorder_point):.2f}, "
-                   f"NeedsOrderCount={np.sum(needs_order)}, "
-                   f"Inv<RP={(current_inv < reorder_point).any()}")
-
         # Raw Quantity = Target - Current
         raw_qty = target_stock - current_inv
 
@@ -159,10 +145,6 @@ class MinMaxReplenisher:
             # Find Source using cached map
             source_id = self.store_supplier_map.get(store_id)
             
-            if day == 3 and debug_printed < 5:
-                print(f"DEBUG REPL Loop: Store={store_id}, Source={source_id}, Lines={len(lines)}")
-                debug_printed += 1
-
             if source_id:
                 order_count += 1
                 orders.append(

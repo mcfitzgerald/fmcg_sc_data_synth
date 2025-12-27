@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.3] - 2025-12-27
+
+### Fixed
+- **Zero Orders Reporting Bug:** Corrected `Orchestrator` logging to calculate "Ordered" quantity *before* the `AllocationAgent` modifies orders in-place. This reveals the true unconstrained demand signal (approx. 11M cases/day) instead of zero.
+- **Production Starvation:** Increased `initial_plant_inventory` for raw materials (`ING-BASE-LIQ`, `ING-SURF-SPEC`) from 5k to 10M units to prevent immediate SPOF (Single Point of Failure) triggering. Plants now successfully produce ~100k cases/day to meet demand.
+- **Cold Start Service Collapse:** Fixed RDC initialization logic in `Orchestrator`. RDCs now initialize with 1500x the base inventory (approx. 30k cases/sku) to cover network aggregate demand, preventing immediate stockouts.
+- **System Priming (Configurable):** Added `initialization` block to `simulation_config.json` allowing precise control over Store and RDC start-up inventory (Days of Supply). This moves the simulation from a "Cold Start" to a "Warm Start" state.
+- **OEE Tracking Implementation:** Updated `TransformEngine` and `Orchestrator` to calculate and record plant-level capacity utilization (OEE). OEE now correctly reports in the Supply Chain Triangle Report.
+- **Reporting Cleanup:** Clamped Service Index reporting to 0-100% range to avoid confusing negative values during backlog recovery phases.
+
 ## [0.9.2] - 2025-12-27
 
 ### Changed
