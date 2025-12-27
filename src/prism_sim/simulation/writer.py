@@ -12,9 +12,12 @@ class SimulationWriter:
     Generates SCOR-DS compatible datasets.
     """
 
-    def __init__(self, output_dir: str = "data/output"):
+    def __init__(self, output_dir: str = "data/output", enable_logging: bool = False):
         self.output_dir = output_dir
-        os.makedirs(output_dir, exist_ok=True)
+        self.enable_logging = enable_logging
+        
+        if self.enable_logging:
+            os.makedirs(output_dir, exist_ok=True)
 
         # Buffers for data
         self.orders: list[dict[str, Any]] = []
@@ -24,6 +27,9 @@ class SimulationWriter:
         self.metrics_history: list[dict[str, Any]] = []
 
     def log_orders(self, orders: list[Order], day: int) -> None:
+        if not self.enable_logging:
+            return
+            
         for order in orders:
             for line in order.lines:
                 self.orders.append({
@@ -37,6 +43,9 @@ class SimulationWriter:
                 })
 
     def log_shipments(self, shipments: list[Shipment], day: int) -> None:
+        if not self.enable_logging:
+            return
+
         for s in shipments:
             for line in s.lines:
                 self.shipments.append({
@@ -53,6 +62,9 @@ class SimulationWriter:
                 })
 
     def log_batches(self, batches: list[Batch], day: int) -> None:
+        if not self.enable_logging:
+            return
+
         for b in batches:
             self.batches.append({
                 "batch_id": b.id,
@@ -66,6 +78,9 @@ class SimulationWriter:
             })
 
     def log_inventory(self, state: Any, world: Any, day: int) -> None:
+        if not self.enable_logging:
+            return
+
         # Vectorized state to flat format
         # This can be large if we do it every day for every node/product
         # We might want to sample or only do RDCs
@@ -84,6 +99,10 @@ class SimulationWriter:
 
     def save(self, final_metrics: dict[str, Any]) -> None:
         """Write all buffers to disk."""
+        if not self.enable_logging:
+            print("SimulationWriter: Logging disabled, skipping CSV export.")
+            return
+
         self._write_csv("orders.csv", self.orders)
         self._write_csv("shipments.csv", self.shipments)
         self._write_csv("batches.csv", self.batches)

@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.1] - 2025-12-27
+
+### Changed
+- **Performance Optimization (Task 7.3):** Implemented `enable_logging` flag in `SimulationWriter` and `Orchestrator`.
+  - Default behavior now skips expensive I/O and in-memory list appending when logging is disabled.
+  - `run_benchmark.py` updated to run in "In-Memory Validation Mode" (logging=False) for accurate speed measurement.
+
 ## [0.9.0] - 2025-12-27
 
 ### Added
