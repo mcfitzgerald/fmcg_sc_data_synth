@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] - 2025-12-27
+
+### Added
+- **Deep NAM Integration (Task 7.3):** fully integrated the 4,500-node static world into the runtime simulation.
+  - **CSV Loading:** `WorldBuilder` now automatically loads `products.csv`, `locations.csv`, and `links.csv` from `data/output/static_world` if present.
+  - **Dynamic Demand:** Updated `POSEngine` to generate demand based on `ProductCategory` rather than hardcoded string matching, enabling support for generated SKUs (e.g., `SKU-ORAL-001`).
+  - **Test Suite Updates:** Refactored `test_milestone_3`, `test_state_manager`, and `test_world_builder` to validate against the massive network topology.
+
 ## [0.8.0] - 2025-12-27
 
 ### Added
