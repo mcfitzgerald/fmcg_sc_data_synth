@@ -1,0 +1,418 @@
+# Components Guide
+
+This guide provides detailed documentation for each major component in the Prism Sim system.
+
+## Simulation Engines
+
+### Orchestrator
+
+The central coordinator that manages the simulation time loop and sequences all engines.
+
+```mermaid
+graph TD
+    O[Orchestrator]
+    O --> |initializes| WB[WorldBuilder]
+    O --> |manages| SM[StateManager]
+    O --> |coordinates| E[Engines]
+    O --> |executes| A[Agents]
+    O --> |applies| Q[Quirks]
+    O --> |triggers| R[RiskEvents]
+
+    subgraph "Daily Loop"
+        D1[Process Arrivals]
+        D2[Generate Demand]
+        D3[Replenishment]
+        D4[Allocation]
+        D5[Production]
+        D6[Logistics]
+        D7[Monitoring]
+    end
+
+    E --> D1 --> D2 --> D3 --> D4 --> D5 --> D6 --> D7
+```
+
+**Key Responsibilities:**
+
+- Initialize world from configuration
+- Advance simulation time (daily steps)
+- Coordinate engine execution order
+- Track simulation metrics
+- Generate output reports
+
+**Location:** `src/prism_sim/simulation/orchestrator.py`
+
+---
+
+### POSEngine (Demand Generation)
+
+Generates Point-of-Sale demand at retail locations with realistic patterns.
+
+```mermaid
+graph LR
+    subgraph POSEngine
+        BASE[Base Demand]
+        SEAS[Seasonality]
+        PROMO[Promo Calendar]
+        NOISE[Gamma Noise]
+    end
+
+    BASE --> |multiply| SEAS
+    SEAS --> |apply| PROMO
+    PROMO --> |add| NOISE
+    NOISE --> |output| DEMAND[Daily Demand]
+```
+
+**Features:**
+
+- Seasonal demand patterns (monthly multipliers)
+- Promotional calendar with lift and hangover effects
+- Stochastic noise via gamma distribution
+- Per-SKU, per-location demand generation
+
+**Location:** `src/prism_sim/simulation/demand.py`
+
+---
+
+### TransformEngine (Manufacturing)
+
+Simulates production physics including capacity, changeovers, and yields.
+
+```mermaid
+flowchart TB
+    subgraph TransformEngine
+        MO[Material Check]
+        CAP[Capacity Check]
+        CO[Changeover Penalty]
+        PROD[Production Run]
+        YIELD[Apply Yield]
+        BATCH[Create Batch]
+    end
+
+    PO[Production Order] --> MO
+    MO -->|Materials OK| CAP
+    MO -->|Materials Short| BACKLOG[Backlog]
+    CAP -->|Capacity OK| CO
+    CAP -->|No Capacity| DEFER[Defer]
+    CO --> PROD
+    PROD --> YIELD
+    YIELD --> BATCH
+    BATCH --> FG[Finished Goods]
+```
+
+**Features:**
+
+- OEE-based capacity constraints
+- Changeover time penalties (product switching)
+- SPOF (Single Point of Failure) tracking
+- Yield losses and scrap
+- Batch genealogy with lot tracking
+
+**Location:** `src/prism_sim/simulation/transform.py`
+
+---
+
+### LogisticsEngine
+
+Handles shipment creation, routing, and delivery with physical constraints.
+
+```mermaid
+graph TD
+    subgraph LogisticsEngine
+        PICK[Pick Inventory]
+        PACK[Bin Packing<br/>Tetris Logic]
+        SHIP[Create Shipment]
+        TRANSIT[In-Transit]
+        ARRIVE[Process Arrival]
+    end
+
+    ORD[Order] --> PICK
+    PICK --> PACK
+    PACK --> SHIP
+    SHIP --> TRANSIT
+    TRANSIT --> ARRIVE
+    ARRIVE --> INV[Receiving Inventory]
+```
+
+**Tetris Logic:**
+
+The bin-packing algorithm respects physical constraints:
+
+| Constraint | Description |
+|------------|-------------|
+| **Weight** | Truck max weight (e.g., 44,000 lbs) |
+| **Volume** | Truck max cube (e.g., 2,800 cu ft) |
+| **Pallet Limit** | Max pallets per truck |
+
+Different products "fill" differently:
+
+- **Bar Soap**: Weighs out (high density)
+- **Toothpaste**: Cubes out (low density)
+- **Liquid Detergent**: Mixed constraint
+
+**Location:** `src/prism_sim/simulation/logistics.py`
+
+---
+
+### MRPEngine
+
+Manufacturing Requirements Planning - converts demand into production orders.
+
+```mermaid
+flowchart LR
+    INV[RDC Inventory] --> CHECK{Below<br/>Threshold?}
+    CHECK -->|Yes| CALC[Calculate Need]
+    CHECK -->|No| SKIP[No Action]
+    CALC --> BOM[Explode BOM]
+    BOM --> PO[Production Order]
+    PO --> PLANT[To Plant Queue]
+```
+
+**Features:**
+
+- Inventory-driven production planning
+- BOM explosion for raw material requirements
+- Lead time offsetting
+- Batching for minimum order quantities
+
+**Location:** `src/prism_sim/simulation/mrp.py`
+
+---
+
+## Agent Layer
+
+### MinMaxReplenisher
+
+Implements (s,S) inventory policy with configurable thresholds.
+
+```mermaid
+graph LR
+    INV[Current Inventory] --> CHECK{Inv < s?}
+    CHECK -->|Yes| ORDER[Order up to S]
+    CHECK -->|No| WAIT[No Order]
+    ORDER --> |with bullwhip| ORD[Create Order]
+```
+
+**Policy Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `s` (reorder point) | Trigger level for ordering |
+| `S` (order-up-to) | Target inventory level |
+| `review_period` | Days between inventory checks |
+| `bullwhip_factor` | Order amplification factor |
+
+**Location:** `src/prism_sim/agents/replenishment.py`
+
+---
+
+### AllocationAgent
+
+Allocates available inventory across competing demands using fair-share logic.
+
+```mermaid
+flowchart TD
+    DEMAND[Total Demand] --> CHECK{Supply >=<br/>Demand?}
+    CHECK -->|Yes| FULL[Full Allocation]
+    CHECK -->|No| FAIR[Fair Share<br/>Pro-rata]
+    FAIR --> ALLOC[Partial Allocation]
+    FULL --> ALLOC
+    ALLOC --> SHIP[To Logistics]
+```
+
+**Features:**
+
+- Priority-based allocation
+- Fair-share when supply constrained
+- Channel balancing (Retail vs. DTC)
+
+**Location:** `src/prism_sim/agents/allocation.py`
+
+---
+
+## Behavioral Layer
+
+### Quirks Engine
+
+Injects realistic human and system behaviors that deviate from perfect rationality.
+
+```mermaid
+graph TD
+    subgraph Quirks
+        PC[Port Congestion<br/>AR(1) delays]
+        OB[Optimism Bias<br/>Forecast inflation]
+        PI[Phantom Inventory<br/>Shrinkage]
+        BW[Bullwhip<br/>Order amplification]
+    end
+
+    SIM[Simulation State] --> PC
+    PC --> OB
+    OB --> PI
+    PI --> BW
+    BW --> ADJ[Adjusted State]
+```
+
+| Quirk | Description | Physics Impact |
+|-------|-------------|----------------|
+| **Port Congestion** | AR(1) auto-regressive delays | Increases lead time variability |
+| **Optimism Bias** | Planners over-forecast new products | Creates excess inventory |
+| **Phantom Inventory** | Undetected shrinkage with lag | Causes phantom stockouts |
+| **Bullwhip Amplification** | Order batching and gaming | Increases upstream variance |
+
+**Location:** `src/prism_sim/simulation/quirks.py`
+
+---
+
+### Risk Events
+
+Deterministic disruption scenarios injected at specific simulation days.
+
+```mermaid
+timeline
+    title Risk Event Timeline
+    Day 1 : Simulation Start
+    Day 45 : Port Strike (USLAX) - 14 days
+    Day 120 : SPOF Event (Surfactant) - 21 days
+    Day 200 : Cyber Event (WMS) - 2 days
+    Day 365 : Simulation End
+```
+
+**Configured Scenarios:**
+
+| Scenario | Duration | Impact |
+|----------|----------|--------|
+| Port Strike | 14 days | West RDC supply disruption |
+| SPOF Supplier | 21 days | Critical ingredient shortage |
+| Cyber/WMS | 2 days | DTC fulfillment freeze |
+
+**Location:** `src/prism_sim/simulation/risk_events.py`
+
+---
+
+## Core Infrastructure
+
+### StateManager
+
+Vectorized state storage with O(1) access patterns.
+
+**Managed Tensors:**
+
+| Tensor | Dimensions | Description |
+|--------|------------|-------------|
+| `inventory` | (nodes, products) | Current stock levels |
+| `wip` | (nodes, products) | Work in process |
+| `backorders` | (nodes, products) | Unfilled orders |
+| `in_transit` | (shipments,) | Shipments en route |
+
+**Location:** `src/prism_sim/simulation/state.py`
+
+---
+
+### WorldBuilder
+
+Constructs the simulation world from configuration.
+
+**Build Sequence:**
+
+1. Load configuration files
+2. Create Product catalog (SKUs, recipes)
+3. Build Network topology (nodes, links)
+4. Initialize Agents with policies
+5. Set initial inventory positions
+
+**Location:** `src/prism_sim/simulation/builder.py`
+
+---
+
+### RealismMonitor
+
+Validates simulation physics and tracks KPIs.
+
+**Validation Checks:**
+
+- Little's Law compliance
+- Mass balance integrity
+- Capacity constraint adherence
+- Inventory positivity
+
+**Tracked Metrics:**
+
+- Fill rate, OTIF
+- Inventory turns
+- Truck fill rate
+- OEE
+- Cost-to-serve
+
+**Location:** `src/prism_sim/simulation/monitor.py`
+
+---
+
+## Domain Models
+
+### Network Primitives
+
+```mermaid
+classDiagram
+    class Node {
+        +id: str
+        +type: NodeType
+        +capacity: float
+        +location: tuple
+    }
+
+    class Link {
+        +source: Node
+        +target: Node
+        +lead_time: int
+        +cost_per_unit: float
+    }
+
+    class Order {
+        +id: str
+        +lines: list[OrderLine]
+        +status: OrderStatus
+    }
+
+    class Shipment {
+        +id: str
+        +order: Order
+        +eta: date
+        +status: ShipmentStatus
+    }
+
+    Node --> Link : connected by
+    Order --> Shipment : fulfilled by
+```
+
+**Location:** `src/prism_sim/network/core.py`
+
+---
+
+### Product Models
+
+```mermaid
+classDiagram
+    class Product {
+        +id: str
+        +category: ProductCategory
+        +weight_kg: float
+        +volume_m3: float
+        +units_per_case: int
+    }
+
+    class Recipe {
+        +output: Product
+        +inputs: dict[Product, float]
+        +yield_pct: float
+        +cycle_time: int
+    }
+
+    Product --> Recipe : produced by
+```
+
+**Categories:**
+
+- **Oral Care**: High value-density (cubes out)
+- **Personal Wash**: High weight-density (weighs out)
+- **Home Care**: Mixed constraint
+
+**Location:** `src/prism_sim/product/core.py`

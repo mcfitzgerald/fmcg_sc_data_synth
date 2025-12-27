@@ -1,0 +1,202 @@
+{
+  "products": [
+    {
+      "id": "ING-SURF-SPEC",
+      "name": "Specialty Surfactant",
+      "category": "INGREDIENT",
+      "weight_kg": 200,
+      "length_cm": 60,
+      "width_cm": 60,
+      "height_cm": 90,
+      "cases_per_pallet": 4,
+      "cost_per_case": 500.0
+    },
+    {
+      "id": "ING-BASE-LIQ",
+      "name": "Purified Water Base",
+      "category": "INGREDIENT",
+      "weight_kg": 1000,
+      "length_cm": 100,
+      "width_cm": 100,
+      "height_cm": 100,
+      "cases_per_pallet": 1,
+      "cost_per_case": 50.0
+    },
+    {
+      "id": "SKU-PASTE-001",
+      "name": "Prism Whitening Paste 12pk",
+      "category": "ORAL_CARE",
+      "weight_kg": 1.2,
+      "length_cm": 20,
+      "width_cm": 15,
+      "height_cm": 10,
+      "cases_per_pallet": 120,
+      "cost_per_case": 25.0
+    },
+    {
+      "id": "SKU-SOAP-001",
+      "name": "Prism Pure Soap 48pk",
+      "category": "PERSONAL_WASH",
+      "weight_kg": 8.5,
+      "length_cm": 30,
+      "width_cm": 20,
+      "height_cm": 15,
+      "cases_per_pallet": 80,
+      "cost_per_case": 18.0
+    },
+    {
+      "id": "SKU-DET-001",
+      "name": "Prism Dish Liquid 6pk",
+      "category": "HOME_CARE",
+      "weight_kg": 6.0,
+      "length_cm": 35,
+      "width_cm": 25,
+      "height_cm": 30,
+      "cases_per_pallet": 40,
+      "cost_per_case": 12.0
+    }
+  ],
+  "recipes": [
+    {
+      "product_id": "SKU-DET-001",
+      "ingredients": {
+        "ING-SURF-SPEC": 0.05,
+        "ING-BASE-LIQ": 0.95
+      },
+      "run_rate_cases_per_hour": 1200,
+      "changeover_time_hours": 4.0
+    },
+    {
+      "product_id": "SKU-PASTE-001",
+      "ingredients": {
+        "ING-BASE-LIQ": 1.0
+      },
+      "run_rate_cases_per_hour": 1500,
+      "changeover_time_hours": 2.0
+    },
+    {
+      "product_id": "SKU-SOAP-001",
+      "ingredients": {
+        "ING-BASE-LIQ": 1.0
+      },
+      "run_rate_cases_per_hour": 1800,
+      "changeover_time_hours": 3.0
+    }
+  ],
+  "network": {
+    "rdcs": [
+      {
+        "id": "RDC-NAM-NE",
+        "name": "Northeast RDC",
+        "location": "Pennsylvania",
+        "storage_capacity": 100000
+      },
+      {
+        "id": "RDC-NAM-ATL",
+        "name": "Atlanta RDC",
+        "location": "Atlanta, GA",
+        "storage_capacity": 100000
+      },
+      {
+        "id": "RDC-NAM-CHI",
+        "name": "Chicago RDC",
+        "location": "Chicago, IL",
+        "storage_capacity": 100000
+      },
+      {
+        "id": "RDC-NAM-CAL",
+        "name": "West RDC",
+        "location": "Inland Empire, CA",
+        "storage_capacity": 100000
+      }
+    ],
+    "suppliers": [
+      {
+        "id": "SUP-SURF-SPEC",
+        "name": "German Surfactants GmbH",
+        "location": "Hamburg, DE",
+        "throughput_capacity": null
+      },
+      {
+        "id": "SUP-SURF-BACKUP",
+        "name": "Mexican Chemicals SA",
+        "location": "Monterrey, MX",
+        "throughput_capacity": null
+      },
+      {
+        "id": "SUP-BASE-LIQ",
+        "name": "Industrial Water Works",
+        "location": "Houston, TX",
+        "throughput_capacity": null
+      }
+    ],
+    "plants": [
+      {
+        "id": "PLANT-OH",
+        "name": "Ohio Plant",
+        "location": "Columbus, OH",
+        "throughput_capacity": 50000,
+        "storage_capacity": 10000
+      },
+      {
+        "id": "PLANT-TX",
+        "name": "Texas Plant",
+        "location": "Houston, TX",
+        "throughput_capacity": 50000,
+        "storage_capacity": 10000
+      }
+    ],
+    "links": {
+      "suppliers_to_plants": [
+        {
+          "source_id": "SUP-SURF-SPEC",
+          "target_ids": ["PLANT-OH", "PLANT-TX"],
+          "mode": "ocean",
+          "lead_time_days": 21.0,
+          "variability_sigma": 3.0
+        },
+        {
+          "source_id": "SUP-SURF-BACKUP",
+          "target_ids": ["PLANT-OH", "PLANT-TX"],
+          "mode": "truck",
+          "lead_time_days": 5.0,
+          "variability_sigma": 2.0
+        },
+        {
+          "source_id": "SUP-BASE-LIQ",
+          "target_ids": ["PLANT-OH", "PLANT-TX"],
+          "mode": "truck",
+          "lead_time_days": 2.0,
+          "variability_sigma": 0.5
+        }
+      ],
+      "plants_to_rdcs": [
+        {"source": "PLANT-OH", "target": "RDC-NAM-NE", "lead_time": 3.0},
+        {"source": "PLANT-OH", "target": "RDC-NAM-ATL", "lead_time": 4.0},
+        {"source": "PLANT-OH", "target": "RDC-NAM-CHI", "lead_time": 2.0},
+        {"source": "PLANT-OH", "target": "RDC-NAM-CAL", "lead_time": 5.0},
+        {"source": "PLANT-TX", "target": "RDC-NAM-NE", "lead_time": 5.0},
+        {"source": "PLANT-TX", "target": "RDC-NAM-ATL", "lead_time": 3.0},
+        {"source": "PLANT-TX", "target": "RDC-NAM-CHI", "lead_time": 3.0},
+        {"source": "PLANT-TX", "target": "RDC-NAM-CAL", "lead_time": 4.0}
+      ],
+      "rdcs_to_stores": {
+        "params": {
+          "mode": "truck",
+          "lead_time_days": 2.0,
+          "variability_sigma": 0.5
+        },
+        "map": {
+          "RDC-NAM-NE": {"id": "STORE-MEGA-NE-001", "name": "MegaMart Northeast"},
+          "RDC-NAM-ATL": {"id": "STORE-MEGA-ATL-001", "name": "MegaMart South"},
+          "RDC-NAM-CHI": {"id": "STORE-MEGA-CHI-001", "name": "MegaMart Midwest"},
+          "RDC-NAM-CAL": {"id": "STORE-MEGA-CAL-001", "name": "MegaMart West"}
+        }
+      }
+    },
+    "stores": {
+        "location": "Various",
+        "storage_capacity": 5000
+    }
+  }
+}

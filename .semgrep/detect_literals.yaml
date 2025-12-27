@@ -1,0 +1,10 @@
+rules:
+  - id: detect-numeric-literals
+    patterns:
+      - pattern: $X
+      - metavariable-regex:
+          metavariable: $X
+          regex: ^-?\d+(\.\d+)?$
+    message: "Numeric literal found: $X. Review if this should be configuration."
+    languages: [python]
+    severity: WARNING

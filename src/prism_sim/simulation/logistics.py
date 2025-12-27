@@ -26,6 +26,8 @@ class LogisticsEngine:
         )
         self.max_weight_kg = float(constraints.get("truck_max_weight_kg", 20000.0))
         self.max_volume_m3 = float(constraints.get("truck_max_volume_m3", 60.0))
+        self.epsilon_weight = float(constraints.get("epsilon_weight_kg", 0.001))
+        self.epsilon_volume = float(constraints.get("epsilon_volume_m3", 0.0001))
 
         self.route_map: dict[tuple[str, str], Link] = {}
         self._build_route_map()
@@ -94,8 +96,8 @@ class LogisticsEngine:
 
                     # How much fits?
                     # Avoid div by zero
-                    unit_weight = max(product.weight_kg, 0.001)
-                    unit_vol = max(product.volume_m3, 0.0001)
+                    unit_weight = max(product.weight_kg, self.epsilon_weight)
+                    unit_vol = max(product.volume_m3, self.epsilon_volume)
 
                     max_by_weight = weight_space / unit_weight
                     max_by_vol = vol_space / unit_vol

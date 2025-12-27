@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2025-12-27
+
+### Added
+- **MkDocs Documentation:** Implemented comprehensive documentation system with:
+  - **mkdocs-material** theme with dark/light mode, navigation tabs, and search
+  - **mkdocstrings[python]** for automatic API reference generation from docstrings
+  - **mkdocs-gen-files** for auto-generating reference pages from source code
+  - **Architecture diagrams** using Mermaid (system overview, data flow, component interactions)
+  - **Getting Started** guides (installation, quick start)
+  - **Changelog integration** via pymdownx.snippets
+- **World Definition Config (`world_definition.json`):** Separated static world data (products, network topology, recipes) from runtime simulation parameters.
+- **Semgrep Rule (`.semgrep/detect_literals.yaml`):** Added custom rule to detect hardcoded literals in source code.
+
+### Changed
+- **Config-Driven Architecture Enforcement:** Eliminated all remaining hardcoded values from source code:
+  - **Deleted `constants.py`:** Moved `EPSILON` and `WEEKS_PER_YEAR` to `simulation_config.json` under `global_constants`.
+  - **Refactored `builder.py`:** Now reads products, recipes, and network topology from `world_definition.json` instead of hardcoding.
+  - **Updated `allocation.py`:** Receives config and reads `epsilon` from `global_constants`.
+  - **Updated `demand.py`:** Reads seasonality (amplitude, phase, cycle) and noise (gamma_shape, gamma_scale) from config.
+  - **Updated `logistics.py`:** Reads `epsilon_weight_kg` and `epsilon_volume_m3` from config.
+  - **Updated `orchestrator.py`:** Reads scoring weights from config for triangle report.
+  - **Updated `quirks.py`:** Added configurable `cluster_delay_min/max_hours` and `shrinkage_factor_min/max`.
+
 ## [0.6.0] - 2025-12-27
 
 ### Added

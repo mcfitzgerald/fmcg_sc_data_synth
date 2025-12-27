@@ -40,3 +40,24 @@ All code passes strict quality checks:
 - **mypy**: Strict type checking enabled
 - **semgrep**: Security and hardcode detection
 - **Config-driven**: No magic numbers - all parameters in `simulation_config.json`
+
+## Documentation
+
+Full documentation is available via MkDocs. To build and serve locally:
+
+```bash
+# Install docs dependencies
+poetry install --with docs
+
+# Serve documentation locally (http://127.0.0.1:8000)
+poetry run mkdocs serve
+
+# Build static site
+poetry run mkdocs build
+```
+
+Documentation includes:
+- **Getting Started**: Installation and quick start guides
+- **Architecture**: System design with mermaid diagrams
+- **API Reference**: Auto-generated from docstrings
+- **Supply Chain Physics**: Theoretical foundations

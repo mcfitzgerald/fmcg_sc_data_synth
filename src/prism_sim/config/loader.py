@@ -37,3 +37,21 @@ def load_simulation_config(config_path: str | None = None) -> dict[str, Any]:
         if not isinstance(data, dict):
             raise TypeError(f"Expected dict from {final_path}, got {type(data)}")
         return data
+
+
+def load_world_definition(config_path: str | None = None) -> dict[str, Any]:
+    """
+    Loads the static world definition (Products, Network, Recipes).
+    If no path is provided, looks for world_definition.json in the config directory.
+    """
+    if config_path is None:
+        # Default to the file next to this script
+        final_path = Path(__file__).parent / "world_definition.json"
+    else:
+        final_path = Path(config_path)
+
+    with open(final_path) as f:
+        data = json.load(f)
+        if not isinstance(data, dict):
+            raise TypeError(f"Expected dict from {final_path}, got {type(data)}")
+        return data

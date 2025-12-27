@@ -46,7 +46,7 @@ class Orchestrator:
         # 3. Initialize Engines & Agents
         self.pos_engine = POSEngine(self.world, self.state, self.config)
         self.replenisher = MinMaxReplenisher(self.world, self.state, self.config)
-        self.allocator = AllocationAgent(self.state)
+        self.allocator = AllocationAgent(self.state, self.config)
         self.logistics = LogisticsEngine(self.world, self.state, self.config)
 
         # 4. Initialize Manufacturing Engines (Milestone 5)
@@ -293,6 +293,15 @@ class Orchestrator:
         [Task 7.3]
         """
         report = self.monitor.get_report()
+        scoring_config = (
+            self.config.get("simulation_parameters", {}).get("scoring", {})
+        )
+
+        # Scoring Weights
+        base_service = scoring_config.get("service_index_base", 100.0)
+        backlog_penalty = scoring_config.get("backlog_penalty_divisor", 1000.0)
+        truck_scale = scoring_config.get("truck_fill_scale", 100.0)
+        oee_scale = scoring_config.get("oee_scale", 100.0)
 
         # Calculate Service (LIFR approx from backlogs)
         # Note: In our current simple state, negative inventory is backlog.
@@ -304,7 +313,7 @@ class Orchestrator:
         truck_fill = report.get("truck_fill", {}).get("mean", 0)
 
         # Arbitrary scaling for demo
-        service_index = 100.0 - (total_backlog / 1000.0)
+        service_index = base_service - (total_backlog / backlog_penalty)
         inv_turns = report.get("inventory_turns", {}).get("mean", 0)
 
         summary = [
@@ -313,9 +322,9 @@ class Orchestrator:
             "==================================================",
             f"1. SERVICE (Fill Rate Index):   {service_index:.2f}%",
             f"2. CASH (Inventory Turns):      {inv_turns:.2f}x",
-            f"3. COST (Truck Fill Rate):      {truck_fill * 100.0:.1f}%",
+            f"3. COST (Truck Fill Rate):      {truck_fill * truck_scale:.1f}%",
             "--------------------------------------------------",
-            f"Manufacturing OEE:              {oee * 100.0:.1f}%",
+            f"Manufacturing OEE:              {oee * oee_scale:.1f}%",
             f"Total System Inventory:         {total_inventory:,.0f} cases",
             f"Total Backlog:                  {total_backlog:,.0f} cases",
             "==================================================",

@@ -1,5 +1,16 @@
 {
   "simulation_parameters": {
+    "global_constants": {
+      "epsilon": 0.001,
+      "weeks_per_year": 52,
+      "random_seed": 42
+    },
+    "scoring": {
+      "service_index_base": 100.0,
+      "backlog_penalty_divisor": 1000.0,
+      "truck_fill_scale": 100.0,
+      "oee_scale": 100.0
+    },
     "calendar": {
       "weeks_per_year": 52
     },
@@ -12,6 +23,15 @@
       }
     },
     "demand": {
+      "seasonality": {
+        "amplitude": 0.2,
+        "phase_shift_days": 150,
+        "cycle_days": 365
+      },
+      "noise": {
+        "gamma_shape": 10.0,
+        "gamma_scale": 0.1
+      },
       "category_profiles": {
         "ORAL_CARE": { "base_daily_demand": 50.0 },
         "PERSONAL_WASH": { "base_daily_demand": 30.0 },
@@ -25,7 +45,9 @@
     "logistics": {
       "constraints": {
         "truck_max_weight_kg": 20000.0,
-        "truck_max_volume_m3": 60.0
+        "truck_max_volume_m3": 60.0,
+        "epsilon_weight_kg": 0.001,
+        "epsilon_volume_m3": 0.0001
       },
       "default_lead_time_days": 3.0
     },
@@ -70,6 +92,8 @@
         "noise_std_hours": 2.0,
         "cluster_threshold_hours": 4.0,
         "cluster_size": 3,
+        "cluster_delay_min_hours": 2.0,
+        "cluster_delay_max_hours": 6.0,
         "affected_ports": ["USLAX", "CNSHA"]
       },
       "optimism_bias": {
@@ -80,7 +104,9 @@
       "phantom_inventory": {
         "enabled": true,
         "shrinkage_pct": 0.02,
-        "detection_lag_days": 14
+        "detection_lag_days": 14,
+        "shrinkage_factor_min": 0.5,
+        "shrinkage_factor_max": 1.0
       }
     },
     "risk_events": {

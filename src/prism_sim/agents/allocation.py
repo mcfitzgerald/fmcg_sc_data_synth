@@ -1,6 +1,6 @@
 import numpy as np
+from typing import Any
 
-from prism_sim.constants import EPSILON
 from prism_sim.network.core import Order
 from prism_sim.simulation.state import StateManager
 
@@ -11,8 +11,15 @@ class AllocationAgent:
     Implements 'Fair Share' logic when demand > supply.
     """
 
-    def __init__(self, state: StateManager) -> None:
+    def __init__(self, state: StateManager, config: dict[str, Any] | None = None) -> None:
         self.state = state
+        
+        # Get epsilon from config or default
+        if config:
+            sim_params = config.get("simulation_parameters", {})
+            self.epsilon = sim_params.get("global_constants", {}).get("epsilon", 0.001)
+        else:
+            self.epsilon = 0.001
 
     def _group_orders_by_source(
         self, orders: list[Order]
@@ -57,7 +64,7 @@ class AllocationAgent:
                 if p_idx is not None:
                     ratio = fill_ratios[p_idx]
                     new_qty = line.quantity * ratio
-                    if new_qty > EPSILON:
+                    if new_qty > self.epsilon:
                         line.quantity = new_qty
                         new_lines.append(line)
                 else:

@@ -67,6 +67,8 @@ class PortCongestionQuirk:
         self.noise_std_hours = quirk_config.get("noise_std_hours", 2.0)
         self.cluster_threshold_hours = quirk_config.get("cluster_threshold_hours", 4.0)
         self.cluster_size = quirk_config.get("cluster_size", 3)
+        self.cluster_delay_min_hours = quirk_config.get("cluster_delay_min_hours", 2.0)
+        self.cluster_delay_max_hours = quirk_config.get("cluster_delay_max_hours", 6.0)
         self.affected_ports = quirk_config.get("affected_ports", ["USLAX", "CNSHA"])
 
         self._rng = np.random.default_rng(seed)
@@ -114,7 +116,9 @@ class PortCongestionQuirk:
         if prev_delay > self.cluster_threshold_hours:
             streak += 1
             if streak <= self.cluster_size:
-                current_delay += self._rng.uniform(2, 6)
+                current_delay += self._rng.uniform(
+                    self.cluster_delay_min_hours, self.cluster_delay_max_hours
+                )
         else:
             streak = 0
 
@@ -257,6 +261,8 @@ class PhantomInventoryQuirk:
         self.enabled = quirk_config.get("enabled", True)
         self.shrinkage_pct = quirk_config.get("shrinkage_pct", 0.02)
         self.detection_lag_days = quirk_config.get("detection_lag_days", 14)
+        self.shrinkage_factor_min = quirk_config.get("shrinkage_factor_min", 0.5)
+        self.shrinkage_factor_max = quirk_config.get("shrinkage_factor_max", 1.0)
 
         self._rng = np.random.default_rng(seed)
 
@@ -297,8 +303,11 @@ class PhantomInventoryQuirk:
             if current_qty <= 0:
                 continue
 
-            # Apply shrinkage (random 50-100% of shrinkage_pct)
-            shrink_factor = self._rng.uniform(0.5, 1.0) * self.shrinkage_pct
+            # Apply shrinkage (random between min and max factor of shrinkage_pct)
+            shrink_factor = (
+                self._rng.uniform(self.shrinkage_factor_min, self.shrinkage_factor_max)
+                * self.shrinkage_pct
+            )
             shrink_qty = current_qty * shrink_factor
 
             # Apply to actual inventory

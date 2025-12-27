@@ -176,16 +176,29 @@ class POSEngine:
         """Generates demand for a specific day."""
         week = (day // 7) + 1
 
+        # Get demand config
+        demand_config = self.config.get("simulation_parameters", {}).get("demand", {})
+        season_config = demand_config.get("seasonality", {})
+        noise_config = demand_config.get("noise", {})
+
         # 1. Seasonality (Sine wave peaking in summer/Q3)
-        seasonality = 1.0 + 0.2 * np.sin(2 * np.pi * (day - 150) / 365)
+        # Defaults: amplitude=0.2, phase=150, cycle=365
+        amplitude = season_config.get("amplitude", 0.2)
+        phase = season_config.get("phase_shift_days", 150)
+        cycle = season_config.get("cycle_days", 365)
+        
+        seasonality = 1.0 + amplitude * np.sin(2 * np.pi * (day - phase) / cycle)
 
         # 2. Promo Multipliers
         promo_mult = self.calendar.get_weekly_multipliers(week, self.state)
 
         # 3. Randomness (Gamma distribution to prevent negative demand)
-        # CV = 0.3 approx
+        # Defaults: shape=10.0, scale=0.1
+        g_shape = noise_config.get("gamma_shape", 10.0)
+        g_scale = noise_config.get("gamma_scale", 0.1)
+
         rng = np.random.default_rng(day)
-        noise = rng.gamma(shape=10.0, scale=0.1, size=self.base_demand.shape)
+        noise = rng.gamma(shape=g_shape, scale=g_scale, size=self.base_demand.shape)
 
         # 4. Combine
         # Demand = Base * Seasonality * Promo * Noise
