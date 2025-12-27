@@ -26,6 +26,7 @@ from prism_sim.simulation.quirks import QuirkManager
 from prism_sim.simulation.risk_events import RiskEventManager
 from prism_sim.simulation.state import StateManager
 from prism_sim.simulation.transform import TransformEngine
+from prism_sim.simulation.writer import SimulationWriter
 
 
 class Orchestrator:
@@ -60,7 +61,10 @@ class Orchestrator:
         self.quirks = QuirkManager(config=self.config)
         self.risks = RiskEventManager(sim_params)
 
-        # 6. Manufacturing State
+        # 6. Initialize Data Writer (Milestone 7)
+        self.writer = SimulationWriter()
+
+        # 7. Manufacturing State
         self.active_production_orders: list[ProductionOrder] = []
         self.completed_batches: list[Batch] = []
 
@@ -246,7 +250,15 @@ class Orchestrator:
 
         # --------------------------------------------
 
-        # 13. Logging / Metrics (Simple Print)
+        # 13. Data Logging (Milestone 7)
+        self.writer.log_orders(raw_orders, day)
+        self.writer.log_shipments(new_shipments + plant_shipments, day)
+        self.writer.log_batches(new_batches, day)
+        # Log inventory every 7 days to keep file size manageable
+        if day % 7 == 0:
+            self.writer.log_inventory(self.state, self.world, day)
+
+        # 14. Logging / Metrics (Simple Print)
         total_demand = np.sum(daily_demand)
         total_ordered = sum(
             line.quantity for order in raw_orders for line in order.lines
@@ -267,6 +279,43 @@ class Orchestrator:
             f"Produced={total_produced:.1f}, "
             f"InTransit={len(self.state.active_shipments)} trucks"
         )
+
+    def save_results(self) -> None:
+        """Export all collected data."""
+        report = self.monitor.get_report()
+        self.writer.save(report)
+
+    def generate_triangle_report(self) -> str:
+        """
+        Generate 'The Triangle Report': Service vs. Cost vs. Cash.
+        [Task 7.3]
+        """
+        report = self.monitor.get_report()
+        
+        # Calculate Service (LIFR approx from backlogs)
+        # Note: In our current simple state, negative inventory is backlog.
+        # So we can look at actual vs perceived or just positive vs negative.
+        total_backlog = np.sum(np.maximum(0, -self.state.actual_inventory))
+        total_inventory = np.sum(np.maximum(0, self.state.actual_inventory))
+        
+        oee = report.get("oee", {}).get("mean", 0)
+        truck_fill = report.get("truck_fill", {}).get("mean", 0)
+        
+        summary = [
+            "==================================================",
+            "        THE SUPPLY CHAIN TRIANGLE REPORT          ",
+            "==================================================",
+            f"1. SERVICE (Fill Rate Index):   {100.0 - (total_backlog/1000.0):.2f}%", # Arbitrary scaling for demo
+            f"2. CASH (Inventory Turns):      {report.get('inventory_turns', {}).get('mean', 0):.2f}x",
+            f"3. COST (Truck Fill Rate):      {truck_fill*100.0:.1f}%",
+            "--------------------------------------------------",
+            f"Manufacturing OEE:              {oee*100.0:.1f}%",
+            f"Total System Inventory:         {total_inventory:,.0f} cases",
+            f"Total Backlog:                  {total_backlog:,.0f} cases",
+            "=================================================="
+        ]
+        return "\n".join(summary)
+
 
     def _process_arrivals(self, arrived_shipments: list[Shipment]) -> None:
         for shipment in arrived_shipments:
