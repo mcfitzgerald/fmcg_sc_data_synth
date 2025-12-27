@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] - 2025-12-27
+
+### Added
+- **Deep NAM Static Generators (Task 2.1, 2.2):** Implemented high-performance generators for massive scale simulation:
+  - **ProductGenerator:** Generates 50+ SKUs across 3 categories with Zipfian popularity and realistic physical dimensions.
+  - **NetworkGenerator:** Generates a 4,500-node retail network using Barabási-Albert preferential attachment for hub-and-spoke realism.
+  - **StaticDataPool:** Vectorized Faker sampling for O(1) attribute generation.
+  - **Distributions:** Statistical helpers for Zipf and Power-Law network topology.
+- **Static World Writer:** Implemented `StaticWriter` to export Levels 0-4 (Products, Recipes, Locations, Partners, Links) to CSV format.
+- **World Generation Script:** Added `scripts/generate_static_world.py` to automate the creation of the 4,500-node Deep NAM environment.
+
 ## [0.7.0] - 2025-12-27
 
 ### Added
