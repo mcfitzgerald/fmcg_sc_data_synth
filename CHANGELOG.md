@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2025-12-26
+
+### Added
+- **Validation Framework (Task 6.1, 6.6):** Implemented comprehensive validation in `src/prism_sim/simulation/monitor.py`:
+  - **WelfordAccumulator:** O(1) streaming mean/variance calculation for real-time statistics.
+  - **MassBalanceChecker:** Physics conservation tracking (input = output + scrap).
+  - **RealismMonitor:** Online validator for OEE (65-85%), Truck Fill (>85%), SLOB (<30%), Inventory Turns (6-14x), Cost-per-Case ($1-3).
+  - **PhysicsAuditor:** Mass balance, inventory positivity, and kinematic consistency checks.
+- **Resilience Metrics (Task 6.2):** Implemented `ResilienceTracker` for TTS (Time-to-Survive) and TTR (Time-to-Recover) measurement during disruptions per Simchi-Levi framework.
+- **Behavioral Quirks (Task 6.3):** Implemented realistic supply chain pathologies in `src/prism_sim/simulation/quirks.py`:
+  - **PortCongestionQuirk:** AR(1) auto-regressive delays creating clustered late arrivals (coefficient=0.70, clustering when delay >4h).
+  - **OptimismBiasQuirk:** 15% over-forecast for new products (<6 months old).
+  - **PhantomInventoryQuirk:** 2% shrinkage with 14-day detection lag (dual inventory model).
+  - **QuirkManager:** Unified interface for all quirks.
+- **Legacy Validation (Task 6.5):** Ported validation checks from reference implementation:
+  - Pareto distribution check (top 20% SKUs = 75-85% volume).
+  - Hub concentration check (Chicago ~20-30%).
+  - Named entities verification.
+  - Bullwhip ratio check (Order CV / POS CV = 1.5-3.0x).
+  - Referential integrity checks.
+- **Metrics Dataclasses:** Added `ProductionMetrics` and `ShipmentMetrics` for clean parameter passing.
+
+### Changed
+- **Code Quality:** All ruff and mypy strict checks pass for new modules.
+
 ## [0.4.1] - 2025-12-26
 
 ### Changed

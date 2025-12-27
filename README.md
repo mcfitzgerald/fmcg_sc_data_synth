@@ -7,8 +7,9 @@ A high-fidelity supply chain simulation engine built on the principles of Supply
 Run all python through poetry
 
 ## Project Status
-**Current Milestone:** Milestone 5 (Manufacturing & Supply) - *Completed*
-- **Next:** Milestone 6 (Validation, Quirks & Realism)
+**Current Milestone:** Milestone 6 (Validation, Quirks & Realism) - *In Progress*
+- Completed: RealismMonitor, PhysicsAuditor, ResilienceTracker, QuirkManager, LegacyValidator
+- Remaining: RiskEventManager, dual inventory integration, orchestrator integration
 
 ## Core Principles
 
