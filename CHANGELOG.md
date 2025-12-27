@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.2] - 2025-12-27
+
+### Changed
+- **Performance Optimization (Replenisher):** Implemented O(1) Store-to-Supplier lookup caching in `MinMaxReplenisher` to resolve O(N*L) performance bottleneck (22M iterations/day).
+- **Config Adjustment:** Reduced `base_daily_demand` to ~1.0 case/day/store and `initial_fg_level` to 5.0 to align simulation physics with realistic NAM benchmarks.
+- **Debugging:** Added extensive debug instrumentation to `Replenishment` agent and `Orchestrator` to diagnose order silence.
+
 ## [0.9.1] - 2025-12-27
 
 ### Changed

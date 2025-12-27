@@ -41,6 +41,23 @@ class MinMaxReplenisher:
             params.get("batch_size_cases", 50.0)
         )  # Pallet size approx
 
+        # Optimization: Cache Store->Supplier map
+        self.store_supplier_map = self._build_supplier_map()
+        print(f"DEBUG REPL: Mapped {len(self.store_supplier_map)} targets to sources.")
+        # Print sample to verify IDs
+        sample_keys = list(self.store_supplier_map.keys())[:5]
+        print(f"DEBUG REPL Sample Keys: {sample_keys}")
+
+    def _build_supplier_map(self) -> dict[str, str]:
+        """Builds a lookup map for Store -> Source ID."""
+        mapping = {}
+        for link in self.world.links.values():
+            # Assuming tree structure where each node has one primary supplier link
+            # or simply taking the last one found.
+            if link.target_id not in mapping:
+                mapping[link.target_id] = link.source_id
+        return mapping
+
     def generate_orders(self, day: int, demand_history: np.ndarray) -> list[Order]:
         """
         Generates replenishment orders for Retail Stores.
@@ -87,6 +104,16 @@ class MinMaxReplenisher:
         # 5. Determine Order Quantities
         # Mask where Inv < ReorderPoint
         needs_order = current_inv < reorder_point
+        
+        # DEBUG: Print Replenishment Stats
+        if day <= 15: # Limit spam
+             print(f"DEBUG REPL Day {day}: "
+                   f"Stores={len(store_indices)}, "
+                   f"MeanInv={np.mean(current_inv):.2f}, "
+                   f"MeanDmd={np.mean(avg_demand):.2f}, "
+                   f"MeanRP={np.mean(reorder_point):.2f}, "
+                   f"NeedsOrderCount={np.sum(needs_order)}, "
+                   f"Inv<RP={(current_inv < reorder_point).any()}")
 
         # Raw Quantity = Target - Current
         raw_qty = target_stock - current_inv
@@ -125,13 +152,16 @@ class MinMaxReplenisher:
 
         # Create Order Objects
         order_count = 0
+        debug_printed = 0
         for s_idx, lines in orders_by_store.items():
             store_id = self.state.node_idx_to_id[int(s_idx)]
 
-            # Find Source (Simplification: Fixed mapping or single RDC)
-            # In builder, we linked stores to RDCs.
-            # We can find the link where target == store_id
-            source_id = self._find_supplier(store_id)
+            # Find Source using cached map
+            source_id = self.store_supplier_map.get(store_id)
+            
+            if day == 3 and debug_printed < 5:
+                print(f"DEBUG REPL Loop: Store={store_id}, Source={source_id}, Lines={len(lines)}")
+                debug_printed += 1
 
             if source_id:
                 order_count += 1
@@ -148,9 +178,5 @@ class MinMaxReplenisher:
         return orders
 
     def _find_supplier(self, store_id: str) -> str:
-        # Simple lookup in world links
-        # Returns the first source connected to this store
-        for link in self.world.links.values():
-            if link.target_id == store_id:
-                return link.source_id
-        return "UNKNOWN"
+        # Deprecated: Use self.store_supplier_map instead
+        return self.store_supplier_map.get(store_id, "UNKNOWN")

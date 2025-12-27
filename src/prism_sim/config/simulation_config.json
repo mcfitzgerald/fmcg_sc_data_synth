@@ -33,14 +33,14 @@
         "gamma_scale": 0.1
       },
       "category_profiles": {
-        "ORAL_CARE": { "base_daily_demand": 50.0 },
-        "PERSONAL_WASH": { "base_daily_demand": 30.0 },
-        "HOME_CARE": { "base_daily_demand": 20.0 },
+        "ORAL_CARE": { "base_daily_demand": 1.2 },
+        "PERSONAL_WASH": { "base_daily_demand": 1.0 },
+        "HOME_CARE": { "base_daily_demand": 0.8 },
         "INGREDIENT": { "base_daily_demand": 0.0 }
       }
     },
     "inventory": {
-      "initial_fg_level": 100.0
+      "initial_fg_level": 5.0
     },
     "logistics": {
       "constraints": {
@@ -56,7 +56,7 @@
       "reorder_point_days": 7.0,
       "min_production_qty": 100.0,
       "production_lead_time_days": 3,
-      "production_hours_per_day": 16.0,
+      "production_hours_per_day": 24.0,
       "backup_supplier_cost_premium": 0.25,
       "default_yield_percent": 98.5,
       "recall_batch_trigger_day": 30,

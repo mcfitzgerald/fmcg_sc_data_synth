@@ -273,13 +273,26 @@ class Orchestrator:
         )
         total_produced = sum(b.quantity_cases for b in new_batches)
 
+        # Debug: Inventory Stats
+        # Only consider stores (first 4500 nodes approx, or just average all positive)
+        # We know actual_inventory can be negative.
+        mean_inv = np.mean(self.state.actual_inventory)
+        
+        # Calculate theoretical reorder point avg
+        # RP = Demand * 3.0
+        # This is approximate since we don't have the exact Replenisher view here easily
+        # but daily_demand is what we passed.
+        mean_demand = np.mean(daily_demand)
+        est_rp = mean_demand * 3.0
+
         print(
-            f"Day {day:03}: Demand={total_demand:.1f}, "
-            f"Ordered={total_ordered:.1f}, "
-            f"Shipped={total_shipped:.1f}, "
-            f"Arrived={total_arrived:.1f}, "
-            f"Produced={total_produced:.1f}, "
-            f"InTransit={len(self.state.active_shipments)} trucks"
+            f"Day {day:03}: Dmd={total_demand:.0f}, "
+            f"Ord={total_ordered:.0f}, "
+            f"Ship={total_shipped:.0f}, "
+            f"Arr={total_arrived:.0f}, "
+            f"Prod={total_produced:.0f}, "
+            f"InvMean={mean_inv:.1f}, "
+            f"EstRP={est_rp:.2f}"
         )
 
 
