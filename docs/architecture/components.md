@@ -349,10 +349,10 @@ Validates simulation physics and tracks KPIs.
 
 **Validation Checks:**
 
-- Little's Law compliance
-- Mass balance integrity
-- Capacity constraint adherence
-- Inventory positivity
+- **Mass Balance Audit:** Enforces the physical conservation law $I_t = I_{t-1} + \text{Inflows} - \text{Outflows}$. Detects inventory "leaks" or "magic creation" by comparing expected levels (based on recorded flows) against actual state tensors.
+- **Little's Law compliance:** Ensures lead times and WIP align with flow rates.
+- **Capacity constraint adherence:** Validates that production never exceeds theoretical plant limits.
+- **Inventory positivity:** (Implicitly handled but audited) ensures physical reality is maintained.
 
 **Tracked Metrics:**
 

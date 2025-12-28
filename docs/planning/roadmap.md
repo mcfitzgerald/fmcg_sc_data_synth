@@ -50,7 +50,7 @@ This roadmap outlines the sequential milestones to transition from a statistical
     *   **Phantom Inventory:** Shrinkage with detection lag.
 *   **Task 6.4:** [x] **Risk Scenarios:** Execute deterministic risk events (e.g., "Port Strike") from `benchmark_manifest.json`.
 *   **Task 6.5:** **Legacy Validation:** Port legacy distribution checks (Zipf, Pareto, Hub Concentration) to `monitor.py`.
-*   **Task 6.6:** **Physics Audit:** Automated checks for Mass Balance ($Inv_{in} == Inv_{out}$).
+*   **Task 6.6:** [x] **Physics Audit:** Automated checks for Mass Balance ($Inv_{in} == Inv_{out}$).
 
 ## Milestone 7: SCOR-DS Expansion (Deep NAM)
 *   **Goal:** Scale to 4,500 nodes and generate full ~70-table schema (Levels 0-14).

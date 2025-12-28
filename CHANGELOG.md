@@ -14,6 +14,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Vectorized MRP (Task 8.2):** Implemented `RecipeMatrixBuilder` to convert object-based BOMs into a dense NumPy matrix ($\mathbf{R}$) for $O(1)$ dependency lookups.
   - **Matrix Algebra:** `MRPEngine` now calculates ingredient requirements via vector-matrix multiplication ($\mathbf{req} = \mathbf{d} \cdot \mathbf{R}$), enabling instant planning for thousands of SKUs.
   - **Vectorized Transform:** Refactored `TransformEngine` to use direct tensor operations for material feasibility checks and consumption updates.
+- **Mass Balance Physics Audit (Task 6.6):** Implemented a rigorous validation gate to enforce the conservation of mass.
+  - **Flow Tracking:** Added `DailyFlows` to track every inventory movement (Sales, Receipts, Shipments, Production, Consumed, Shrinkage).
+  - **Audit Loop:** `PhysicsAuditor` now calculates expected inventory levels daily and flags "Drift" violations if actual state diverges from physics laws.
 
 ### Added
 - **Recipe Matrix:** New core component `src/prism_sim/network/recipe_matrix.py` for handling dense BOM structures.
