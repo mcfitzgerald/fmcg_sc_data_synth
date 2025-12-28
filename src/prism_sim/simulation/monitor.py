@@ -3,7 +3,7 @@ from typing import Any
 
 import numpy as np
 
-from prism_sim.network.core import Batch, Shipment, ShipmentStatus
+from prism_sim.network.core import Batch, NodeType, Shipment, ShipmentStatus
 from prism_sim.simulation.state import StateManager
 from prism_sim.simulation.world import World
 
@@ -131,35 +131,179 @@ class RealismMonitor:
         }
 
 
-class PhysicsAuditor:
-    """Enforces conservation laws and physical constraints."""
+@dataclass
+class DailyFlows:
+    """Tracks all inventory flows for a single day for mass balance auditing."""
 
-    def __init__(self, state: StateManager, world: World, config: dict[str, Any]):
+    day: int
+    opening_inventory: np.ndarray  # Shape: [n_nodes, n_products]
+
+    # Flow accumulators (same shape)
+    sales: np.ndarray  # POS demand consumed
+    receipts: np.ndarray  # Shipments arrived at destination
+    shipments_out: np.ndarray  # Inventory deducted for outbound shipments
+    production_in: np.ndarray  # Finished goods added at plants
+    consumption_out: np.ndarray  # Raw materials consumed in production
+    shrinkage: np.ndarray  # Phantom inventory losses
+
+    closing_inventory: np.ndarray | None = None
+
+
+class PhysicsAuditor:
+    """
+    Automated checks for Supply Chain Physics integrity.
+    [Task 6.6] [Intent: 5. Validation - Physics Audit]
+    """
+
+    def __init__(self, state: StateManager, world: World, config: dict[str, Any]) -> None:
         self.state = state
         self.world = world
-        self.config = config.get("validation", {})
-        self.mass_balance_drift_max = self.config.get("mass_balance_drift_max", 0.02)
+        self.config = config
 
-    def check_mass_balance(
-        self, batches: list[Batch], shipments: list[Shipment]
-    ) -> list[str]:
+        # Drift threshold (e.g. 0.02 = 2% mismatch allowed)
+        self.mass_balance_drift_max = config.get("mass_balance_drift_max", 0.02)
+        self.all_violations: list[str] = []
+        
+        self.current_flows: DailyFlows | None = None
+
+    def start_day(self, day: int) -> None:
+        """Snapshot opening inventory and reset flow accumulators."""
+        # We use actual_inventory (Ground Truth) for the audit
+        self.current_flows = DailyFlows(
+            day=day,
+            opening_inventory=self.state.actual_inventory.copy(),
+            sales=np.zeros_like(self.state.actual_inventory),
+            receipts=np.zeros_like(self.state.actual_inventory),
+            shipments_out=np.zeros_like(self.state.actual_inventory),
+            production_in=np.zeros_like(self.state.actual_inventory),
+            consumption_out=np.zeros_like(self.state.actual_inventory),
+            shrinkage=np.zeros_like(self.state.actual_inventory),
+        )
+
+    def record_sales(self, demand: np.ndarray) -> None:
+        """Record sales (POS demand) consumption."""
+        if self.current_flows:
+            self.current_flows.sales += demand
+
+    def record_receipts(self, shipments: list[Shipment]) -> None:
+        """Record inventory additions from arriving shipments."""
+        if not self.current_flows:
+            return
+        for s in shipments:
+            node_idx = self.state.node_id_to_idx.get(s.target_id)
+            if node_idx is None:
+                continue
+            for line in s.lines:
+                prod_idx = self.state.product_id_to_idx.get(line.product_id)
+                if prod_idx is not None:
+                    self.current_flows.receipts[node_idx, prod_idx] += line.quantity
+
+    def record_shipments_out(self, shipments: list[Shipment]) -> None:
+        """Record inventory deductions for outbound shipments."""
+        if not self.current_flows:
+            return
+        for s in shipments:
+            node_idx = self.state.node_id_to_idx.get(s.source_id)
+            if node_idx is None:
+                continue
+            
+            # Skip suppliers as they are infinite sources (no inventory decrement)
+            source_node = self.world.nodes.get(s.source_id)
+            if source_node and source_node.type == NodeType.SUPPLIER:
+                continue
+
+            for line in s.lines:
+                prod_idx = self.state.product_id_to_idx.get(line.product_id)
+                if prod_idx is not None:
+                    self.current_flows.shipments_out[node_idx, prod_idx] += line.quantity
+
+    def record_production(self, batches: list[Batch]) -> None:
+        """Record finished goods added and raw materials consumed in production."""
+        if not self.current_flows:
+            return
+        for b in batches:
+            plant_idx = self.state.node_id_to_idx.get(b.plant_id)
+            if plant_idx is None:
+                continue
+            
+            # Record FG output
+            prod_idx = self.state.product_id_to_idx.get(b.product_id)
+            if prod_idx is not None:
+                self.current_flows.production_in[plant_idx, prod_idx] += b.quantity_cases
+
+            # Record Ingredient consumption
+            for ing_id, qty in b.ingredients_consumed.items():
+                ing_idx = self.state.product_id_to_idx.get(ing_id)
+                if ing_idx is not None:
+                    self.current_flows.consumption_out[plant_idx, ing_idx] += qty
+
+    def record_shrinkage(self, events: list[Any]) -> None:
+        """Record inventory losses from shrinkage (quirks)."""
+        if not self.current_flows:
+            return
+        for e in events:
+            # Assuming event has node_id, product_id, and quantity_lost (per plan)
+            node_idx = self.state.node_id_to_idx.get(e.node_id)
+            prod_idx = self.state.product_id_to_idx.get(e.product_id)
+            if node_idx is not None and prod_idx is not None:
+                self.current_flows.shrinkage[node_idx, prod_idx] += e.quantity_lost
+
+    def end_day(self) -> None:
+        """Snapshot closing inventory."""
+        if self.current_flows:
+            self.current_flows.closing_inventory = self.state.actual_inventory.copy()
+
+    def check_mass_balance(self) -> list[str]:
+        """
+        Validate I_t = I_{t-1} + Inflows - Outflows.
+        
+        Conservation Law:
+        Opening + Receipts + ProdIn - Sales - ShipOut - Consumed - Shrinkage == Closing
+        """
+        if self.current_flows is None or self.current_flows.closing_inventory is None:
+            return []
+
         violations: list[str] = []
+        f = self.current_flows
 
-        # 1. Ingredient -> Batch Conservation
-        # (Simplified check: sum of ingredients used ~= batch output * yield)
-        # Note: We need deep genealogy for this, which might be expensive to traverse
-        # every step. For now, we can check basic conversion ratios if we had
-        # ingredient usage data readily available per batch.
+        # Expected closing = opening + inflows - outflows
+        expected = (
+            f.opening_inventory
+            + f.receipts
+            + f.production_in
+            - f.sales
+            - f.shipments_out
+            - f.consumption_out
+            - f.shrinkage
+        )
 
-        # 2. Inventory Positivity
-        # We allow backlog (negative inventory) conceptually, but physical inventory
-        # cannot be negative. In our simulation, 'inventory' < 0 implies backlog.
-        # So we check if "actual" physical inventory is negative (if we were tracking
-        # it separately).
-        # Since state.inventory is net (Physical - Backlog), negative is allowed as
-        # a business state. But if we assume this check is for "Physical Reality",
-        # we'd need separate tracking.
-        # For now, we'll skip simple negativity check on the main inventory array.
+        # Calculate drift as percentage of opening (avoid div by zero with max(1.0))
+        # We use absolute difference for the numerator
+        denominator = np.maximum(np.abs(f.opening_inventory), 1.0)
+        drift = np.abs(expected - f.closing_inventory) / denominator
+
+        # Find violations exceeding threshold
+        violation_mask = drift > self.mass_balance_drift_max
+
+        if np.any(violation_mask):
+            # Report top violations (limit to avoid flood)
+            indices = np.where(violation_mask)
+            # Take up to 10 indices
+            for i in range(min(10, len(indices[0]))):
+                node_idx = indices[0][i]
+                prod_idx = indices[1][i]
+                
+                node_id = self.state.node_idx_to_id[node_idx]
+                prod_id = self.state.product_idx_to_id[prod_idx]
+                
+                msg = (
+                    f"Day {f.day}: Node={node_id} Product={prod_id} "
+                    f"Expected={expected[node_idx, prod_idx]:.1f} "
+                    f"Actual={f.closing_inventory[node_idx, prod_idx]:.1f} "
+                    f"Drift={drift[node_idx, prod_idx]*100:.2f}%"
+                )
+                violations.append(msg)
+                self.all_violations.append(msg)
 
         return violations
 

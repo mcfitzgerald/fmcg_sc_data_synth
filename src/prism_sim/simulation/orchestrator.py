@@ -1,4 +1,5 @@
 import numpy as np
+from typing import Any
 
 from prism_sim.agents.allocation import AllocationAgent
 from prism_sim.agents.replenishment import MinMaxReplenisher
@@ -133,8 +134,13 @@ class Orchestrator:
         print("Simulation Complete.")
 
     def _step(self, day: int) -> None:
-        # 0. Risk & Quirks: Start of Day
-        self._apply_pre_step_quirks(day)
+        # 0. Start mass balance tracking
+        self.auditor.start_day(day)
+
+        # 0a. Risk & Quirks: Start of Day
+        shrinkage_events = self._apply_pre_step_quirks(day)
+        if shrinkage_events:
+            self.auditor.record_shrinkage(shrinkage_events)
 
         # 1. Generate Demand (POS)
         daily_demand = self.pos_engine.generate_demand(day)
@@ -142,6 +148,7 @@ class Orchestrator:
 
         # 2. Consume Inventory (Sales)
         self.state.update_inventory_batch(-daily_demand)
+        self.auditor.record_sales(daily_demand)
 
         # 3. Replenishment Decision (The "Pull" Signal)
         raw_orders = self.replenisher.generate_orders(day, daily_demand)
@@ -160,6 +167,7 @@ class Orchestrator:
 
         # 5. Logistics (Milestone 4.2)
         new_shipments = self.logistics.create_shipments(allocated_orders, day)
+        self.auditor.record_shipments_out(new_shipments)
         self._apply_logistics_quirks_and_risks(new_shipments)
         self.state.active_shipments.extend(new_shipments)
 
@@ -171,6 +179,7 @@ class Orchestrator:
 
         # 7. Process Arrivals (Receive Inventory)
         self._process_arrivals(arrived)
+        self.auditor.record_receipts(arrived)
 
         # 8. Manufacturing: MRP (Milestone 5.1)
         new_production_orders = self.mrp_engine.generate_production_orders(
@@ -186,6 +195,7 @@ class Orchestrator:
         ) = self.transform_engine.process_production_orders(
             self.active_production_orders, day
         )
+        self.auditor.record_production(new_batches)
         self.active_production_orders = [
             o for o in updated_orders if o.status.value != "complete"
         ]
@@ -193,11 +203,20 @@ class Orchestrator:
 
         # 10. Ship finished goods from Plants to RDCs
         plant_shipments = self._create_plant_shipments(new_batches, day)
+        self.auditor.record_shipments_out(plant_shipments)
         self._apply_logistics_quirks_and_risks(plant_shipments)
         self.state.active_shipments.extend(plant_shipments)
 
         # 11. Validation & Resilience
         self._apply_post_step_validation(day, arrived)
+        
+        # 11a. Mass Balance Audit
+        self.auditor.end_day()
+        mass_violations = self.auditor.check_mass_balance()
+        if mass_violations:
+            print("  MASS BALANCE VIOLATIONS DETECTED:")
+            for v in mass_violations[:5]:
+                print(f"    {v}")
 
         # 12. Monitors & Data Logging
         total_demand = np.sum(daily_demand)
@@ -223,7 +242,7 @@ class Orchestrator:
         }
         self._print_daily_status(day, daily_summary)
 
-    def _apply_pre_step_quirks(self, day: int) -> None:
+    def _apply_pre_step_quirks(self, day: int) -> list[Any]:
         """Trigger risk events and apply inventory quirks."""
         triggered_risks = self.risks.check_triggers(day)
         if triggered_risks:
@@ -231,8 +250,9 @@ class Orchestrator:
                 f"Day {day:03}: RISK EVENTS TRIGGERED: "
                 f"{[e.event_code for e in triggered_risks]}"
             )
-        self.quirks.apply_shrinkage(self.state, day)
+        shrinkage_events = self.quirks.apply_shrinkage(self.state, day)
         self.quirks.process_discoveries(self.state, day)
+        return shrinkage_events
 
     def _apply_demand_quirks(self, demand: np.ndarray, day: int) -> np.ndarray:
         """Apply optimism bias to generated demand."""

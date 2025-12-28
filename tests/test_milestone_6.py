@@ -149,6 +149,38 @@ def test_risk_events():
     sim.risks.check_recovery(7)
     assert len(sim.risks.active_events) == 0
 
+def test_mass_balance_conservation():
+    """Verify no mass balance violations during normal operation."""
+    sim = Orchestrator()
+    # Disable quirks to simplify balance check (though auditor handles shrinkage now)
+    sim.config["simulation_parameters"]["quirks"] = {"enabled": False}
+    
+    # Run simulation for a few days
+    sim.run(days=5)
+
+    # Check no violations accumulated
+    assert len(sim.auditor.all_violations) == 0
+
+def test_mass_balance_detects_leak():
+    """Verify mass balance detects artificial inventory leak."""
+    sim = Orchestrator()
+    
+    # Manually start a day
+    sim.auditor.start_day(1)
+    
+    # Inject matter (Magically add inventory without recording it in auditor)
+    # This violates Conservation Law: Closing > Opening but no Inflow recorded
+    sim.state.actual_inventory[0, 0] += 1000.0
+    
+    # End day
+    sim.auditor.end_day()
+    
+    # Check
+    violations = sim.auditor.check_mass_balance()
+    
+    assert len(violations) > 0
+    assert "Drift" in violations[0]
+
 def test_full_step_integration():
     """Run a full step to ensure no crashes with new logic."""
     sim = Orchestrator()
