@@ -44,6 +44,10 @@ class MRPEngine:
         self._plant_ids: list[str] = []
         self._finished_product_ids: list[str] = []
 
+        # Map of plant_id -> list of supported category names
+        self.plant_capabilities: dict[str, list[str]] = {}
+        self._load_plant_capabilities(mrp_config)
+
         self._cache_node_info()
 
         # Production Order counter for unique IDs
@@ -269,21 +273,48 @@ class MRPEngine:
                     
         return None
 
+    def _load_plant_capabilities(self, mfg_config: dict[str, Any]) -> None:
+        """Load supported categories for each plant from config."""
+        plant_params = mfg_config.get("plant_parameters", {})
+        for plant_id, params in plant_params.items():
+            cats = params.get("supported_categories", [])
+            if cats:
+                self.plant_capabilities[plant_id] = cats
+
     def _select_plant(self, product_id: str) -> str:
         """
-        Select a plant for production.
-
-        Simple round-robin assignment. Could be enhanced with:
-        - Capacity-based selection
-        - Product-specific plant assignments
-        - Transportation cost optimization
+        Select a plant for production based on product category capabilities.
+        Falls back to round-robin if no specific capabilities defined.
         """
         if not self._plant_ids:
             raise ValueError("No plants available for production")
 
-        # Round-robin based on order counter
-        plant_idx = self._po_counter % len(self._plant_ids)
-        return self._plant_ids[plant_idx]
+        product = self.world.products.get(product_id)
+        if not product:
+            # Fallback
+            plant_idx = self._po_counter % len(self._plant_ids)
+            return self._plant_ids[plant_idx]
+
+        cat_name = product.category.name
+        
+        # Filter plants that support this category
+        eligible_plants = []
+        for pid in self._plant_ids:
+            # If plant has specific capabilities defined, check them
+            # If not defined, assume it can produce everything (legacy behavior)
+            caps = self.plant_capabilities.get(pid)
+            if caps is None or cat_name in caps:
+                eligible_plants.append(pid)
+        
+        if not eligible_plants:
+            # If no plant explicitly supports it, fallback to all (or raise error?)
+            # For robustness, fallback to all but log/warn ideally. 
+            # We'll stick to robust fallback.
+            eligible_plants = self._plant_ids
+
+        # Round-robin based on order counter within eligible plants
+        plant_idx = self._po_counter % len(eligible_plants)
+        return eligible_plants[plant_idx]
 
     def _generate_po_id(self, current_day: int) -> str:
         """Generate unique Production Order ID."""

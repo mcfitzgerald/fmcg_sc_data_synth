@@ -69,22 +69,26 @@
         "PLANT-OH": {
           "description": "Old legacy plant - High capacity but frequent breakdowns",
           "efficiency_factor": 0.70,
-          "unplanned_downtime_pct": 0.15
+          "unplanned_downtime_pct": 0.15,
+          "supported_categories": ["HOME_CARE"]
         },
         "PLANT-TX": {
           "description": "Modern high-speed facility",
           "efficiency_factor": 0.95,
-          "unplanned_downtime_pct": 0.02
+          "unplanned_downtime_pct": 0.02,
+          "supported_categories": ["ORAL_CARE"]
         },
         "PLANT-CA": {
           "description": "Standard facility",
           "efficiency_factor": 0.85,
-          "unplanned_downtime_pct": 0.05
+          "unplanned_downtime_pct": 0.05,
+          "supported_categories": ["PERSONAL_WASH"]
         },
         "PLANT-GA": {
           "description": "Standard facility",
           "efficiency_factor": 0.85,
-          "unplanned_downtime_pct": 0.05
+          "unplanned_downtime_pct": 0.05,
+          "supported_categories": ["PERSONAL_WASH", "HOME_CARE"]
         }
       },
       "default_yield_percent": 98.5,
