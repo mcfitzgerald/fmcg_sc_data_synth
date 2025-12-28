@@ -67,6 +67,12 @@ This roadmap outlines the sequential milestones to transition from a statistical
     *   Execute 365-day run with full topology.
     *   Validate row counts and referential integrity against `schema.sql`.
 
-## Milestone 8: Final Delivery
-*   **Task 8.1:** Generate full SCOR-DS dataset (CSV/Parquet/SQL export).
-*   **Task 8.2:** Generate "The Triangle Report": A summary of Service vs. Cost vs. Cash performance.
+## Milestone 8: Architecture Overhaul (World Builder & Vectorization)
+*   **Goal:** Transition to procedural ingredients and vectorized execution for scale.
+*   **Task 8.1:** [x] **Procedural Generation:** Implement `ProductGenerator` updates for dynamic Ingredients and logic-driven BOMs.
+*   **Task 8.2:** [x] **Recipe Matrix:** Implement `RecipeMatrixBuilder` for dense $O(1)$ BOM lookups.
+*   **Task 8.3:** [x] **Vectorized Engines:** Refactor `MRPEngine` and `TransformEngine` to use matrix algebra for planning and execution.
+
+## Milestone 9: Final Delivery
+*   **Task 9.1:** Generate full SCOR-DS dataset (CSV/Parquet/SQL export).
+*   **Task 9.2:** Generate "The Triangle Report": A summary of Service vs. Cost vs. Cash performance.

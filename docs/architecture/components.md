@@ -73,14 +73,14 @@ graph LR
 
 ---
 
-### TransformEngine (Manufacturing)
+### TransformEngine
 
-Simulates production physics including capacity, changeovers, and yields.
+Simulates production physics including capacity, changeovers, and yields using vectorized state updates.
 
 ```mermaid
 flowchart TB
     subgraph TransformEngine
-        MO[Material Check]
+        MO[Vectorized Material Check]
         CAP[Capacity Check]
         CO[Changeover Penalty]
         PROD[Production Run]
@@ -101,11 +101,11 @@ flowchart TB
 
 **Features:**
 
-- OEE-based capacity constraints
-- Changeover time penalties (product switching)
-- SPOF (Single Point of Failure) tracking
-- Yield losses and scrap
-- Batch genealogy with lot tracking
+- **Vectorized Checks:** Instant feasibility checks against inventory arrays.
+- **Mass Balance:** Direct tensor updates for material consumption.
+- **OEE-based Capacity:** Enforces finite capacity with efficiency loss.
+- **Changeover Penalties:** Time lost when switching product families.
+- **SPOF Tracking:** Simulates bottleneck ingredient shortages.
 
 **Location:** `src/prism_sim/simulation/transform.py`
 
@@ -155,24 +155,23 @@ Different products "fill" differently:
 
 ### MRPEngine
 
-Manufacturing Requirements Planning - converts demand into production orders.
+Manufacturing Requirements Planning - converts demand into production orders using vectorized matrix algebra.
 
 ```mermaid
 flowchart LR
-    INV[RDC Inventory] --> CHECK{Below<br/>Threshold?}
-    CHECK -->|Yes| CALC[Calculate Need]
-    CHECK -->|No| SKIP[No Action]
-    CALC --> BOM[Explode BOM]
-    BOM --> PO[Production Order]
-    PO --> PLANT[To Plant Queue]
+    DEMAND[Demand Vector] --> MAT[Matrix Mult]
+    R[Recipe Matrix] --> MAT
+    MAT --> REQ[Requirements]
+    REQ --> NET[Net Inventory]
+    NET --> PO[Production Order]
 ```
 
 **Features:**
 
-- Inventory-driven production planning
-- BOM explosion for raw material requirements
-- Lead time offsetting
-- Batching for minimum order quantities
+- **Vectorized MRP:** $O(1)$ calculation of ingredient needs using dense matrix multiplication.
+- **Inventory Position:** Considers On-Hand, In-Transit, and WIP.
+- **Fair Share:** Distributes aggregate demand across plants.
+- **BOM Explosion:** Instant calculation of raw material needs for thousands of SKUs.
 
 **Location:** `src/prism_sim/simulation/mrp.py`
 
@@ -304,6 +303,27 @@ Vectorized state storage with O(1) access patterns.
 | `in_transit` | (shipments,) | Shipments en route |
 
 **Location:** `src/prism_sim/simulation/state.py`
+
+---
+
+### RecipeMatrix
+
+Dense matrix representation of Bills of Materials (BOM) for vectorized MRP.
+
+**Structure:**
+
+| Dimension | Description |
+|-----------|-------------|
+| **Rows ($i$)** | Output Product (Finished Good) |
+| **Cols ($j$)** | Input Product (Ingredient) |
+| **Value ($R_{ij}$)** | Quantity of $j$ required to make 1 unit of $i$ |
+
+**Usage:**
+Allows calculation of ingredient requirements via simple vector-matrix multiplication:
+$$ \mathbf{req} = \mathbf{d} \cdot \mathbf{R} $$
+Where $\mathbf{d}$ is the demand vector and $\mathbf{R}$ is the recipe matrix.
+
+**Location:** `src/prism_sim/network/recipe_matrix.py`
 
 ---
 

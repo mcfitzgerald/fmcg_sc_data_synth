@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.0] - 2025-12-28
+
+### Architecture Overhaul
+- **World Builder Overhaul (Task 8.1):** Transitioned from hardcoded "2-ingredient" logic to a fully procedural ingredient generation system.
+  - **Procedural Ingredients:** `ProductGenerator` now creates Packaging (Bottles, Caps, Boxes) and Chemicals (Actives, Bulk Base) dynamically based on `world_definition.json` profiles.
+  - **Semantic Recipes:** BOMs are now logic-driven (e.g., "Liquid" = Bottle + Cap + Label + Base + Active) rather than random.
+- **Vectorized MRP (Task 8.2):** Implemented `RecipeMatrixBuilder` to convert object-based BOMs into a dense NumPy matrix ($\mathbf{R}$) for $O(1)$ dependency lookups.
+  - **Matrix Algebra:** `MRPEngine` now calculates ingredient requirements via vector-matrix multiplication ($\mathbf{req} = \mathbf{d} \cdot \mathbf{R}$), enabling instant planning for thousands of SKUs.
+  - **Vectorized Transform:** Refactored `TransformEngine` to use direct tensor operations for material feasibility checks and consumption updates.
+
+### Added
+- **Recipe Matrix:** New core component `src/prism_sim/network/recipe_matrix.py` for handling dense BOM structures.
+- **Configurable Profiles:** Added `ingredient_profiles` and `recipe_logic` to `world_definition.json` to control the procedural generation of supply chains.
+
+### Changed
+- **Performance:** Simulation speed validated at ~4.6s for 30 days of the full 4,500-node network despite 10x increase in BOM complexity.
+- **Refactoring:** Removed hardcoded ingredients from `generate_static_world.py` and `hierarchy.py`.
+
 ## [0.9.8] - 2025-12-28
 
 ### Added
