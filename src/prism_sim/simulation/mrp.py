@@ -197,88 +197,95 @@ class MRPEngine:
     def generate_purchase_orders(
         self,
         current_day: int,
+        daily_demand: np.ndarray,
     ) -> list[Order]:
         """
-        Generate Purchase Orders for ingredients at plants.
+        Generate Purchase Orders for ingredients at plants using Vectorized MRP.
 
-        Uses Inventory Position for ingredients:
-        IP = On Hand (Plant) + On Order (In-Transit from Supplier)
+        1. Estimate Plant Demand Share (D_plant)
+        2. Calculate Ingredient Requirement (Req = D_plant @ R)
+        3. Check Inventory Position vs ROP
+        4. Generate Orders
         """
         purchase_orders: list[Order] = []
+        if not self._plant_ids:
+            return purchase_orders
 
-        # 1. Map ingredients to plants that need them (from recipes)
-        ingredient_ids: set[str] = set()
-        for recipe in self.world.recipes.values():
-            ingredient_ids.update(recipe.ingredients.keys())
+        # 1. Estimate Aggregate Demand per Product
+        # Shape: [n_products]
+        total_demand = np.sum(daily_demand, axis=0)
+        
+        # Avoid zero demand issues for initial priming/cold start
+        # Use a minimum demand floor (e.g. 1.0) to ensure we stock something
+        total_demand = np.maximum(total_demand, 1.0)
 
-        # 2. Calculate In-Transit qty for ingredients (to Plants)
-        in_transit_qty: dict[tuple[str, str], float] = {}  # (plant_id, ing_id) -> qty
+        # Distribute to plants (Fair Share assumption for replenishment planning)
+        # Future: Use historical production share per plant
+        n_plants = len(self._plant_ids)
+        plant_demand_share = total_demand / n_plants
+
+        # 2. Calculate Ingredient Requirements Vector
+        # Req[j] = Sum(PlantDemand[i] * R[i, j])
+        # Vector-Matrix multiplication: d @ R
+        ingredient_reqs = plant_demand_share @ self.state.recipe_matrix
+
+        # 3. Calculate Targets & ROPs
+        # Target Inventory = Daily Req * Target Days
+        target_levels = ingredient_reqs * self.target_days_supply
+        rop_levels = ingredient_reqs * self.reorder_point_days
+
+        # 4. Build Pipeline Vector (In-Transit to Plants)
+        # Shape: [n_nodes, n_products] - but we only care about plants
+        pipeline = np.zeros((self.state.n_nodes, self.state.n_products), dtype=np.float64)
         for shipment in self.state.active_shipments:
-            # Check if target is a plant
-            if shipment.target_id in self._plant_ids:
+            target_idx = self.state.node_id_to_idx.get(shipment.target_id)
+            if target_idx is not None and shipment.target_id in self._plant_ids:
                 for line in shipment.lines:
-                    key = (shipment.target_id, line.product_id)
-                    in_transit_qty[key] = in_transit_qty.get(key, 0.0) + line.quantity
+                    p_idx = self.state.product_id_to_idx.get(line.product_id)
+                    if p_idx is not None:
+                        pipeline[target_idx, p_idx] += line.quantity
 
-        # 3. Process each plant and each ingredient
+        # 5. Process Plants (Vectorized check per plant)
         for plant_id in self._plant_ids:
             plant_idx = self.state.node_id_to_idx.get(plant_id)
             if plant_idx is None:
                 continue
 
-            for ing_id in ingredient_ids:
-                ing_idx = self.state.product_id_to_idx.get(ing_id)
-                if ing_idx is None:
-                    continue
+            # Inventory Position = On Hand + Pipeline
+            on_hand = self.state.inventory[plant_idx]
+            in_transit = pipeline[plant_idx]
+            inv_position = on_hand + in_transit
 
-                # On-Hand at Plant
-                on_hand = float(self.state.inventory[plant_idx, ing_idx])
+            # Mask: Only consider items where we have a requirement (Ingredients)
+            # and where IP < ROP
+            needs_ordering = (inv_position < rop_levels) & (ingredient_reqs > 0)
+            
+            # Get indices of items to order
+            # This returns a tuple of arrays, we want the first (and only) dimension
+            order_indices = np.where(needs_ordering)[0]
 
-                # Inventory Position
-                ip = on_hand + in_transit_qty.get((plant_id, ing_id), 0.0)
+            for p_idx in order_indices:
+                qty_needed = target_levels[p_idx] - inv_position[p_idx]
+                
+                # Apply MOQ
+                # Ideally MOQ should be per ingredient from config/product
+                # Using global min_production_qty as proxy or 1 pallet
+                qty_to_order = max(qty_needed, 100.0) # Simple MOQ
 
-                # For ingredients, we use manufacturing reorder points
-                # Reorder if IP < ROP
-                # ROP = Demand * reorder_point_days
-                # But what is ingredient demand?
-                # Proxy: 50% of FG daily demand * BOM qty (very rough)
-                # Better: Use target_days_supply as a fixed buffer for now
-                # since it's "Warm start"
-                # Actually, let's use the manufacturing reorder point from config
+                ing_id = self.state.product_idx_to_id[p_idx]
+                supplier_id = self._find_supplier_for_ingredient(plant_id, ing_id)
 
-                # Check reorder point
-                # If IP < reorder_point_days * (typical demand)
-                # Let's assume typical ingredient demand is 100k units/day
-                # for whole system
-                # (matching our initial priming level of 10M / 100 days)
-
-                # We'll use a fixed reorder point for now to avoid complexity
-                # of explosion
-                # ROP = 1,000,000 units
-                # Target = 5,000,000 units
-                rop = 1_000_000.0
-                target = 5_000_000.0
-
-                if ip < rop:
-                    qty_to_order = target - ip
-
-                    # Find a supplier for this ingredient for this plant
-                    supplier_id = self._find_supplier_for_ingredient(plant_id, ing_id)
-
-                    if supplier_id:
-                        # Create Purchase Order (as an Order object)
-                        order_id = (
-                            f"PO-ING-{current_day:03d}-{len(purchase_orders):06d}"
-                        )
-                        po = Order(
-                            id=order_id,
-                            source_id=supplier_id,
-                            target_id=plant_id,
-                            creation_day=current_day,
-                            lines=[OrderLine(ing_id, qty_to_order)],
-                            status="OPEN",
-                        )
-                        purchase_orders.append(po)
+                if supplier_id:
+                    order_id = f"PO-ING-{current_day:03d}-{len(purchase_orders):06d}"
+                    po = Order(
+                        id=order_id,
+                        source_id=supplier_id,
+                        target_id=plant_id,
+                        creation_day=current_day,
+                        lines=[OrderLine(ing_id, float(qty_to_order))],
+                        status="OPEN",
+                    )
+                    purchase_orders.append(po)
 
         return purchase_orders
 

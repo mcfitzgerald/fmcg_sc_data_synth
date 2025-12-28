@@ -147,7 +147,7 @@ class Orchestrator:
         raw_orders = self.replenisher.generate_orders(day, daily_demand)
 
         # Generate Purchase Orders for Ingredients at Plants (Milestone 5.1 extension)
-        ing_orders = self.mrp_engine.generate_purchase_orders(day)
+        ing_orders = self.mrp_engine.generate_purchase_orders(day, daily_demand)
         raw_orders.extend(ing_orders)
 
         # Capture Unconstrained Demand (before Allocator modifies in-place)

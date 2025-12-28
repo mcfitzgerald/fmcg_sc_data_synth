@@ -34,31 +34,9 @@ def main() -> None:
     
     finished_goods = prod_gen.generate_products(n_skus=n_skus)
 
-    # Create base ingredients (hardcoded for now as per scor_reference)
-    ingredients = [
-        Product(
-            id="ING-SURF-SPEC",
-            name="Specialty Surfactant",
-            category=ProductCategory.INGREDIENT,
-            weight_kg=200,
-            length_cm=60,
-            width_cm=60,
-            height_cm=90,
-            cases_per_pallet=4,
-            cost_per_case=500.0,
-        ),
-        Product(
-            id="ING-BASE-LIQ",
-            name="Purified Water Base",
-            category=ProductCategory.INGREDIENT,
-            weight_kg=1000,
-            length_cm=100,
-            width_cm=100,
-            height_cm=100,
-            cases_per_pallet=1,
-            cost_per_case=50.0,
-        ),
-    ]
+    # 3. Ingredients (Procedural)
+    print("Generating Ingredients...")
+    ingredients = prod_gen.generate_ingredients(n_per_type=5)
 
     all_products = ingredients + finished_goods
 

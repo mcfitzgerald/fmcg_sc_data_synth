@@ -1,6 +1,7 @@
 import numpy as np
 
 from prism_sim.network.core import Shipment
+from prism_sim.network.recipe_matrix import RecipeMatrixBuilder
 from prism_sim.simulation.world import World
 
 
@@ -22,7 +23,16 @@ class StateManager:
 
         self._index_entities()
 
-        # 2. Allocate State Tensors
+        # 2. Build Recipe Matrix (Vectorized BOM)
+        # Ensure products are passed in the EXACT same order as _index_entities (sorted)
+        sorted_pids = sorted(self.world.products.keys())
+        sorted_products = [self.world.products[pid] for pid in sorted_pids]
+        recipes = list(self.world.recipes.values())
+        
+        builder = RecipeMatrixBuilder(sorted_products, recipes)
+        self.recipe_matrix = builder.build_matrix()
+
+        # 3. Allocate State Tensors
         self.n_nodes = len(self.world.nodes)
         self.n_products = len(self.world.products)
 

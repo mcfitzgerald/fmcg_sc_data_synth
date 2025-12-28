@@ -13,6 +13,37 @@
       "network_attachment_m": 2
     }
   },
+  "ingredient_profiles": {
+    "PACKAGING": {
+      "prefix": "PKG",
+      "types": ["BOTTLE", "CAP", "BOX", "LABEL", "WRAPPER"],
+      "weight_range": [0.01, 0.05],
+      "cost_range": [0.05, 0.20],
+      "sourcing": "REGIONAL"
+    },
+    "ACTIVE_CHEM": {
+      "prefix": "ACT",
+      "weight_range": [0.1, 0.5],
+      "cost_range": [10.0, 50.0],
+      "sourcing": "GLOBAL"
+    },
+    "BASE_BULK": {
+      "prefix": "BLK",
+      "weight_range": [100, 1000],
+      "cost_range": [50.0, 150.0],
+      "sourcing": "LOCAL"
+    }
+  },
+  "recipe_logic": {
+    "ORAL_CARE": {"base_pct": 0.90, "active_pct": 0.10},
+    "PERSONAL_WASH": {"base_pct": 0.95, "active_pct": 0.05},
+    "HOME_CARE": {"base_pct": 0.85, "active_pct": 0.15},
+    "DEFAULT": {"base_pct": 0.90, "active_pct": 0.10}
+  },
+  "bom_complexity": {
+    "ingredients_per_sku_min": 3,
+    "ingredients_per_sku_max": 8
+  },
   "generation_profiles": {
     "categories": {
       "ORAL_CARE": {

@@ -3,16 +3,19 @@ Transform Engine: Processes Production Orders with Physics constraints.
 
 [Task 5.2] [Intent: 4. Architecture - Production Physics (L6)]
 [Task 5.3] [Intent: 2. Supply Chain Resilience - SPOF Simulation]
+[Task 8.3] [Intent: World Builder Overhaul - Vectorized Execution]
 
 This module enforces:
 - Finite Capacity: run_rate_cases_per_hour from Recipe
 - Changeover Penalty: Little's Law friction when switching products
-- Raw Material Constraints: Production fails without ingredients (SPOF)
-- Deterministic Batch Tracking: B-2024-RECALL-001 scheduling
+- Raw Material Constraints: Checks ingredient availability (SPOF logic)
+- Mass Balance: Ingredient consumption equals BOM * production quantity
 """
 
 from dataclasses import dataclass, field
 from typing import Any
+
+import numpy as np
 
 from prism_sim.network.core import (
     Batch,
@@ -271,58 +274,72 @@ class TransformEngine:
         self, plant_id: str, product_id: str, quantity: float
     ) -> tuple[bool, dict[str, float]]:
         """
-        Check if raw materials are available for production.
-
-        Implements SPOF logic for specialty ingredients.
-
-        Returns:
-            Tuple of (is_available, shortage_dict)
+        Check if raw materials are available using Matrix ops.
+        
+        Returns: Tuple of (is_available, shortage_dict)
         """
-        recipe = self.world.recipes.get(product_id)
-        if recipe is None:
+        p_idx = self.state.product_id_to_idx.get(product_id)
+        plant_idx = self.state.node_id_to_idx.get(plant_id)
+        
+        if p_idx is None or plant_idx is None:
             return True, {}
 
-        shortage: dict[str, float] = {}
+        # 1. Calculate Required: Req = Qty * BOM[p]
+        bom_vector = self.state.recipe_matrix[p_idx]
+        required_vector = bom_vector * quantity
 
-        for ingredient_id, qty_per_case in recipe.ingredients.items():
-            required_qty = qty_per_case * quantity
+        # 2. Get Available: Inv[plant]
+        available_vector = self.state.inventory[plant_idx]
 
-            # Get current ingredient inventory at plant
-            plant_idx = self.state.node_id_to_idx.get(plant_id)
-            ing_idx = self.state.product_id_to_idx.get(ingredient_id)
+        # 3. Check for Shortage
+        # We only care where requirement > 0
+        # shortage = required - available (if required > available)
+        diff = required_vector - available_vector
+        shortage_mask = (diff > 0) & (required_vector > 0)
 
-            if plant_idx is None or ing_idx is None:
-                # Can't find indices - assume unlimited for non-tracked ingredients
-                continue
+        if np.any(shortage_mask):
+            # Convert shortage to dictionary for logging
+            shortage_dict = {}
+            shortage_indices = np.where(shortage_mask)[0]
+            for idx in shortage_indices:
+                ing_id = self.state.product_idx_to_id[idx]
+                shortage_dict[ing_id] = float(diff[idx])
+            return False, shortage_dict
 
-            available_qty = float(self.state.inventory[plant_idx, ing_idx])
-
-            if available_qty < required_qty:
-                shortage[ingredient_id] = required_qty - available_qty
-
-        return len(shortage) == 0, shortage
+        return True, {}
 
     def _consume_materials(
         self, plant_id: str, product_id: str, quantity: float
     ) -> dict[str, float]:
         """
-        Consume raw materials for production (Mass Balance).
-
-        Returns:
-            Dictionary of consumed materials {ingredient_id: quantity}
+        Consume raw materials using Matrix ops (Mass Balance).
+        
+        Returns: Dictionary of consumed materials
         """
-        recipe = self.world.recipes.get(product_id)
-        if recipe is None:
+        p_idx = self.state.product_id_to_idx.get(product_id)
+        plant_idx = self.state.node_id_to_idx.get(plant_id)
+        
+        if p_idx is None or plant_idx is None:
             return {}
 
-        consumed: dict[str, float] = {}
+        # 1. Calculate Consumed: Qty * BOM[p]
+        bom_vector = self.state.recipe_matrix[p_idx]
+        consumed_vector = bom_vector * quantity
+        
+        # 2. Update Inventory (Direct Array Access)
+        # Update both perceived and actual inventory
+        self.state.perceived_inventory[plant_idx] -= consumed_vector
+        self.state.actual_inventory[plant_idx] -= consumed_vector
 
-        for ingredient_id, qty_per_case in recipe.ingredients.items():
-            consume_qty = qty_per_case * quantity
-            self.state.update_inventory(plant_id, ingredient_id, -consume_qty)
-            consumed[ingredient_id] = consume_qty
-
-        return consumed
+        # 3. Return consumed dict (only non-zero)
+        consumed_dict = {}
+        # Optimization: only iterate non-zero elements
+        non_zero_indices = np.where(consumed_vector > 0)[0]
+        for idx in non_zero_indices:
+            ing_id = self.state.product_idx_to_id[idx]
+            consumed_dict[ing_id] = float(consumed_vector[idx])
+            
+        return consumed_dict
 
     def _add_to_inventory(
         self, plant_id: str, product_id: str, quantity: float
@@ -360,6 +377,10 @@ class TransformEngine:
             status = BatchStatus.COMPLETE
 
         # Get ingredients consumed (for genealogy)
+        # Re-using matrix logic might be cleaner but for single batch creation 
+        # using the recipe dict is fine as we need IDs anyway.
+        # But we should consistent. Let's use recipe dict for now as it's O(1) lookup
+        # and we need to return a dict.
         recipe = self.world.recipes.get(order.product_id)
         ingredients_consumed: dict[str, float] = {}
         if recipe:
