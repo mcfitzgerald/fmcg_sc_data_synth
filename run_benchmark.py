@@ -4,14 +4,14 @@ from prism_sim.simulation.orchestrator import Orchestrator
 
 def run_365_days():
     print("Initializing Prism Digital Twin...")
-    # Disable CSV logging for benchmark speed (In-Memory Validation Mode)
-    sim = Orchestrator(enable_logging=False)
+    # Enable CSV logging for debugging the structural deficit
+    sim = Orchestrator(enable_logging=True)
     
-    print("Starting 365-Day 'Deep NAM' Simulation Run...")
+    print("Starting 90-Day 'Deep NAM' Simulation Run (Shortened)...")
     start_time = time.time()
     
     # Run the simulation
-    sim.run(days=365)
+    sim.run(days=90)
     
     end_time = time.time()
     duration = end_time - start_time

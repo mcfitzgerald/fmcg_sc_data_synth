@@ -40,10 +40,10 @@
       }
     },
     "inventory": {
-      "initial_fg_level": 20.0,
+      "initial_fg_level": 5.0,
       "initialization": {
-        "store_days_supply": 14.0,
-        "rdc_days_supply": 21.0,
+        "store_days_supply": 5.0,
+        "rdc_days_supply": 10.5,
         "rdc_store_multiplier": 1500.0
       }
     },
@@ -59,10 +59,10 @@
     "manufacturing": {
       "target_days_supply": 14.0,
       "reorder_point_days": 7.0,
-      "min_production_qty": 5000.0,
+      "min_production_qty": 25000.0,
       "production_lead_time_days": 3,
       "production_hours_per_day": 24.0,
-      "efficiency_factor": 0.85,
+      "efficiency_factor": 0.95,
       "unplanned_downtime_pct": 0.05,
       "backup_supplier_cost_premium": 0.25,
       "plant_parameters": {

@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.5] - 2025-12-28
+
+### Fixed
+- **Structural Capacity Deficit:** Tuned manufacturing physics to resolve the ~160k production cap vs ~230k demand:
+  - **MOQ Increase:** Raised `min_production_qty` from 5k to 25k to amortize changeover penalties.
+  - **Changeover Reduction:** Reduced changeover times in `world_definition.json` (0.5-1.5h) to improve plant OEE.
+  - **Efficiency Boost:** Increased plant `efficiency_factor` to 0.95.
+- **Initialization Bias:** Updated `simulation_config.json` to use "Steady State" midpoints for inventory initialization (Stores: 5d, RDCs: 10.5d) instead of max capacity, eliminating the artificial "destocking" period.
+
+### Changed
+- **Config-Driven Hierarchy:** Refactored `generators/hierarchy.py` and `scripts/generate_static_world.py` to load product run rates and dimensions from `world_definition.json`, removing all hardcoded "magic numbers".
+- **Benchmark Config:** Reduced simulation horizon to 90 days and enabled full CSV logging by default for deeper debugging.
+
 ## [0.9.4] - 2025-12-27
 
 ### Fixed

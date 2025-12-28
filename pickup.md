@@ -1,44 +1,29 @@
-# Pickup: Zero Orders Debugging
+# Session Pickup: Prism-Sim Structural Deficit Debug
 
 ## Current Status
-We are investigating a critical issue where **Store Orders drop to zero** or remain near-zero despite inventory depletion.
+- **World Scale:** "Deep NAM" (4,500 nodes, 4 Plants, 4 RDCs, 50 SKUs).
+- **The Issue:** Systemic Inventory Collapse. Inventory drains monotonically from Day 1.
+- **Key Metric:** 
+    - **Demand:** ~230k cases/day.
+    - **Observed Production:** Capped at ~160k cases/day.
+    - **Theoretical Capacity:** ~232k cases/day (after doubling run rates to 3k/hr).
+- **Bottleneck:** Not Ingredients (Plants have 9M+ units). Not theoretical run-rate. 
 
-### Key Findings
-1.  **Performance Fix:** The simulation was slowing down due to O(N*L) supplier lookup in `MinMaxReplenisher`. We implemented O(1) caching, which resolved the slowness.
-2.  **Physics Fix:** We reduced `base_daily_demand` to ~1.0 case/day and `initial_fg_level` to 5.0 to create a realistic NAM scenario.
-3.  **The "Zero Orders" Anomaly:**
-    *   `InvMean` drops deeply negative (e.g., -9.1).
-    *   `EstRP` (Reorder Point) is positive (~3.0).
-    *   `NeedsOrderCount` is high (e.g., 225,000 cells need orders).
-    *   `MinMaxReplenisher` confirms it is creating `Order` objects with non-zero lines.
-    *   **However, `Orchestrator` reports `Ord=0` (or very low).**
+## Technical State
+1. **Config Paradigm:** Restored. `world_definition.json` now controls `run_rate` and `changeover_time`.
+2. **Current Settings:**
+    - **MOQ:** Increased to 25,000 cases (to amortize changeovers).
+    - **Changeovers:** Reduced to 0.5 - 1.5 hours.
+    - **Run Rates:** 2,400 - 3,600 cases/hr.
+    - **Logging:** Enabled in `run_benchmark.py`.
+    - **Horizon:** Reduced to 90 days for faster iteration.
 
-### Root Cause Hypothesis
-The issue lies in **`AllocationAgent.allocate_orders`**.
+## Active Hypotheses
+1. **Changeover Death Spiral:** Even with 25k MOQ, the plant is switching too often, or the `TransformEngine` is losing more time than calculated.
+2. **MRP "Inventory Position" Logic Error:** The `MRPEngine` includes *all* planned production in its supply calculation. If the plant queue grows, the MRP stops ordering because it "perceives" the massive queue as available supply, even if the plant won't hit those orders for weeks.
+3. **Allocation/DRP silence:** Verify if RDCs are actually shipping to Stores or if inventory is stuck at RDCs (Backlog analysis needed).
 
-*   We suspect `AllocationAgent` is modifying `raw_orders` in-place.
-*   If Source Inventory (RDC) is empty (which happens quickly with `Inv=5.0` and no production), the `Allocator` sets `line.quantity = 0`.
-*   The `Orchestrator` prints the sum of quantities *after* `allocate_orders` is called (even though it uses the `raw_orders` variable, if the objects are modified in place, the sum reflects the *allocated* quantity, not the *demanded* quantity).
-*   This creates a misleading log where "Demand" (from POS) is high, but "Ordered" (Unconstrained replenishment signal) appears to be zero.
-
-## Next Steps
-
-1.  **Verify In-Place Modification:**
-    *   Inspect `src/prism_sim/agents/allocation.py`.
-    *   Confirm if `line.quantity` is mutated.
-2.  **Fix Reporting:**
-    *   Update `Orchestrator` to calculate `total_ordered` *before* passing `raw_orders` to the allocator.
-    *   This will allow us to see the "Unconstrained Demand" signal separate from the "Fulfilled Orders".
-3.  **Fix Supply:**
-    *   Investigate why `Prod=0`. Plants should be producing to refill RDCs.
-    *   If RDCs are empty, Allocator cuts orders to 0.
-    *   If Plants don't produce, RDCs stay empty.
-    *   `MRPEngine` might be seeing "Perceived Inventory" as high? Or lacking a signal?
-4.  **Restore Benchmark:**
-    *   Once validated, revert `run_benchmark.py` to 365 days (already done).
-    *   Remove or silence debug prints in `Replenishment.py` and `Orchestrator.py`.
-
-## Commands to Resume
-```bash
-poetry run python run_benchmark.py
-```
+## Next Steps for Fresh Session
+1. **Step 1:** Run the 90-day simulation and IMMEDIATELY analyze `batches.csv` vs `orders.csv`. 
+2. **Step 2:** Audit `src/prism_sim/simulation/mrp.py`. Refactor the `inventory_position` calculation to use a "Look-ahead Horizon" (e.g., only count production finishing in next 7 days).
+3. **Step 3:** Perform a "Stress Test" by setting `efficiency_factor: 1.0` and `changeover_time: 0.0`. if it *still* collapses, the bug is in the State Manager or Logistics transit logic, not the plants.

@@ -1,6 +1,7 @@
 """Script to generate the static world (Level 0-4) for Deep NAM expansion."""
 
 import sys
+import json
 from pathlib import Path
 
 # Add project root to path
@@ -13,17 +14,25 @@ from prism_sim.writers.static_writer import StaticWriter
 
 
 def main() -> None:
+    # 0. Load Config
+    config_path = Path("src/prism_sim/config/world_definition.json")
+    with open(config_path, "r") as f:
+        world_config = json.load(f)
+
     output_dir = Path("data/output/static_world")
     print(f"Generating static world to {output_dir}...")
 
     # 1. Generators
-    prod_gen = ProductGenerator(seed=42)
+    prod_gen = ProductGenerator(config=world_config, seed=42)
     net_gen = NetworkGenerator(seed=42)
     writer = StaticWriter(str(output_dir))
 
     # 2. Products
     print("Generating Products...")
-    finished_goods = prod_gen.generate_products(n_skus=50)
+    counts = world_config.get("topology", {}).get("target_counts", {})
+    n_skus = counts.get("skus", 50)
+    
+    finished_goods = prod_gen.generate_products(n_skus=n_skus)
 
     # Create base ingredients (hardcoded for now as per scor_reference)
     ingredients = [
@@ -60,10 +69,10 @@ def main() -> None:
     # 4. Network
     print("Generating Network (4500 stores)... this may take a moment.")
     nodes, links = net_gen.generate_network(
-        n_stores=4500,
-        n_suppliers=50,
-        n_plants=4,
-        n_rdcs=4
+        n_stores=counts.get("stores", 4500),
+        n_suppliers=counts.get("suppliers", 50),
+        n_plants=counts.get("plants", 4),
+        n_rdcs=counts.get("rdcs", 4)
     )
 
     # 5. Write
