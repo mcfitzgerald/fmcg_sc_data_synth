@@ -101,9 +101,12 @@ class AllocationAgent:
             current_inv = self.state.inventory[source_idx, :]
             fill_ratios = self._calculate_fill_ratios(demand_vector, current_inv)
 
-            # Decrement inventory
-            allocated_total = demand_vector * fill_ratios
-            self.state.inventory[source_idx, :] -= allocated_total
+            # Decrement inventory (Sync actual and perceived)
+            for p_idx, ratio in enumerate(fill_ratios):
+                if ratio > 0:
+                    allocated_qty = demand_vector[p_idx] * ratio
+                    p_id = self.state.product_idx_to_id[p_idx]
+                    self.state.update_inventory(source_id, p_id, -allocated_qty)
 
             # Apply ratios to orders
             allocated = self._apply_ratios_to_orders(source_orders, fill_ratios)

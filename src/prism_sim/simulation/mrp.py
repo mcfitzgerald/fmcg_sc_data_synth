@@ -110,12 +110,13 @@ class MRPEngine:
             if p_idx is None:
                 continue
 
-            # Sum On-Hand inventory across RDCs
+            # Sum On-Hand inventory across RDCs AND Plants
             on_hand_inventory = 0.0
             for rdc_id in self._rdc_ids:
-                n_idx = self.state.node_id_to_idx.get(rdc_id)
-                if n_idx is not None:
-                    on_hand_inventory += float(self.state.inventory[n_idx, p_idx])
+                on_hand_inventory += self.state.get_inventory(rdc_id, product_id)
+            
+            for plant_id in self._plant_ids:
+                on_hand_inventory += self.state.get_inventory(plant_id, product_id)
 
             # Calculate total Inventory Position
             inventory_position = (

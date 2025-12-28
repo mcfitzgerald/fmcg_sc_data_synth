@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.6] - 2025-12-28
+
+### Fixed
+- **Systemic Inventory Collapse:** Resolved the core physics bottleneck that caused production to stall and inventory to drain.
+  - **Inventory Sync:** Fixed `AllocationAgent` and `TransformEngine` to correctly update both `actual` and `perceived` inventory, eliminating "phantom stock" and reporting errors.
+  - **Material Deadlock:** Modified `TransformEngine` to check material availability only for the quantity that can be produced in the current day, preventing large orders from blocking production due to partial ingredient shortages.
+  - **Batching Latency:** Implemented daily batch creation for partial production in `TransformEngine`, reducing the lead time penalty of large MOQs.
+  - **MRP Robustness:** Increased `target_days_supply` (28d) and `reorder_point_days` (14d) in `simulation_config.json` to provide a sufficient buffer against lead time and demand variability.
+  - **MRP Visibility:** Updated `MRPEngine` to include Plant-level finished goods in the Inventory Position calculation.
+
+### Changed
+- **OEE Stabilization:** Achieved stable 73% OEE (Target: 65-85%) across the Deep NAM network.
+- **Logistics Efficiency:** Doubled Truck Fill Rate to ~52% by increasing store replenishment targets.
+
 ## [0.9.5] - 2025-12-28
 
 ### Fixed

@@ -194,20 +194,6 @@ class TransformEngine:
             order.status = ProductionOrderStatus.COMPLETE
             return None
 
-        # Check raw material availability (SPOF logic)
-        # Check only for what we want to produce today (or remaining)
-        # To be safe and avoid fragmentation, let's check if we can produce at least 
-        # a reasonable chunk or the whole remaining.
-        # For now, let's check availability for the remaining_qty.
-        material_available, _material_shortage = self._check_material_availability(
-            order.plant_id, order.product_id, remaining_qty
-        )
-
-        if not material_available:
-            # Cannot produce - material shortage (SPOF triggered)
-            order.status = ProductionOrderStatus.PLANNED  # Keep waiting
-            return None
-
         # Calculate production time needed for remaining
         production_time_hours = remaining_qty / recipe.run_rate_cases_per_hour
 
@@ -219,24 +205,30 @@ class TransformEngine:
         ):
             changeover_time = recipe.changeover_time_hours
 
-        total_time_needed = production_time_hours + changeover_time
+        # How much can we actually produce today?
+        available_time_for_prod = max(0.0, plant_state.remaining_capacity_hours - changeover_time)
+        if available_time_for_prod <= 0 and plant_state.remaining_capacity_hours < changeover_time:
+            # Not even enough time for changeover
+            return None
+            
+        max_qty_today = min(remaining_qty, available_time_for_prod * recipe.run_rate_cases_per_hour)
+        
+        if max_qty_today <= 0:
+            return None
 
-        # Check capacity
-        if plant_state.remaining_capacity_hours < total_time_needed:
-            # Partial production
-            available_production_time = max(
-                0.0, plant_state.remaining_capacity_hours - changeover_time
-            )
+        # Check raw material availability for TODAY's potential production
+        material_available, _material_shortage = self._check_material_availability(
+            order.plant_id, order.product_id, max_qty_today
+        )
 
-            if available_production_time <= 0:
-                # No capacity today - wait for tomorrow
-                return None
+        if not material_available:
+            # Cannot produce - material shortage (SPOF triggered)
+            order.status = ProductionOrderStatus.PLANNED  # Keep waiting
+            return None
 
-            # Partial production
-            actual_qty = min(
-                available_production_time * recipe.run_rate_cases_per_hour,
-                remaining_qty
-            )
+        # If we have materials for today, proceed with production calculation
+        if plant_state.remaining_capacity_hours < (production_time_hours + changeover_time):
+            actual_qty = max_qty_today
         else:
             actual_qty = remaining_qty
 
@@ -256,22 +248,18 @@ class TransformEngine:
         plant_state.remaining_capacity_hours -= time_used
         plant_state.last_product_id = order.product_id
 
+        # Create batch for TODAY's production
+        batch = self._create_batch(order, current_day, actual_qty)
+        
+        # Add produced goods to plant inventory
+        self._add_to_inventory(order.plant_id, order.product_id, actual_qty)
+
         # Check if order is complete
         if order.produced_quantity >= order.quantity_cases:
             order.status = ProductionOrderStatus.COMPLETE
             order.actual_end_day = current_day
 
-            # Create batch
-            batch = self._create_batch(order, current_day, actual_qty)
-
-            # Add produced goods to plant inventory
-            self._add_to_inventory(
-                order.plant_id, order.product_id, order.quantity_cases
-            )
-
-            return batch
-
-        return None
+        return batch
 
     def _check_material_availability(
         self, plant_id: str, product_id: str, quantity: float
@@ -325,13 +313,8 @@ class TransformEngine:
 
         for ingredient_id, qty_per_case in recipe.ingredients.items():
             consume_qty = qty_per_case * quantity
-
-            plant_idx = self.state.node_id_to_idx.get(plant_id)
-            ing_idx = self.state.product_id_to_idx.get(ingredient_id)
-
-            if plant_idx is not None and ing_idx is not None:
-                self.state.inventory[plant_idx, ing_idx] -= consume_qty
-                consumed[ingredient_id] = consume_qty
+            self.state.update_inventory(plant_id, ingredient_id, -consume_qty)
+            consumed[ingredient_id] = consume_qty
 
         return consumed
 
@@ -339,11 +322,7 @@ class TransformEngine:
         self, plant_id: str, product_id: str, quantity: float
     ) -> None:
         """Add produced goods to plant inventory."""
-        plant_idx = self.state.node_id_to_idx.get(plant_id)
-        prod_idx = self.state.product_id_to_idx.get(product_id)
-
-        if plant_idx is not None and prod_idx is not None:
-            self.state.inventory[plant_idx, prod_idx] += quantity
+        self.state.update_inventory(plant_id, product_id, quantity)
 
     def _create_batch(
         self, order: ProductionOrder, current_day: int, quantity: float
