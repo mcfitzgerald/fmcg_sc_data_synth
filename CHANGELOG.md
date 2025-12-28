@@ -13,7 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Serialization Error:** Fixed `TypeError: float32 is not JSON serializable` in `RealismMonitor` by ensuring metric accumulators store native Python floats.
 
 ### Documentation
-- **Quick Start:** Updated `README.md` with clear instructions on running the simulation via `run_benchmark.py` and locating generated artifacts.
+- **Quick Start:** Updated `README.md` with clear instructions on running the simulation via `run_simulation.py` and locating generated artifacts.
+
+### Added
+- **CLI Runner:** Added `run_simulation.py` with `argparse` support for `--days`, `--no-logging`, and `--output-dir`. Replaced the rigid `run_benchmark.py`.
 
 ## [0.9.6] - 2025-12-28
 

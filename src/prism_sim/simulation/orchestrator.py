@@ -32,7 +32,7 @@ from prism_sim.simulation.writer import SimulationWriter
 class Orchestrator:
     """The main time-stepper loop for the Prism Digital Twin."""
 
-    def __init__(self, enable_logging: bool = False) -> None:
+    def __init__(self, enable_logging: bool = False, output_dir: str = "data/output") -> None:
         # 1. Initialize World
         manifest = load_manifest()
         self.config = load_simulation_config()
@@ -63,7 +63,7 @@ class Orchestrator:
         self.risks = RiskEventManager(sim_params)
 
         # 6. Initialize Data Writer (Milestone 7)
-        self.writer = SimulationWriter(enable_logging=enable_logging)
+        self.writer = SimulationWriter(enable_logging=enable_logging, output_dir=output_dir)
 
         # 7. Manufacturing State
         self.active_production_orders: list[ProductionOrder] = []

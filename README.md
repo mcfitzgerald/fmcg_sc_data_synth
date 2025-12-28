@@ -21,19 +21,26 @@ poetry install
 ```
 
 ### 2. Run the Simulation
-Execute the benchmark script to run the "Deep NAM" (North American Market) simulation. By default, this runs a 90-day simulation to validate the physics and generate reports.
+Execute the CLI runner to launch the simulation. By default, it runs for 90 days.
 
 ```bash
-poetry run python run_benchmark.py
+# Standard run (90 days)
+poetry run python run_simulation.py
+
+# Custom duration and output directory
+poetry run python run_simulation.py --days 365 --output-dir data/results/year_run
+
+# Fast mode (no CSV logging, just metrics)
+poetry run python run_simulation.py --days 30 --no-logging
 ```
 
 **What to expect:**
-- **Runtime:** ~1-2 minutes.
+- **Runtime:** ~1-2 minutes for 90 days.
 - **Console Output:** Daily logs showing Demand vs. Production, Inventory Levels, and Risk Events.
 - **Triangle Report:** At the end, a summary of Service, Cost, and Cash is printed to the console.
 
 ### 3. View Results
-Artifacts are automatically saved to `data/output/`:
+Artifacts are automatically saved to `data/output/` (or your custom directory):
 - `triangle_report.txt`: The executive summary (Service, Cost, Cash metrics).
 - `orders.csv`, `shipments.csv`, `batches.csv`: Detailed transactional logs (SCOR-DS format).
 - `inventory.csv`: Weekly inventory snapshots.
