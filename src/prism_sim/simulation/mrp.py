@@ -11,7 +11,13 @@ from typing import Any
 
 import numpy as np
 
-from prism_sim.network.core import NodeType, ProductionOrder, ProductionOrderStatus, Order, OrderLine
+from prism_sim.network.core import (
+    NodeType,
+    Order,
+    OrderLine,
+    ProductionOrder,
+    ProductionOrderStatus,
+)
 from prism_sim.product.core import ProductCategory
 from prism_sim.simulation.state import StateManager
 from prism_sim.simulation.world import World
@@ -66,11 +72,31 @@ class MRPEngine:
             if product.category != ProductCategory.INGREDIENT:
                 self._finished_product_ids.append(product_id)
 
+    def _calculate_inventory_position(
+        self,
+        product_id: str,
+        in_transit_qty: dict[str, float],
+        in_production_qty: dict[str, float],
+    ) -> float:
+        """Calculate total Inventory Position for a product."""
+        on_hand_inventory = 0.0
+        for rdc_id in self._rdc_ids:
+            on_hand_inventory += self.state.get_inventory(rdc_id, product_id)
+
+        for plant_id in self._plant_ids:
+            on_hand_inventory += self.state.get_inventory(plant_id, product_id)
+
+        return (
+            on_hand_inventory
+            + in_transit_qty.get(product_id, 0.0)
+            + in_production_qty.get(product_id, 0.0)
+        )
+
     def generate_production_orders(
-        self, 
-        current_day: int, 
+        self,
+        current_day: int,
         daily_demand: np.ndarray,
-        active_production_orders: list[ProductionOrder]
+        active_production_orders: list[ProductionOrder],
     ) -> list[ProductionOrder]:
         """
         Generate Production Orders based on RDC inventory and demand.
@@ -94,7 +120,9 @@ class MRPEngine:
             if po.status != ProductionOrderStatus.COMPLETE:
                 # Count remaining qty
                 remaining = po.quantity_cases - po.produced_quantity
-                in_production_qty[po.product_id] = in_production_qty.get(po.product_id, 0.0) + remaining
+                in_production_qty[po.product_id] = (
+                    in_production_qty.get(po.product_id, 0.0) + remaining
+                )
 
         # 2. Calculate In-Transit qty per product (to RDCs)
         in_transit_qty: dict[str, float] = {}
@@ -102,7 +130,9 @@ class MRPEngine:
             # Only count shipments heading to an RDC
             if shipment.target_id in self._rdc_ids:
                 for line in shipment.lines:
-                    in_transit_qty[line.product_id] = in_transit_qty.get(line.product_id, 0.0) + line.quantity
+                    in_transit_qty[line.product_id] = (
+                        in_transit_qty.get(line.product_id, 0.0) + line.quantity
+                    )
 
         # 3. Process each finished product
         for product_id in self._finished_product_ids:
@@ -110,19 +140,9 @@ class MRPEngine:
             if p_idx is None:
                 continue
 
-            # Sum On-Hand inventory across RDCs AND Plants
-            on_hand_inventory = 0.0
-            for rdc_id in self._rdc_ids:
-                on_hand_inventory += self.state.get_inventory(rdc_id, product_id)
-            
-            for plant_id in self._plant_ids:
-                on_hand_inventory += self.state.get_inventory(plant_id, product_id)
-
             # Calculate total Inventory Position
-            inventory_position = (
-                on_hand_inventory + 
-                in_transit_qty.get(product_id, 0.0) + 
-                in_production_qty.get(product_id, 0.0)
+            inventory_position = self._calculate_inventory_position(
+                product_id, in_transit_qty, in_production_qty
             )
 
             # Estimate average daily demand for this product
@@ -180,98 +200,106 @@ class MRPEngine:
     ) -> list[Order]:
         """
         Generate Purchase Orders for ingredients at plants.
-        
+
         Uses Inventory Position for ingredients:
         IP = On Hand (Plant) + On Order (In-Transit from Supplier)
         """
         purchase_orders: list[Order] = []
-        
+
         # 1. Map ingredients to plants that need them (from recipes)
         ingredient_ids: set[str] = set()
         for recipe in self.world.recipes.values():
             ingredient_ids.update(recipe.ingredients.keys())
-            
+
         # 2. Calculate In-Transit qty for ingredients (to Plants)
-        in_transit_qty: dict[tuple[str, str], float] = {} # (plant_id, ing_id) -> qty
+        in_transit_qty: dict[tuple[str, str], float] = {}  # (plant_id, ing_id) -> qty
         for shipment in self.state.active_shipments:
             # Check if target is a plant
             if shipment.target_id in self._plant_ids:
                 for line in shipment.lines:
                     key = (shipment.target_id, line.product_id)
                     in_transit_qty[key] = in_transit_qty.get(key, 0.0) + line.quantity
-                    
+
         # 3. Process each plant and each ingredient
         for plant_id in self._plant_ids:
             plant_idx = self.state.node_id_to_idx.get(plant_id)
             if plant_idx is None:
                 continue
-                
+
             for ing_id in ingredient_ids:
                 ing_idx = self.state.product_id_to_idx.get(ing_id)
                 if ing_idx is None:
                     continue
-                    
+
                 # On-Hand at Plant
                 on_hand = float(self.state.inventory[plant_idx, ing_idx])
-                
+
                 # Inventory Position
                 ip = on_hand + in_transit_qty.get((plant_id, ing_id), 0.0)
-                
+
                 # For ingredients, we use manufacturing reorder points
                 # Reorder if IP < ROP
                 # ROP = Demand * reorder_point_days
-                # But what is ingredient demand? 
+                # But what is ingredient demand?
                 # Proxy: 50% of FG daily demand * BOM qty (very rough)
-                # Better: Use target_days_supply as a fixed buffer for now since it's "Warm start"
+                # Better: Use target_days_supply as a fixed buffer for now
+                # since it's "Warm start"
                 # Actually, let's use the manufacturing reorder point from config
-                
+
                 # Check reorder point
                 # If IP < reorder_point_days * (typical demand)
-                # Let's assume typical ingredient demand is 100k units/day for whole system
+                # Let's assume typical ingredient demand is 100k units/day
+                # for whole system
                 # (matching our initial priming level of 10M / 100 days)
-                
-                # We'll use a fixed reorder point for now to avoid complexity of explosion
+
+                # We'll use a fixed reorder point for now to avoid complexity
+                # of explosion
                 # ROP = 1,000,000 units
                 # Target = 5,000,000 units
                 rop = 1_000_000.0
                 target = 5_000_000.0
-                
+
                 if ip < rop:
                     qty_to_order = target - ip
-                    
+
                     # Find a supplier for this ingredient for this plant
                     supplier_id = self._find_supplier_for_ingredient(plant_id, ing_id)
-                    
+
                     if supplier_id:
                         # Create Purchase Order (as an Order object)
-                        order_id = f"PO-ING-{current_day:03d}-{len(purchase_orders):06d}"
+                        order_id = (
+                            f"PO-ING-{current_day:03d}-{len(purchase_orders):06d}"
+                        )
                         po = Order(
                             id=order_id,
                             source_id=supplier_id,
                             target_id=plant_id,
                             creation_day=current_day,
                             lines=[OrderLine(ing_id, qty_to_order)],
-                            status="OPEN"
+                            status="OPEN",
                         )
                         purchase_orders.append(po)
-                        
+
         return purchase_orders
 
     def _find_supplier_for_ingredient(self, plant_id: str, ing_id: str) -> str | None:
         """Find a supplier that provides the ingredient to the plant."""
         # Special case for SPOF specialty ingredient
-        mfg_config = self.config.get("simulation_parameters", {}).get("manufacturing", {})
+        mfg_config = self.config.get("simulation_parameters", {}).get(
+            "manufacturing", {}
+        )
         spof_config = mfg_config.get("spof", {})
         if ing_id == spof_config.get("ingredient_id"):
-            return spof_config.get("primary_supplier_id")
-            
+            val = spof_config.get("primary_supplier_id")
+            return str(val) if val else None
+
         # Generic case: find any supplier linked to this plant
         for link in self.world.links.values():
             if link.target_id == plant_id:
                 source_node = self.world.nodes.get(link.source_id)
                 if source_node and source_node.type == NodeType.SUPPLIER:
                     return source_node.id
-                    
+
         return None
 
     def _load_plant_capabilities(self, mfg_config: dict[str, Any]) -> None:
@@ -297,7 +325,7 @@ class MRPEngine:
             return self._plant_ids[plant_idx]
 
         cat_name = product.category.name
-        
+
         # Filter plants that support this category
         eligible_plants = []
         for pid in self._plant_ids:
@@ -306,10 +334,10 @@ class MRPEngine:
             caps = self.plant_capabilities.get(pid)
             if caps is None or cat_name in caps:
                 eligible_plants.append(pid)
-        
+
         if not eligible_plants:
             # If no plant explicitly supports it, fallback to all (or raise error?)
-            # For robustness, fallback to all but log/warn ideally. 
+            # For robustness, fallback to all but log/warn ideally.
             # We'll stick to robust fallback.
             eligible_plants = self._plant_ids
 

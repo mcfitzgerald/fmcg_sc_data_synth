@@ -1,7 +1,8 @@
-import numpy as np
 from typing import Any
 
-from prism_sim.network.core import Order, NodeType
+import numpy as np
+
+from prism_sim.network.core import NodeType, Order
 from prism_sim.simulation.state import StateManager
 
 
@@ -11,9 +12,11 @@ class AllocationAgent:
     Implements 'Fair Share' logic when demand > supply.
     """
 
-    def __init__(self, state: StateManager, config: dict[str, Any] | None = None) -> None:
+    def __init__(
+        self, state: StateManager, config: dict[str, Any] | None = None
+    ) -> None:
         self.state = state
-        
+
         # Get epsilon from config or default
         if config:
             sim_params = config.get("simulation_parameters", {})
@@ -21,9 +24,7 @@ class AllocationAgent:
         else:
             self.epsilon = 0.001
 
-    def _group_orders_by_source(
-        self, orders: list[Order]
-    ) -> dict[str, list[Order]]:
+    def _group_orders_by_source(self, orders: list[Order]) -> dict[str, list[Order]]:
         """Group orders by their source node."""
         orders_by_source: dict[str, list[Order]] = {}
         for order in orders:
@@ -91,7 +92,11 @@ class AllocationAgent:
             source_node = self.state.world.nodes.get(source_id)
             source_idx = self.state.node_id_to_idx.get(source_id)
 
-            if source_node is None or source_node.type == NodeType.SUPPLIER or source_idx is None:
+            if (
+                source_node is None
+                or source_node.type == NodeType.SUPPLIER
+                or source_idx is None
+            ):
                 # External supplier - assume 100% fill
                 allocated_orders.extend(source_orders)
                 continue

@@ -79,6 +79,7 @@ markdown_extensions:
 
 nav:
   - Home: index.md
+  - LLM Context: llm_context.md
   - Getting Started:
     - getting-started/index.md
     - Quick Start: getting-started/quickstart.md

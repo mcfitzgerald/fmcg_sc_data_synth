@@ -75,12 +75,15 @@ class LogisticsEngine:
 
                 remaining_qty = line.quantity
 
-                while remaining_qty > 0:
+                while remaining_qty > 1e-9:
                     # Check space
                     weight_space = self.max_weight_kg - current_shipment.total_weight_kg
                     vol_space = self.max_volume_m3 - current_shipment.total_volume_m3
 
-                    if weight_space <= 0 or vol_space <= 0:
+                    if (
+                        weight_space <= self.epsilon_weight
+                        or vol_space <= self.epsilon_volume
+                    ):
                         # Full, close and start new
                         new_shipments.append(current_shipment)
                         current_shipment = self._new_shipment(
@@ -102,15 +105,19 @@ class LogisticsEngine:
                     max_by_weight = weight_space / unit_weight
                     max_by_vol = vol_space / unit_vol
 
-                    # We deal with whole cases
-                    fit_qty = math.floor(min(remaining_qty, max_by_weight, max_by_vol))
+                    # We allow fractional cases to handle "Fair Share" allocations
+                    fit_qty = min(remaining_qty, max_by_weight, max_by_vol)
 
-                    if fit_qty <= 0:
-                        # Item too big for empty truck? Force 1 if empty, else new truck
+                    if fit_qty < 1e-9:
+                        # Item too big?
                         if not current_shipment.lines:
-                            fit_qty = 1  # Force fit one unit
+                            # If truck is empty and still can't fit anything, it's a Physics Violation.
+                            raise ValueError(
+                                f"Product {product.id} (W:{unit_weight}kg, V:{unit_vol}m3) "
+                                f"exceeds truck capacity (MaxW:{self.max_weight_kg}, MaxV:{self.max_volume_m3})"
+                            )
                         else:
-                            # New truck
+                            # Truck is just full (item implies it needs more space than avail)
                             new_shipments.append(current_shipment)
                             current_shipment = self._new_shipment(
                                 source_id,

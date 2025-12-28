@@ -100,7 +100,7 @@ class MinMaxReplenisher:
         # 5. Determine Order Quantities
         # Mask where Inv < ReorderPoint
         needs_order = current_inv < reorder_point
-        
+
         # Raw Quantity = Target - Current
         raw_qty = target_stock - current_inv
 
@@ -138,13 +138,12 @@ class MinMaxReplenisher:
 
         # Create Order Objects
         order_count = 0
-        debug_printed = 0
         for s_idx, lines in orders_by_store.items():
             store_id = self.state.node_idx_to_id[int(s_idx)]
 
             # Find Source using cached map
             source_id = self.store_supplier_map.get(store_id)
-            
+
             if source_id:
                 order_count += 1
                 orders.append(

@@ -151,11 +151,11 @@ class POSEngine:
 
                 # Assign base demand based on category
                 mean_demand = 0.0
-                
+
                 # Use Category Enum name to look up profile
                 # Enum name is usually UPPERCASE (e.g. ORAL_CARE)
                 cat_name = product.category.name
-                
+
                 profile = profiles.get(cat_name, {})
                 if not profile:
                     # Try fallback to string matching for legacy config if needed
@@ -165,11 +165,11 @@ class POSEngine:
                 if product.category.name == "ORAL_CARE":
                     mean_demand = float(profile.get("base_daily_demand", 50.0))
                 elif product.category.name == "PERSONAL_WASH":
-                     mean_demand = float(profile.get("base_daily_demand", 30.0))
+                    mean_demand = float(profile.get("base_daily_demand", 30.0))
                 elif product.category.name == "HOME_CARE":
-                     mean_demand = float(profile.get("base_daily_demand", 20.0))
+                    mean_demand = float(profile.get("base_daily_demand", 20.0))
                 elif product.category.name == "INGREDIENT":
-                     mean_demand = float(profile.get("base_daily_demand", 0.0))
+                    mean_demand = float(profile.get("base_daily_demand", 0.0))
                 else:
                     # Generic fallback if defined in config
                     mean_demand = float(profile.get("base_daily_demand", 0.0))
@@ -190,7 +190,7 @@ class POSEngine:
         amplitude = season_config.get("amplitude", 0.2)
         phase = season_config.get("phase_shift_days", 150)
         cycle = season_config.get("cycle_days", 365)
-        
+
         seasonality = 1.0 + amplitude * np.sin(2 * np.pi * (day - phase) / cycle)
 
         # 2. Promo Multipliers
@@ -209,3 +209,24 @@ class POSEngine:
         demand = self.base_demand * seasonality * promo_mult * noise
 
         return cast(np.ndarray, demand.astype(np.float32))
+
+    def get_average_demand_estimate(self) -> float:
+        """
+        Estimate the network-wide average daily demand per product.
+        Used for priming inventory.
+        """
+        # Simple mean of the base demand matrix
+        # This ignores seasonality/promo but is better than 1.0
+        # We only care about positive demand nodes (Stores)
+        total_base = np.sum(self.base_demand)
+        n_products = self.state.n_products
+        n_stores = np.count_nonzero(np.sum(self.base_demand, axis=1))
+
+        if n_stores > 0 and n_products > 0:
+            # Average demand per store per product
+            # Use total sum divided by (stores * products) to get "per SKU-Location" avg
+            # But usually we want "per SKU" at a location.
+            # Let's return the mean of non-zero entries to be safe for sparse data
+            non_zero_mean = total_base / np.count_nonzero(self.base_demand)
+            return float(non_zero_mean)
+        return 1.0

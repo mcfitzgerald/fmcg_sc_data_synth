@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.8] - 2025-12-28
+
+### Added
+- **LLM Context Guide:** Added `docs/llm_context.md`, a consolidated "One-Pager" for developers and AI assistants, covering physics laws, architecture, and core components.
+- **Dynamic Priming:** Implemented `get_average_demand_estimate` in `POSEngine` to calculate realistic initial inventory levels based on actual demand profiles, replacing the hardcoded `1.0` case/day proxy.
+- **Strict Logistics Constraints:** Enhanced `LogisticsEngine` to raise `ValueError` if an item physically exceeds truck dimensions, preventing silent data errors.
+
+### Fixed
+- **Logistics Crash:** Resolved `ValueError` in `LogisticsEngine` caused by `fit_qty` calculating to zero for fractional remaining quantities. The engine now supports partial case packing for "Fair Share" allocation scenarios.
+- **Linting & Types:** Resolved ~100 `ruff` errors (E501, F841, D200) and `mypy` strict type errors in `mrp.py` and `builder.py`.
+- **Code Refactoring:**
+  - Simplified `MRPEngine.generate_production_orders` by extracting inventory position logic.
+  - Reduced argument complexity in `Orchestrator._print_daily_status` and `_record_daily_metrics`.
+  - Refactored `TransformEngine._process_single_order` to reduce return statements.
+
+### Documentation
+- **API Docs:** Configured `mkdocs` to auto-generate API reference pages from source docstrings upon build.
+- **Navigation:** Updated `mkdocs.yml` to include the new "LLM Context" guide.
+
 ## [0.9.7] - 2025-12-28
 
 ### Fixed

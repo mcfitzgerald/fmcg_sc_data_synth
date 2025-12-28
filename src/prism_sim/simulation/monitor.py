@@ -103,9 +103,7 @@ class RealismMonitor:
                 "mean": self.slob_tracker.mean,
                 "max": self.slob_max_pct,
                 "status": (
-                    "OK"
-                    if self.slob_tracker.mean <= self.slob_max_pct
-                    else "HIGH"
+                    "OK" if self.slob_tracker.mean <= self.slob_max_pct else "HIGH"
                 ),
             },
             "cost_per_case": {

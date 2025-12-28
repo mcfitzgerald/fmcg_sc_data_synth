@@ -1,6 +1,6 @@
 [project]
 name = "prism-sim"
-version = "0.9.4"
+version = "0.9.8"
 description = ""
 authors = [
     {name = "Your Name",email = "you@example.com"}

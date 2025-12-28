@@ -5,7 +5,7 @@ from typing import Any
 @dataclass
 class RiskEvent:
     event_code: str
-    event_type: str       # port_strike, cyber_outage, etc.
+    event_type: str  # port_strike, cyber_outage, etc.
     trigger_day: int
     duration_days: int
     parameters: dict[str, Any] = field(default_factory=dict)
@@ -25,13 +25,15 @@ class RiskEventManager:
         # Load events from config
         self.events: list[RiskEvent] = []
         for e in self.config.get("events", []):
-            self.events.append(RiskEvent(
-                event_code=e["code"],
-                event_type=e.get("type", "generic"),
-                trigger_day=e["trigger_day"],
-                duration_days=e["duration_days"],
-                parameters=e.get("parameters", {})
-            ))
+            self.events.append(
+                RiskEvent(
+                    event_code=e["code"],
+                    event_type=e.get("type", "generic"),
+                    trigger_day=e["trigger_day"],
+                    duration_days=e["duration_days"],
+                    parameters=e.get("parameters", {}),
+                )
+            )
 
         self.active_events: list[RiskEvent] = []
 

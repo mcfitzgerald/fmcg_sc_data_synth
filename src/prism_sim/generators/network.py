@@ -150,14 +150,16 @@ class NetworkGenerator:
         for plant in active_plants:
             for rdc in active_rdcs:
                 dist = self.rng.uniform(500, 2500)
-                links.append(Link(
-                    id=f"L-{plant.id}-{rdc.id}",
-                    source_id=plant.id,
-                    target_id=rdc.id,
-                    mode="truck",
-                    distance_km=dist,
-                    lead_time_days=dist / 800.0 * 1.5 + 1.0  # Approx calc
-                ))
+                links.append(
+                    Link(
+                        id=f"L-{plant.id}-{rdc.id}",
+                        source_id=plant.id,
+                        target_id=rdc.id,
+                        mode="truck",
+                        distance_km=dist,
+                        lead_time_days=dist / 800.0 * 1.5 + 1.0,  # Approx calc
+                    )
+                )
 
         # RDCs -> Stores
         # Preferential Attachment / Clustering
@@ -184,15 +186,17 @@ class NetworkGenerator:
 
             rdc_degrees[rdc_idx] += 1
 
-            dist = self.rng.exponential(200) + 50 # Most stores close, tail are far
-            links.append(Link(
-                id=f"L-{rdc.id}-{store.id}",
-                source_id=rdc.id,
-                target_id=store.id,
-                mode="truck",
-                distance_km=dist,
-                lead_time_days=self.rng.normal(1.0, 0.2)
-            ))
+            dist = self.rng.exponential(200) + 50  # Most stores close, tail are far
+            links.append(
+                Link(
+                    id=f"L-{rdc.id}-{store.id}",
+                    source_id=rdc.id,
+                    target_id=store.id,
+                    mode="truck",
+                    distance_km=dist,
+                    lead_time_days=self.rng.normal(1.0, 0.2),
+                )
+            )
 
         return nodes, links
 
@@ -203,12 +207,14 @@ class NetworkGenerator:
         cities = self.pool.sample_cities(n)
 
         for i in range(n):
-            nodes.append(Node(
-                id=f"SUP-{i+1:03d}",
-                name=companies[i],
-                type=NodeType.SUPPLIER,
-                location=cities[i]
-            ))
+            nodes.append(
+                Node(
+                    id=f"SUP-{i + 1:03d}",
+                    name=companies[i],
+                    type=NodeType.SUPPLIER,
+                    location=cities[i],
+                )
+            )
         return nodes
 
     def _generate_stores(self, n: int) -> list[Node]:
@@ -218,10 +224,12 @@ class NetworkGenerator:
         cities = self.pool.sample_cities(n, replace=True)
 
         for i in range(n):
-            nodes.append(Node(
-                id=f"STORE-{i+1:05d}",
-                name=f"Store {cities[i]} #{i+1}",
-                type=NodeType.STORE,
-                location=cities[i]
-            ))
+            nodes.append(
+                Node(
+                    id=f"STORE-{i + 1:05d}",
+                    name=f"Store {cities[i]} #{i + 1}",
+                    type=NodeType.STORE,
+                    location=cities[i],
+                )
+            )
         return nodes

@@ -32,7 +32,9 @@ from prism_sim.simulation.writer import SimulationWriter
 class Orchestrator:
     """The main time-stepper loop for the Prism Digital Twin."""
 
-    def __init__(self, enable_logging: bool = False, output_dir: str = "data/output") -> None:
+    def __init__(
+        self, enable_logging: bool = False, output_dir: str = "data/output"
+    ) -> None:
         # 1. Initialize World
         manifest = load_manifest()
         self.config = load_simulation_config()
@@ -42,10 +44,13 @@ class Orchestrator:
         # ... (Initializing State and Engines) ...
         # 2. Initialize State
         self.state = StateManager(self.world)
-        self._initialize_inventory()
 
         # 3. Initialize Engines & Agents
+        # Initialize POS Engine first to get demand estimates for priming
         self.pos_engine = POSEngine(self.world, self.state, self.config)
+        
+        self._initialize_inventory()
+
         self.replenisher = MinMaxReplenisher(self.world, self.state, self.config)
         self.allocator = AllocationAgent(self.state, self.config)
         self.logistics = LogisticsEngine(self.world, self.state, self.config)
@@ -63,16 +68,16 @@ class Orchestrator:
         self.risks = RiskEventManager(sim_params)
 
         # 6. Initialize Data Writer (Milestone 7)
-        self.writer = SimulationWriter(enable_logging=enable_logging, output_dir=output_dir)
+        self.writer = SimulationWriter(
+            enable_logging=enable_logging, output_dir=output_dir
+        )
 
         # 7. Manufacturing State
         self.active_production_orders: list[ProductionOrder] = []
         self.completed_batches: list[Batch] = []
 
     def _initialize_inventory(self) -> None:
-        """
-        Seed initial inventory across the network (Priming).
-        """
+        """Seed initial inventory across the network (Priming)."""
         # Get manufacturing config for plant initial inventory
         sim_params = self.config.get("simulation_parameters", {})
         mfg_config = sim_params.get("manufacturing", {})
@@ -81,14 +86,15 @@ class Orchestrator:
         # Get priming config
         inv_config = sim_params.get("inventory", {})
         init_config = inv_config.get("initialization", {})
-        
+
         # Defaults if config missing
         store_days = init_config.get("store_days_supply", 14.0)
         rdc_days = init_config.get("rdc_days_supply", 21.0)
         rdc_multiplier = init_config.get("rdc_store_multiplier", 1500.0)
-        
-        # Base demand proxy (approx 1.0 case/day)
-        base_demand = 1.0
+
+        # Base demand proxy (calculated from POSEngine)
+        base_demand = self.pos_engine.get_average_demand_estimate()
+        print(f"Orchestrator: Priming inventory with base_demand={base_demand:.2f}")
 
         # Calculate Levels
         store_level = base_demand * store_days
@@ -194,22 +200,28 @@ class Orchestrator:
         self._apply_post_step_validation(day, arrived)
 
         # 12. Monitors & Data Logging
+        total_demand = np.sum(daily_demand)
+        daily_shipments = new_shipments + plant_shipments
         self._record_daily_metrics(
-            daily_demand, new_shipments, plant_shipments, arrived, plant_oee, day
+            daily_demand, daily_shipments, arrived, plant_oee, day
         )
         self._log_daily_data(
             raw_orders, new_shipments, plant_shipments, new_batches, day
         )
 
         # 13. Logging / Metrics (Simple Print)
-        self._print_daily_status(
-            day,
-            daily_demand,
-            unconstrained_demand_qty,
-            new_shipments,
-            arrived,
-            new_batches,
-        )
+        daily_summary = {
+            "demand": total_demand,
+            "ordered": unconstrained_demand_qty,
+            "shipped": sum(
+                line.quantity for shipment in daily_shipments for line in shipment.lines
+            ),
+            "arrived": sum(
+                line.quantity for shipment in arrived for line in shipment.lines
+            ),
+            "produced": sum(b.quantity_cases for b in new_batches),
+        }
+        self._print_daily_status(day, daily_summary)
 
     def _apply_pre_step_quirks(self, day: int) -> None:
         """Trigger risk events and apply inventory quirks."""
@@ -256,8 +268,7 @@ class Orchestrator:
     def _record_daily_metrics(
         self,
         daily_demand: np.ndarray,
-        new_shipments: list[Shipment],
-        plant_shipments: list[Shipment],
+        daily_shipments: list[Shipment],
         arrived: list[Shipment],
         plant_oee: dict[str, float],
         day: int,
@@ -275,7 +286,7 @@ class Orchestrator:
         constraints = log_config.get("constraints", {})
         max_weight = constraints.get("truck_max_weight_kg", 20000.0)
 
-        for s in new_shipments + plant_shipments:
+        for s in daily_shipments:
             fill_rate = min(1.0, s.total_weight_kg / max_weight)
             self.monitor.record_truck_fill(fill_rate)
 
@@ -290,7 +301,7 @@ class Orchestrator:
         new_shipments: list[Shipment],
         plant_shipments: list[Shipment],
         new_batches: list[Batch],
-        day: int
+        day: int,
     ) -> None:
         """Log data to the simulation writer."""
         self.writer.log_orders(raw_orders, day)
@@ -299,36 +310,30 @@ class Orchestrator:
         if day % 7 == 0:
             self.writer.log_inventory(self.state, self.world, day)
 
-    def _print_daily_status(  # noqa: PLR0913
+    def _print_daily_status(
         self,
         day: int,
-        daily_demand: np.ndarray,
-        unconstrained_demand_qty: float,
-        new_shipments: list[Shipment],
-        arrived: list[Shipment],
-        new_batches: list[Batch],
+        summary: dict[str, float],
     ) -> None:
         """Print high-level daily simulation status."""
-        total_demand = np.sum(daily_demand)
-        total_ordered = unconstrained_demand_qty
-        total_shipped = sum(
-            line.quantity for shipment in new_shipments for line in shipment.lines
-        )
-        total_arrived = sum(
-            line.quantity for shipment in arrived for line in shipment.lines
-        )
-        total_produced = sum(b.quantity_cases for b in new_batches)
+        total_demand = summary["demand"]
+        total_ordered = summary["ordered"]
+        total_shipped = summary["shipped"]
+        total_arrived = summary["arrived"]
+        total_produced = summary["produced"]
 
         # Debug: Inventory Stats
         # Only consider stores (first 4500 nodes approx, or just average all positive)
         # We know actual_inventory can be negative.
         mean_inv = np.mean(self.state.actual_inventory)
-        
+
         # Calculate theoretical reorder point avg
         # RP = Demand * 3.0
         # This is approximate since we don't have the exact Replenisher view here easily
         # but daily_demand is what we passed.
-        mean_demand = np.mean(daily_demand)
+        # We don't have access to the full daily_demand array here anymore,
+        # so we'll just use the system total mean as a proxy.
+        mean_demand = total_demand / self.state.n_products
         est_rp = mean_demand * 3.0
 
         print(
@@ -341,7 +346,6 @@ class Orchestrator:
             f"EstRP={est_rp:.2f}"
         )
 
-
     def save_results(self) -> None:
         """Export all collected data."""
         report = self.monitor.get_report()
@@ -353,9 +357,7 @@ class Orchestrator:
         [Task 7.3]
         """
         report = self.monitor.get_report()
-        scoring_config = (
-            self.config.get("simulation_parameters", {}).get("scoring", {})
-        )
+        scoring_config = self.config.get("simulation_parameters", {}).get("scoring", {})
 
         # Scoring Weights
         base_service = scoring_config.get("service_index_base", 100.0)

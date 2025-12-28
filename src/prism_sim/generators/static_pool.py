@@ -70,18 +70,12 @@ class StaticDataPool:
         Faker.seed(seed)
 
         # Pre-generate all pools
-        self.names: list[str] = self._generate_pool(
-            self._faker.name, sizes["names"]
-        )
+        self.names: list[str] = self._generate_pool(self._faker.name, sizes["names"])
         self.companies: list[str] = self._generate_pool(
             self._faker.company, sizes["companies"]
         )
-        self.cities: list[str] = self._generate_pool(
-            self._faker.city, sizes["cities"]
-        )
-        self.emails: list[str] = self._generate_pool(
-            self._faker.email, sizes["emails"]
-        )
+        self.cities: list[str] = self._generate_pool(self._faker.city, sizes["cities"])
+        self.emails: list[str] = self._generate_pool(self._faker.email, sizes["emails"])
         self.addresses: list[str] = self._generate_pool(
             self._faker.street_address, sizes["addresses"]
         )
@@ -109,7 +103,7 @@ class StaticDataPool:
 
     def _generate_pool(
         self,
-        generator_func: object, # faker methods are objects
+        generator_func: object,  # faker methods are objects
         size: int,
     ) -> list[str]:
         """
@@ -144,7 +138,7 @@ class StaticDataPool:
 
         # If we couldn't get enough unique values, fill with duplicates
         while len(pool) < size:
-             pool.append(str(gen_func())) # type: ignore
+            pool.append(str(gen_func()))  # type: ignore
 
         return pool
 

@@ -67,9 +67,7 @@ class TransformEngine:
         # Recall Scenario Config
         self.recall_scenario = mfg_config.get("recall_scenario", {})
         self.recall_product_id = self.recall_scenario.get("product_id", "SKU-DET-001")
-        self.recall_batch_id = self.recall_scenario.get(
-            "batch_id", "B-2024-RECALL-001"
-        )
+        self.recall_batch_id = self.recall_scenario.get("batch_id", "B-2024-RECALL-001")
         self.recall_status_str = self.recall_scenario.get("status", "hold")
         self.recall_notes = self.recall_scenario.get(
             "notes", "RECALL: Contaminated sorbitol detected"
@@ -99,27 +97,30 @@ class TransformEngine:
 
     def _initialize_plant_states(self) -> None:
         """Initialize production state for each plant."""
-        mfg_config = self.config.get("simulation_parameters", {}).get("manufacturing", {})
+        mfg_config = self.config.get("simulation_parameters", {}).get(
+            "manufacturing", {}
+        )
         plant_params = mfg_config.get("plant_parameters", {})
-        
+
         # Global defaults
         global_efficiency = mfg_config.get("efficiency_factor", 0.85)
         global_downtime = mfg_config.get("unplanned_downtime_pct", 0.05)
-        
+
         for node_id, node in self.world.nodes.items():
             if node.type == NodeType.PLANT:
                 # Get plant-specific overrides
                 p_config = plant_params.get(node_id, {})
                 efficiency = p_config.get("efficiency_factor", global_efficiency)
                 downtime = p_config.get("unplanned_downtime_pct", global_downtime)
-                
+
                 # Calculate effective capacity hours
                 # Effective = Total Hours * (1 - Downtime) * Efficiency
-                # This treats efficiency as a speed multiplier, but since we can't easily 
-                # change run_rate per plant without complicating the recipe lookup, 
-                # we effectively reduce the available hours to simulate slower/interrupted production.
+                # This treats efficiency as a speed multiplier, but since we can't
+                # easily change run_rate per plant without complicating the recipe
+                # lookup, we effectively reduce the available hours to simulate
+                # slower/interrupted production.
                 effective_hours = self.hours_per_day * (1.0 - downtime) * efficiency
-                
+
                 self._plant_states[node_id] = PlantState(
                     plant_id=node_id,
                     remaining_capacity_hours=effective_hours,
@@ -161,9 +162,11 @@ class TransformEngine:
 
         # Calculate OEE for each plant (Utilization of Effective Capacity)
         for plant_id, plant_state in self._plant_states.items():
-            used_capacity = plant_state.max_capacity_hours - plant_state.remaining_capacity_hours
+            used_cap = (
+                plant_state.max_capacity_hours - plant_state.remaining_capacity_hours
+            )
             if plant_state.max_capacity_hours > 0:
-                oee = used_capacity / plant_state.max_capacity_hours
+                oee = used_cap / plant_state.max_capacity_hours
             else:
                 oee = 0.0
             plant_oee[plant_id] = oee
@@ -180,12 +183,9 @@ class TransformEngine:
             Batch if production completed, None otherwise
         """
         plant_state = self._plant_states.get(order.plant_id)
-        if plant_state is None:
-            return None
-
         recipe = self.world.recipes.get(order.product_id)
-        if recipe is None:
-            # No recipe for this product - skip
+
+        if plant_state is None or recipe is None:
             return None
 
         # Calculate remaining quantity
@@ -206,18 +206,23 @@ class TransformEngine:
             changeover_time = recipe.changeover_time_hours
 
         # How much can we actually produce today?
-        available_time_for_prod = max(0.0, plant_state.remaining_capacity_hours - changeover_time)
-        if available_time_for_prod <= 0 and plant_state.remaining_capacity_hours < changeover_time:
+        available_time = plant_state.remaining_capacity_hours
+        available_time_for_prod = max(0.0, available_time - changeover_time)
+
+        if available_time_for_prod <= 0 and available_time < changeover_time:
             # Not even enough time for changeover
             return None
-            
-        max_qty_today = min(remaining_qty, available_time_for_prod * recipe.run_rate_cases_per_hour)
-        
+
+        max_qty_today = min(
+            remaining_qty,
+            available_time_for_prod * recipe.run_rate_cases_per_hour,
+        )
+
         if max_qty_today <= 0:
             return None
 
         # Check raw material availability for TODAY's potential production
-        material_available, _material_shortage = self._check_material_availability(
+        material_available, _ = self._check_material_availability(
             order.plant_id, order.product_id, max_qty_today
         )
 
@@ -227,7 +232,8 @@ class TransformEngine:
             return None
 
         # If we have materials for today, proceed with production calculation
-        if plant_state.remaining_capacity_hours < (production_time_hours + changeover_time):
+        total_time_needed = production_time_hours + changeover_time
+        if plant_state.remaining_capacity_hours < total_time_needed:
             actual_qty = max_qty_today
         else:
             actual_qty = remaining_qty
@@ -250,7 +256,7 @@ class TransformEngine:
 
         # Create batch for TODAY's production
         batch = self._create_batch(order, current_day, actual_qty)
-        
+
         # Add produced goods to plant inventory
         self._add_to_inventory(order.plant_id, order.product_id, actual_qty)
 
