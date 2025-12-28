@@ -87,5 +87,10 @@ nav:
     - architecture/index.md
     - Components: architecture/components.md
   - API Reference: reference/
-  - Planning: planning/
+  - Planning: 
+    - planning/index.md
+    - Intent: planning/intent.md
+    - Roadmap: planning/roadmap.md
+    - Physics: planning/physics.md
+    - World Builder Overhaul: planning/world_builder_overhaul.md
   - Changelog: changelog.md
