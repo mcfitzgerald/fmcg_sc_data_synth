@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.4] - 2025-12-27
+
+### Fixed
+- **Structural Deficit Resolution:** Resolved system-wide inventory collapse where production could not meet demand.
+  - **MRP Logic:** Updated `MRPEngine` to use Inventory Position (On Hand + Pipeline) instead of just On Hand, eliminating redundant orders and the Bullwhip effect.
+  - **Ingredient Replenishment:** Implemented `generate_purchase_orders` in `MRPEngine` to replenish raw materials at plants, preventing production halts due to ingredient exhaustion.
+  - **Partial Production:** Fixed `TransformEngine` to correctly handle partial production days and calculate remaining capacity, ensuring plants don't lose time on large orders.
+- **Capacity Tuning:** Doubled theoretical run rates in `recipes.csv` and increased `production_hours_per_day` to 24.0 to ensure the network has sufficient capacity to meet the ~225k case/day demand.
+
+### Added
+- **Plant-Specific Configuration:** Implemented granular control over plant capabilities in `simulation_config.json`:
+  - **Efficiency & Downtime:** Configurable `efficiency_factor` (e.g., 0.70-0.95) and `unplanned_downtime_pct` per plant.
+  - **Product Restrictions:** Added `supported_categories` to restrict which plants can produce specific product categories (e.g., only PLANT-TX makes Oral Care).
+
 ## [0.9.3] - 2025-12-27
 
 ### Fixed
