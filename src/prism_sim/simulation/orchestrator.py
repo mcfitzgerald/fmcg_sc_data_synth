@@ -195,7 +195,7 @@ class Orchestrator:
 
         # 12. Monitors & Data Logging
         self._record_daily_metrics(
-            new_shipments, plant_shipments, arrived, plant_oee, day
+            daily_demand, new_shipments, plant_shipments, arrived, plant_oee, day
         )
         self._log_daily_data(
             raw_orders, new_shipments, plant_shipments, new_batches, day
@@ -255,6 +255,7 @@ class Orchestrator:
 
     def _record_daily_metrics(
         self,
+        daily_demand: np.ndarray,
         new_shipments: list[Shipment],
         plant_shipments: list[Shipment],
         arrived: list[Shipment],
@@ -262,6 +263,14 @@ class Orchestrator:
         day: int,
     ) -> None:
         """Record simulation metrics for monitoring."""
+        # Calculate Inventory Turns (Cash)
+        total_sales = np.sum(daily_demand)  # Proxy for COGS
+        total_inv = np.sum(np.maximum(0, self.state.actual_inventory))
+        if total_inv > 0:
+            daily_turn_rate = total_sales / total_inv
+            annual_turns = daily_turn_rate * 365
+            self.monitor.record_inventory_turns(annual_turns)
+
         log_config = self.config.get("simulation_parameters", {}).get("logistics", {})
         constraints = log_config.get("constraints", {})
         max_weight = constraints.get("truck_max_weight_kg", 20000.0)

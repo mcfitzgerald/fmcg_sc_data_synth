@@ -7,7 +7,7 @@
     },
     "scoring": {
       "service_index_base": 100.0,
-      "backlog_penalty_divisor": 1000.0,
+      "backlog_penalty_divisor": 100000.0,
       "truck_fill_scale": 100.0,
       "oee_scale": 100.0
     },

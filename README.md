@@ -20,22 +20,22 @@ Ensure you have **Poetry** and **Python 3.12+** installed.
 poetry install
 ```
 
-### 2. Run a 365-Day Simulation
-Execute the benchmark script to run a full year of simulation for the "Deep NAM" (North American Market) network. This will simulate ~82 million cases of demand across 4,500 stores, 4 RDCs, 4 Plants, and 50 Suppliers.
+### 2. Run the Simulation
+Execute the benchmark script to run the "Deep NAM" (North American Market) simulation. By default, this runs a 90-day simulation to validate the physics and generate reports.
 
 ```bash
 poetry run python run_benchmark.py
 ```
 
 **What to expect:**
-- **Runtime:** ~1-2 minutes (depending on hardware).
-- **Output:** Daily status logs showing Demand, Orders, Shipments, Production, and Inventory.
-- **Final Report:** A "Supply Chain Triangle" report summarizing Service (Fill Rate), Cost (Truck Fill), and Cash (Inventory Turns).
+- **Runtime:** ~1-2 minutes.
+- **Console Output:** Daily logs showing Demand vs. Production, Inventory Levels, and Risk Events.
+- **Triangle Report:** At the end, a summary of Service, Cost, and Cash is printed to the console.
 
 ### 3. View Results
-Artifacts are saved to `data/output/sim_<timestamp>/`:
-- `triangle_report.txt`: The executive summary.
-- `orders.csv`, `shipments.csv`, `batches.csv`: Transactional logs (SCOR-DS format).
+Artifacts are automatically saved to `data/output/`:
+- `triangle_report.txt`: The executive summary (Service, Cost, Cash metrics).
+- `orders.csv`, `shipments.csv`, `batches.csv`: Detailed transactional logs (SCOR-DS format).
 - `inventory.csv`: Weekly inventory snapshots.
 
 ## ⚙️ Configuration

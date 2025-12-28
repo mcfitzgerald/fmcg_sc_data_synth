@@ -22,10 +22,11 @@ class WelfordAccumulator:
     m2: float = 0.0  # Sum of squares of differences from the current mean
 
     def update(self, new_value: float) -> None:
+        val = float(new_value)
         self.count += 1
-        delta = new_value - self.mean
+        delta = val - self.mean
         self.mean += delta / self.count
-        delta2 = new_value - self.mean
+        delta2 = val - self.mean
         self.m2 += delta * delta2
 
     @property
@@ -53,12 +54,14 @@ class RealismMonitor:
         self.truck_fill_tracker = WelfordAccumulator()
         self.slob_tracker = WelfordAccumulator()  # SLOB: Slow Moving & Obsolete
         self.cost_tracker = WelfordAccumulator()
+        self.inventory_turns_tracker = WelfordAccumulator()
 
         # Ranges from config
         self.oee_range = self.config.get("oee_range", [0.65, 0.85])
         self.truck_fill_target = self.config.get("truck_fill_target", 0.85)
         self.slob_max_pct = self.config.get("slob_max_pct", 0.30)
         self.cost_range = self.config.get("cost_per_case_range", [1.00, 3.00])
+        self.turns_range = self.config.get("inventory_turns_range", [6.0, 14.0])
 
     def record_oee(self, oee_value: float) -> None:
         self.oee_tracker.update(oee_value)
@@ -71,6 +74,9 @@ class RealismMonitor:
 
     def record_cost_per_case(self, cost: float) -> None:
         self.cost_tracker.update(cost)
+
+    def record_inventory_turns(self, turns: float) -> None:
+        self.inventory_turns_tracker.update(turns)
 
     def get_report(self) -> dict[str, Any]:
         return {
@@ -110,6 +116,17 @@ class RealismMonitor:
                     if self.cost_range[0]
                     <= self.cost_tracker.mean
                     <= self.cost_range[1]
+                    else "DRIFT"
+                ),
+            },
+            "inventory_turns": {
+                "mean": self.inventory_turns_tracker.mean,
+                "target": self.turns_range,
+                "status": (
+                    "OK"
+                    if self.turns_range[0]
+                    <= self.inventory_turns_tracker.mean
+                    <= self.turns_range[1]
                     else "DRIFT"
                 ),
             },

@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.7] - 2025-12-28
+
+### Fixed
+- **Service Index Reporting:** Fixed scaling issue where `backlog_penalty_divisor` was too small (1,000 vs 100,000) for the Deep NAM network, causing Service Index to floor at 0%.
+- **Cash Metric Reporting:** Implemented `Inventory Turns` tracking in `RealismMonitor` and `Orchestrator`. Now correctly reports Annualized Inventory Turns (previously 0.00x).
+- **Serialization Error:** Fixed `TypeError: float32 is not JSON serializable` in `RealismMonitor` by ensuring metric accumulators store native Python floats.
+
+### Documentation
+- **Quick Start:** Updated `README.md` with clear instructions on running the simulation via `run_benchmark.py` and locating generated artifacts.
+
 ## [0.9.6] - 2025-12-28
 
 ### Fixed
