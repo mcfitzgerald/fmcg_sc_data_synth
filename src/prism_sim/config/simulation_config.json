@@ -67,6 +67,7 @@
         "SPOF": { "reorder_point_days": 30.0, "target_days_supply": 45.0 }
       },
       "min_production_qty": 25000.0,
+      "min_ingredient_moq": 100.0,
       "production_lead_time_days": 3,
       "production_hours_per_day": 24.0,
       "efficiency_factor": 0.95,

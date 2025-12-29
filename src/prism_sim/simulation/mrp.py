@@ -43,6 +43,7 @@ class MRPEngine:
         self.target_days_supply = mrp_config.get("target_days_supply", 14.0)
         self.reorder_point_days = mrp_config.get("reorder_point_days", 7.0)
         self.min_production_qty = mrp_config.get("min_production_qty", 100.0)
+        self.min_ingredient_moq = mrp_config.get("min_ingredient_moq", 100.0)
         self.production_lead_time = mrp_config.get("production_lead_time_days", 3)
         
         # Pre-calculate Policy Vectors
@@ -314,7 +315,7 @@ class MRPEngine:
                 # Apply MOQ
                 # Ideally MOQ should be per ingredient from config/product
                 # Using global min_production_qty as proxy or 1 pallet
-                qty_to_order = max(qty_needed, 100.0) # Simple MOQ
+                qty_to_order = max(qty_needed, self.min_ingredient_moq) # Simple MOQ
 
                 ing_id = self.state.product_idx_to_id[p_idx]
                 supplier_id = self._find_supplier_for_ingredient(plant_id, ing_id)
