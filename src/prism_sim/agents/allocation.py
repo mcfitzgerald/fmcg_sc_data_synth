@@ -78,12 +78,15 @@ class AllocationAgent:
     def allocate_orders(self, orders: list[Order]) -> list[Order]:
         """
         Processes orders against available inventory at the source.
-
-        Modifies order quantities in-place based on availability.
-        Updates (decrements) source inventory immediately.
+        
+        Implements 'Fill or Kill' logic for FMCG realism:
+        - Orders are processed immediately against available stock.
+        - Any quantity not filled is 'Killed' (not backlogged).
+        - Orders are marked 'CLOSED' after processing.
+        - The Replenisher will re-order naturally if inventory remains low.
 
         Returns:
-            List of allocated orders (may be fewer if some are fully cancelled).
+            List of processed orders with updated quantities (allocated amount).
         """
         orders_by_source = self._group_orders_by_source(orders)
         allocated_orders: list[Order] = []
@@ -97,7 +100,10 @@ class AllocationAgent:
                 or source_node.type == NodeType.SUPPLIER
                 or source_idx is None
             ):
-                # External supplier - assume 100% fill
+                # External supplier - assume 100% fill for now (or infinite capacity)
+                # Mark as CLOSED so they don't linger
+                for o in source_orders:
+                    o.status = "CLOSED"
                 allocated_orders.extend(source_orders)
                 continue
 
@@ -113,8 +119,27 @@ class AllocationAgent:
                     p_id = self.state.product_idx_to_id[p_idx]
                     self.state.update_inventory(source_id, p_id, -allocated_qty)
 
-            # Apply ratios to orders
-            allocated = self._apply_ratios_to_orders(source_orders, fill_ratios)
-            allocated_orders.extend(allocated)
+            # Apply ratios to orders and CLOSE them
+            for order in source_orders:
+                new_lines = []
+                for line in order.lines:
+                    p_idx = self.state.product_id_to_idx.get(line.product_id)
+                    if p_idx is not None:
+                        ratio = fill_ratios[p_idx]
+                        new_qty = line.quantity * ratio
+                        if new_qty > self.epsilon:
+                            line.quantity = new_qty
+                            new_lines.append(line)
+                    else:
+                        # Product not found, keep as is (or kill?) - keeping for safety
+                        new_lines.append(line)
+                
+                order.lines = new_lines
+                # Mark as CLOSED (Fill or Kill)
+                order.status = "CLOSED"
+                
+                # Only return if there's something to ship
+                if new_lines:
+                    allocated_orders.append(order)
 
         return allocated_orders

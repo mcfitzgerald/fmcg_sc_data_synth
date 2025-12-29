@@ -65,9 +65,6 @@ class MinMaxReplenisher:
         """
         orders = []
 
-        # Iterate over stores (vectorized logic is harder for order generation
-        # due to object creation, so we iterate. The math can be vectorized though).
-
         # 1. Identify Stores
         store_indices = []
         store_ids = []

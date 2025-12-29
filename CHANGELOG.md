@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.0] - 2025-12-29
+
+### Fixed
+- **MRP Physics Fix:** Implemented a "Look-ahead Horizon" (reorder point window) for `in_production_qty` calculation. This prevents the MRP engine from overestimating available supply based on distant future production orders, which previously led to "Pipeline Silence" and systemic inventory collapse.
+- **Fill-or-Kill Logic:** Refactored `AllocationAgent` to implement "Fill or Kill" (Cut) logic for retailer-to-DC orders. Unfulfilled quantities are now marked as `CLOSED` rather than remaining `OPEN`. This aligns with high-velocity FMCG industry standards and prevents exponential computational backlog growth during stockouts.
+
+### Added
+- **Simulation Tuning Plan:** Created `docs/planning/sim_tuning.md` to document the strategy for stabilizing the "Deep NAM" network, including Pareto-based SPOF isolation and tiered reorder points.
+
 ## [0.11.0] - 2025-12-29
 
 ### Added

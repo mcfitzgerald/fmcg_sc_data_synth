@@ -115,14 +115,18 @@ class MRPEngine:
         production_orders: list[ProductionOrder] = []
 
         # 1. Calculate In-Production qty per product
+        # FIX: Only count production that will be ready within the planning horizon (look-ahead)
+        lookahead_horizon = self.reorder_point_days  # Use ROP window as the relevant horizon
         in_production_qty: dict[str, float] = {}
         for po in active_production_orders:
             if po.status != ProductionOrderStatus.COMPLETE:
-                # Count remaining qty
-                remaining = po.quantity_cases - po.produced_quantity
-                in_production_qty[po.product_id] = (
-                    in_production_qty.get(po.product_id, 0.0) + remaining
-                )
+                # Only count if due within horizon
+                if po.due_day <= current_day + lookahead_horizon:
+                    # Count remaining qty
+                    remaining = po.quantity_cases - po.produced_quantity
+                    in_production_qty[po.product_id] = (
+                        in_production_qty.get(po.product_id, 0.0) + remaining
+                    )
 
         # 2. Calculate In-Transit qty per product (to RDCs)
         in_transit_qty: dict[str, float] = {}
@@ -256,6 +260,10 @@ class MRPEngine:
             in_transit = pipeline[plant_idx]
             inv_position = on_hand + in_transit
 
+            # Mask: Only consider items where we have a requirement (Ingredients)
+            # and where IP < ROP
+            needs_ordering = (inv_position < rop_levels) & (ingredient_reqs > 0)
+            
             # Mask: Only consider items where we have a requirement (Ingredients)
             # and where IP < ROP
             needs_ordering = (inv_position < rop_levels) & (ingredient_reqs > 0)
