@@ -100,14 +100,15 @@
         "notes": "RECALL: Contaminated sorbitol detected - isolate and quarantine"
       },
       "spof": {
-        "ingredient_id": "ING-SURF-SPEC",
-        "primary_supplier_id": "SUP-SURF-SPEC",
-        "backup_supplier_id": "SUP-SURF-BACKUP",
-        "warning_threshold": 10.0
+        "ingredient_id": "ACT-CHEM-001",
+        "primary_supplier_id": "SUP-001",
+        "backup_supplier_id": "SUP-002",
+        "warning_threshold": 10.0,
+        "description": "Active Agent 1 - Global sourced specialty chemical (SPOF scenario)"
       },
       "initial_plant_inventory": {
-        "ING-SURF-SPEC": 10000000.0,
-        "ING-BASE-LIQ": 10000000.0
+        "ACT-CHEM-001": 10000000.0,
+        "BLK-WATER-001": 10000000.0
       }
     },
     "validation": {

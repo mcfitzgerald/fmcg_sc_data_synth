@@ -23,6 +23,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **30-day streaming test:** 549K orders, 557K shipments, 1.6M inventory records written incrementally in 10.4s.
 - **Memory efficiency:** Streaming mode eliminates in-memory accumulation for high-volume tables.
 
+### Fixed
+- **SPOF Config Alignment:** Updated SPOF ingredient from hardcoded `ING-SURF-SPEC` to procedural `ACT-CHEM-001` to match Task 8.1 world builder overhaul.
+- **Test Maintenance:** Updated `test_world_builder.py` to validate procedural ingredient patterns instead of hardcoded IDs. Added new tests: `test_ingredients_generated`, `test_spof_ingredient_exists`.
+- **Mass Balance Test:** Fixed `test_mass_balance_detects_leak` to inject proportionally larger leaks for reliable drift detection.
+
 ## [0.10.0] - 2025-12-28
 
 ### Architecture Overhaul

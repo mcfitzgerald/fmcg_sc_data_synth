@@ -1,5 +1,4 @@
 import numpy as np
-import pytest
 
 from prism_sim.network.core import Shipment, ShipmentStatus
 from prism_sim.simulation.monitor import RealismMonitor, WelfordAccumulator
@@ -42,8 +41,12 @@ def test_quirks_integration():
             "cluster_threshold_hours": 100.0,
             "affected_ports": ["A", "B"]
         },
-        "optimism_bias": {"enabled": True, "bias_pct": 0.50, "affected_age_months": 6},
-        "phantom_inventory": {"enabled": True, "shrinkage_pct": 0.02, "detection_lag_days": 1}
+        "optimism_bias": {
+            "enabled": True, "bias_pct": 0.50, "affected_age_months": 6
+        },
+        "phantom_inventory": {
+            "enabled": True, "shrinkage_pct": 0.02, "detection_lag_days": 1
+        }
     }
     # Re-init managers with new config
     sim.quirks = QuirkManager(config=sim.config)
@@ -51,11 +54,11 @@ def test_quirks_integration():
     # 1. Optimism Bias Test
     raw_demand = sim.pos_engine.generate_demand(1)
     product_ids = [sim.state.product_idx_to_id[i] for i in range(sim.state.n_products)]
-    
+
     # Register launches for all products to ensure they are "new"
     for p_id in product_ids:
         sim.quirks.optimism_bias.register_product_launch(p_id, 0)
-        
+
     biased_demand = sim.quirks.apply_optimism_bias(raw_demand, product_ids, 1)
 
     assert np.allclose(biased_demand, raw_demand * 1.5)
@@ -69,10 +72,10 @@ def test_quirks_integration():
     )
     # Mock previous delay for port "A"
     sim.quirks.port_congestion._prev_delay_by_port["A"] = 10.0 # hours
-    
+
     # apply_port_congestion modifies in place
     sim.quirks.apply_port_congestion([shipment])
-    
+
     # Next delay = 0.9 * 10 + 0 = 9 hours = 0.375 days
     # Since it rounds up: ceil(9/24) = 1 day
     assert shipment.arrival_day == 5 # 4 + 1
@@ -96,14 +99,14 @@ def test_phantom_inventory():
     n_idx, p_idx = 0, 0
     node_id = sim.state.node_idx_to_id[n_idx]
     prod_id = sim.state.product_idx_to_id[p_idx]
-    
+
     # Simulate shrinkage on Day 1
     sim.state.actual_inventory[n_idx, p_idx] -= 5.0
     event = ShrinkageEvent(
-        day_occurred=1, 
-        day_discovered=2, 
-        node_id=node_id, 
-        product_id=prod_id, 
+        day_occurred=1,
+        day_discovered=2,
+        node_id=node_id,
+        product_id=prod_id,
         quantity_lost=5.0
     )
     sim.quirks.phantom_inventory._pending_discoveries[2] = [event]
@@ -123,9 +126,9 @@ def test_risk_events():
         "enabled": True,
         "events": [
             {
-                "code": "TEST-RISK", 
-                "type": "port_strike", 
-                "trigger_day": 5, 
+                "code": "TEST-RISK",
+                "type": "port_strike",
+                "trigger_day": 5,
                 "duration_days": 2,
                 "parameters": {"delay_multiplier": 4.0}
             }
@@ -154,7 +157,7 @@ def test_mass_balance_conservation():
     sim = Orchestrator()
     # Disable quirks to simplify balance check (though auditor handles shrinkage now)
     sim.config["simulation_parameters"]["quirks"] = {"enabled": False}
-    
+
     # Run simulation for a few days
     sim.run(days=5)
 
@@ -164,21 +167,38 @@ def test_mass_balance_conservation():
 def test_mass_balance_detects_leak():
     """Verify mass balance detects artificial inventory leak."""
     sim = Orchestrator()
-    
+
     # Manually start a day
     sim.auditor.start_day(1)
-    
-    # Inject matter (Magically add inventory without recording it in auditor)
+
+    # Find a location/product with small inventory to ensure drift > 2%
+    # Use a store (not a plant with 10M inventory) for reliable detection
+    # First, find a store node index
+    store_idx = None
+    for node_id, idx in sim.state.node_id_to_idx.items():
+        if node_id.startswith("STORE-"):
+            store_idx = idx
+            break
+
+    if store_idx is None:
+        # Fallback: just use first node but inject much larger amount
+        store_idx = 0
+
+    # Get opening inventory for this cell
+    opening = sim.state.actual_inventory[store_idx, 0]
+
+    # Inject leak > 2% of opening (or at least 100 units if opening is small)
     # This violates Conservation Law: Closing > Opening but no Inflow recorded
-    sim.state.actual_inventory[0, 0] += 1000.0
-    
+    leak_amount = max(opening * 0.10, 100.0)  # 10% leak or 100 units
+    sim.state.actual_inventory[store_idx, 0] += leak_amount
+
     # End day
     sim.auditor.end_day()
-    
+
     # Check
     violations = sim.auditor.check_mass_balance()
-    
-    assert len(violations) > 0
+
+    assert len(violations) > 0, f"Expected violations: open={opening}, leak={leak_amount}"
     assert "Drift" in violations[0]
 
 def test_full_step_integration():
