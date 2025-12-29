@@ -288,8 +288,9 @@ class TransformEngine:
         bom_vector = self.state.recipe_matrix[p_idx]
         required_vector = bom_vector * quantity
 
-        # 2. Get Available: Inv[plant]
-        available_vector = self.state.inventory[plant_idx]
+        # 2. Get Available: Use ACTUAL inventory (not perceived)
+        # This prevents phantom inventory from causing over-production
+        available_vector = np.maximum(0, self.state.actual_inventory[plant_idx])
 
         # 3. Check for Shortage
         # We only care where requirement > 0
@@ -325,19 +326,28 @@ class TransformEngine:
         # 1. Calculate Consumed: Qty * BOM[p]
         bom_vector = self.state.recipe_matrix[p_idx]
         consumed_vector = bom_vector * quantity
-        
+
         # 2. Update Inventory (Direct Array Access)
-        # Update both perceived and actual inventory
-        self.state.perceived_inventory[plant_idx] -= consumed_vector
-        self.state.actual_inventory[plant_idx] -= consumed_vector
+        # Constrain consumption to available actual inventory to prevent negatives
+        actual_available = np.maximum(0, self.state.actual_inventory[plant_idx])
+        actual_consumed = np.minimum(consumed_vector, actual_available)
+
+        # Update both inventories by the actually consumed amount
+        self.state.perceived_inventory[plant_idx] -= actual_consumed
+        self.state.actual_inventory[plant_idx] -= actual_consumed
+        # Floor to zero - prevent floating point noise
+        np.maximum(self.state.perceived_inventory[plant_idx], 0,
+                   out=self.state.perceived_inventory[plant_idx])
+        np.maximum(self.state.actual_inventory[plant_idx], 0,
+                   out=self.state.actual_inventory[plant_idx])
 
         # 3. Return consumed dict (only non-zero)
         consumed_dict = {}
         # Optimization: only iterate non-zero elements
-        non_zero_indices = np.where(consumed_vector > 0)[0]
+        non_zero_indices = np.where(actual_consumed > 0)[0]
         for idx in non_zero_indices:
             ing_id = self.state.product_idx_to_id[idx]
-            consumed_dict[ing_id] = float(consumed_vector[idx])
+            consumed_dict[ing_id] = float(actual_consumed[idx])
             
         return consumed_dict
 

@@ -105,6 +105,11 @@ class StateManager:
         p_idx = self.get_product_idx(product_id)
         self.perceived_inventory[n_idx, p_idx] += delta
         self.actual_inventory[n_idx, p_idx] += delta
+        # Floor to zero - prevent floating point noise from creating tiny negatives
+        if self.perceived_inventory[n_idx, p_idx] < 0:
+            self.perceived_inventory[n_idx, p_idx] = 0.0
+        if self.actual_inventory[n_idx, p_idx] < 0:
+            self.actual_inventory[n_idx, p_idx] = 0.0
 
     def update_inventory_batch(self, delta_tensor: np.ndarray) -> None:
         """
@@ -119,3 +124,6 @@ class StateManager:
             )
         self.perceived_inventory += delta_tensor
         self.actual_inventory += delta_tensor
+        # Floor to zero - prevent floating point noise from creating tiny negatives
+        np.maximum(self.perceived_inventory, 0, out=self.perceived_inventory)
+        np.maximum(self.actual_inventory, 0, out=self.actual_inventory)

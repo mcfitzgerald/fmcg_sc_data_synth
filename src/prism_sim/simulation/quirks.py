@@ -298,8 +298,9 @@ class PhantomInventoryQuirk:
             node_idx = int(flat_idx // state.n_products)
             prod_idx = int(flat_idx % state.n_products)
 
-            # Get current inventory
-            current_qty = state.inventory[node_idx, prod_idx]
+            # Get current ACTUAL inventory (not perceived)
+            # Shrinkage should be based on physical reality
+            current_qty = state.actual_inventory[node_idx, prod_idx]
             if current_qty <= 0:
                 continue
 
@@ -308,10 +309,13 @@ class PhantomInventoryQuirk:
                 self._rng.uniform(self.shrinkage_factor_min, self.shrinkage_factor_max)
                 * self.shrinkage_pct
             )
-            shrink_qty = current_qty * shrink_factor
+            shrink_qty = min(current_qty * shrink_factor, current_qty)  # Never exceed actual
 
             # Apply to actual inventory
             state.actual_inventory[node_idx, prod_idx] -= shrink_qty
+            # Floor to zero - prevent floating point noise
+            if state.actual_inventory[node_idx, prod_idx] < 0:
+                state.actual_inventory[node_idx, prod_idx] = 0.0
 
             self.total_shrinkage += shrink_qty
 

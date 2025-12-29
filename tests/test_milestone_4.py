@@ -49,10 +49,11 @@ def test_allocation_shortage(minimal_world):
     state = StateManager(minimal_world)
     allocator = AllocationAgent(state)
 
-    # Setup Inventory: 100 Soap
+    # Setup Inventory: 100 Soap (set both perceived and actual)
     dc_idx = state.node_id_to_idx["DC-01"]
     soap_idx = state.product_id_to_idx["SOAP-001"]
-    state.inventory[dc_idx, soap_idx] = 100.0
+    state.perceived_inventory[dc_idx, soap_idx] = 100.0
+    state.actual_inventory[dc_idx, soap_idx] = 100.0
 
     # Setup Orders: 2 Stores ordering 80 each (Total 160)
     # Note: Using same store ID just for simplicity of order generation logic check

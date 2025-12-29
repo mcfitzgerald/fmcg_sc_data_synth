@@ -174,9 +174,14 @@ class Orchestrator:
         daily_demand = self.pos_engine.generate_demand(day)
         daily_demand = self._apply_demand_quirks(daily_demand, day)
 
-        # 2. Consume Inventory (Sales)
-        self.state.update_inventory_batch(-daily_demand)
-        self.auditor.record_sales(daily_demand)
+        # 2. Consume Inventory (Sales) - Constrained to available inventory
+        # Cannot sell more than what's on hand (lost sales model)
+        available = np.maximum(0, self.state.actual_inventory)
+        actual_sales = np.minimum(daily_demand, available)
+        lost_sales = daily_demand - actual_sales
+        self.state.update_inventory_batch(-actual_sales)
+        self.auditor.record_sales(actual_sales)
+        # Note: lost_sales tracked implicitly via fill rate metrics
 
         # 3. Replenishment Decision (The "Pull" Signal)
         raw_orders = self.replenisher.generate_orders(day, daily_demand)

@@ -122,8 +122,12 @@ class AllocationAgent:
 
             # RDC/Plant Logic: Inventory Constraints
             # Calculate demand and fill ratios
+            # Use ACTUAL inventory to prevent phantom inventory causing negatives
+            # When shrinkage occurs, actual < perceived. We must allocate based on
+            # what's physically available to prevent negative inventory.
             demand_vector = self._calculate_demand_vector(source_orders)
-            current_inv = self.state.inventory[source_idx, :]
+            actual_inv = self.state.actual_inventory[source_idx, :]
+            current_inv = np.maximum(0, actual_inv)  # Guard against any existing negatives
             fill_ratios = self._calculate_fill_ratios(demand_vector, current_inv)
 
             # Decrement inventory (Sync actual and perceived)

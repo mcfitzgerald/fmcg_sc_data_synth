@@ -188,7 +188,8 @@ class TestMRPEngine:
         # Set RDC inventory to low level (1 day of supply)
         rdc_idx = state.node_id_to_idx["RDC-01"]
         det_idx = state.product_id_to_idx["SKU-DET-001"]
-        state.inventory[rdc_idx, det_idx] = 10.0  # Very low
+        state.perceived_inventory[rdc_idx, det_idx] = 10.0  # Very low
+        state.actual_inventory[rdc_idx, det_idx] = 10.0
 
         # Create mock daily demand
         daily_demand = np.zeros((state.n_nodes, state.n_products), dtype=np.float32)
@@ -216,7 +217,8 @@ class TestMRPEngine:
         # Set RDC inventory to high level (30 days of supply)
         rdc_idx = state.node_id_to_idx["RDC-01"]
         det_idx = state.product_id_to_idx["SKU-DET-001"]
-        state.inventory[rdc_idx, det_idx] = 1500.0  # 30 days at 50/day
+        state.perceived_inventory[rdc_idx, det_idx] = 1500.0  # 30 days at 50/day
+        state.actual_inventory[rdc_idx, det_idx] = 1500.0
 
         # Create mock daily demand
         daily_demand = np.zeros((state.n_nodes, state.n_products), dtype=np.float32)
@@ -241,12 +243,14 @@ class TestTransformEngineCapacity:
         state = StateManager(manufacturing_world)
         transform = TransformEngine(manufacturing_world, state, manufacturing_config)
 
-        # Seed raw materials at plant
+        # Seed raw materials at plant (set both perceived and actual)
         plant_idx = state.node_id_to_idx["PLANT-01"]
         surf_idx = state.product_id_to_idx["ING-SURF-SPEC"]
         base_idx = state.product_id_to_idx["ING-BASE-LIQ"]
-        state.inventory[plant_idx, surf_idx] = 1000.0
-        state.inventory[plant_idx, base_idx] = 10000.0
+        state.perceived_inventory[plant_idx, surf_idx] = 1000.0
+        state.actual_inventory[plant_idx, surf_idx] = 1000.0
+        state.perceived_inventory[plant_idx, base_idx] = 10000.0
+        state.actual_inventory[plant_idx, base_idx] = 10000.0
 
         # Create a large production order (3000 cases)
         # At 100 cases/hour and 16 hours/day = 1600 cases/day max
@@ -279,12 +283,14 @@ class TestTransformEngineChangeover:
         state = StateManager(manufacturing_world)
         transform = TransformEngine(manufacturing_world, state, manufacturing_config)
 
-        # Seed raw materials at plant
+        # Seed raw materials at plant (set both perceived and actual)
         plant_idx = state.node_id_to_idx["PLANT-01"]
         surf_idx = state.product_id_to_idx["ING-SURF-SPEC"]
         base_idx = state.product_id_to_idx["ING-BASE-LIQ"]
-        state.inventory[plant_idx, surf_idx] = 1000.0
-        state.inventory[plant_idx, base_idx] = 10000.0
+        state.perceived_inventory[plant_idx, surf_idx] = 1000.0
+        state.actual_inventory[plant_idx, surf_idx] = 1000.0
+        state.perceived_inventory[plant_idx, base_idx] = 10000.0
+        state.actual_inventory[plant_idx, base_idx] = 10000.0
 
         # Create two orders: detergent then soap (requires changeover)
         # Order 1: Detergent - 100 cases @ 100/hr = 1 hour
@@ -329,12 +335,14 @@ class TestTransformEngineSPOF:
         state = StateManager(manufacturing_world)
         transform = TransformEngine(manufacturing_world, state, manufacturing_config)
 
-        # NO raw materials at plant (SPOF condition)
+        # NO raw materials at plant (SPOF condition) - set both to zero
         plant_idx = state.node_id_to_idx["PLANT-01"]
         surf_idx = state.product_id_to_idx["ING-SURF-SPEC"]
         base_idx = state.product_id_to_idx["ING-BASE-LIQ"]
-        state.inventory[plant_idx, surf_idx] = 0.0  # No surfactant!
-        state.inventory[plant_idx, base_idx] = 0.0
+        state.perceived_inventory[plant_idx, surf_idx] = 0.0  # No surfactant!
+        state.actual_inventory[plant_idx, surf_idx] = 0.0
+        state.perceived_inventory[plant_idx, base_idx] = 0.0
+        state.actual_inventory[plant_idx, base_idx] = 0.0
 
         order = ProductionOrder(
             id="PO-001",
@@ -359,15 +367,17 @@ class TestTransformEngineSPOF:
         state = StateManager(manufacturing_world)
         transform = TransformEngine(manufacturing_world, state, manufacturing_config)
 
-        # Seed raw materials
+        # Seed raw materials (set both perceived and actual)
         plant_idx = state.node_id_to_idx["PLANT-01"]
         surf_idx = state.product_id_to_idx["ING-SURF-SPEC"]
         base_idx = state.product_id_to_idx["ING-BASE-LIQ"]
 
         initial_surf = 100.0
         initial_base = 1000.0
-        state.inventory[plant_idx, surf_idx] = initial_surf
-        state.inventory[plant_idx, base_idx] = initial_base
+        state.perceived_inventory[plant_idx, surf_idx] = initial_surf
+        state.actual_inventory[plant_idx, surf_idx] = initial_surf
+        state.perceived_inventory[plant_idx, base_idx] = initial_base
+        state.actual_inventory[plant_idx, base_idx] = initial_base
 
         # Produce 100 cases of detergent
         # BOM: 0.05 surfactant + 0.95 base per case
@@ -401,12 +411,14 @@ class TestDeterministicBatch:
         state = StateManager(manufacturing_world)
         transform = TransformEngine(manufacturing_world, state, manufacturing_config)
 
-        # Seed raw materials
+        # Seed raw materials (set both perceived and actual)
         plant_idx = state.node_id_to_idx["PLANT-01"]
         surf_idx = state.product_id_to_idx["ING-SURF-SPEC"]
         base_idx = state.product_id_to_idx["ING-BASE-LIQ"]
-        state.inventory[plant_idx, surf_idx] = 10000.0
-        state.inventory[plant_idx, base_idx] = 100000.0
+        state.perceived_inventory[plant_idx, surf_idx] = 10000.0
+        state.actual_inventory[plant_idx, surf_idx] = 10000.0
+        state.perceived_inventory[plant_idx, base_idx] = 100000.0
+        state.actual_inventory[plant_idx, base_idx] = 100000.0
 
         # Produce detergent after day 30
         order = ProductionOrder(
@@ -434,14 +446,16 @@ class TestDeterministicBatch:
         state = StateManager(manufacturing_world)
         transform = TransformEngine(manufacturing_world, state, manufacturing_config)
 
-        # Seed raw materials
+        # Seed raw materials (set both perceived and actual)
         plant_idx = state.node_id_to_idx["PLANT-01"]
         surf_idx = state.product_id_to_idx["ING-SURF-SPEC"]
         base_idx = state.product_id_to_idx["ING-BASE-LIQ"]
         det_idx = state.product_id_to_idx["SKU-DET-001"]
 
-        state.inventory[plant_idx, surf_idx] = 10000.0
-        state.inventory[plant_idx, base_idx] = 100000.0
+        state.perceived_inventory[plant_idx, surf_idx] = 10000.0
+        state.actual_inventory[plant_idx, surf_idx] = 10000.0
+        state.perceived_inventory[plant_idx, base_idx] = 100000.0
+        state.actual_inventory[plant_idx, base_idx] = 100000.0
 
         # Produce the recall batch
         order = ProductionOrder(

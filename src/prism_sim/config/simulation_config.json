@@ -33,9 +33,9 @@
         "gamma_scale": 0.1
       },
       "category_profiles": {
-        "ORAL_CARE": { "base_daily_demand": 1.2 },
+        "ORAL_CARE": { "base_daily_demand": 1.0 },
         "PERSONAL_WASH": { "base_daily_demand": 1.0 },
-        "HOME_CARE": { "base_daily_demand": 0.8 },
+        "HOME_CARE": { "base_daily_demand": 1.0 },
         "INGREDIENT": { "base_daily_demand": 0.0 }
       }
     },
@@ -87,10 +87,10 @@
           "supported_categories": ["ORAL_CARE"]
         },
         "PLANT-CA": {
-          "description": "Standard facility",
+          "description": "Flexible multi-category facility",
           "efficiency_factor": 0.85,
           "unplanned_downtime_pct": 0.05,
-          "supported_categories": ["PERSONAL_WASH"]
+          "supported_categories": ["ORAL_CARE", "PERSONAL_WASH"]
         },
         "PLANT-GA": {
           "description": "Standard facility",
