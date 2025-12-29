@@ -6,6 +6,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Prism Sim is a high-fidelity supply chain Digital Twin built on Discrete-Event Simulation (DES) and Supply Chain Physics. It simulates 4,500+ nodes across a North American FMCG network, enforcing mass balance, capacity constraints, and realistic behavioral quirks.
 
+### Critical Documentation
+
+**Read `docs/llm_context.md` first** - Contains comprehensive architecture guide, file-to-concept map, state tensor shapes, daily loop sequence, and debugging checklist.
+
 ## Prime Directives
 
 1. **Always read `docs/planning/intent.md` and `docs/planning/roadmap.md`** before starting work
@@ -34,10 +38,6 @@ poetry run pytest tests/test_milestone_4.py::test_allocation_shortage -v  # Sing
 poetry run ruff check .
 poetry run ruff check . --fix  # Auto-fix
 poetry run mypy .
-
-# Serve documentation
-poetry install --with docs
-poetry run mkdocs serve
 ```
 
 ## Architecture
@@ -48,24 +48,35 @@ The simulation uses a hybrid DES architecture with a daily time-stepper orchestr
 src/prism_sim/
 ├── simulation/
 │   ├── orchestrator.py   # Main time-loop controller - coordinates all engines
-│   ├── state.py          # StateManager - vectorized numpy tensors for inventory/cash
+│   ├── state.py          # StateManager - vectorized numpy tensors for inventory
 │   ├── world.py          # World object - holds all nodes, links, products
 │   ├── builder.py        # WorldBuilder - constructs World from config
 │   ├── demand.py         # POSEngine - generates daily consumer sales (promo + seasonality)
 │   ├── logistics.py      # LogisticsEngine - bin-packing, shipments, transit physics
-│   ├── mrp.py            # MRPEngine - material requirements planning
+│   ├── mrp.py            # MRPEngine - material requirements planning (vectorized)
 │   ├── transform.py      # TransformEngine - manufacturing physics (capacity, changeover)
 │   ├── quirks.py         # QuirkManager - behavioral realism (phantom inventory, bias)
 │   ├── risk_events.py    # RiskEventManager - disruption scenarios (port strikes, cyber)
 │   ├── monitor.py        # RealismMonitor, PhysicsAuditor, ResilienceTracker
 │   └── writer.py         # SimulationWriter - SCOR-DS data export
 ├── agents/
-│   ├── allocation.py     # AllocationAgent - "Triangle Decision" (fill/short/transfer)
-│   └── replenishment.py  # MinMaxReplenisher - creates Bullwhip ordering behavior
-├── network/core.py       # Node, Link, Order, Shipment, Batch primitives
-├── product/core.py       # Product, BOM, Recipe definitions
-├── config/               # JSON configs (simulation_config.json, world_definition.json)
-└── generators/           # Network topology and static data generators
+│   ├── allocation.py     # AllocationAgent - Fair Share allocation, Fill-or-Kill
+│   └── replenishment.py  # MinMaxReplenisher - (s,S) policy, creates Bullwhip behavior
+├── network/
+│   ├── core.py           # Node, Link, Order, Shipment, Batch primitives
+│   └── recipe_matrix.py  # RecipeMatrixBuilder - vectorized BOM for O(1) MRP
+├── product/core.py       # Product, Recipe, ProductCategory definitions
+├── config/
+│   ├── loader.py         # Config loading utilities
+│   └── *.json            # simulation_config, world_definition, benchmark_manifest
+├── generators/           # Static world generation (4,500 nodes)
+│   ├── hierarchy.py      # ProductGenerator - SKUs, ingredients, recipes
+│   ├── network.py        # NetworkGenerator - nodes, links, topology
+│   ├── distributions.py  # Zipf, power-law distributions
+│   └── static_pool.py    # Faker-based attribute sampling
+└── writers/              # Streaming data export
+    ├── base.py           # StreamingCSVWriter, StreamingParquetWriter
+    └── static_writer.py  # StaticWriter for world generation output
 ```
 
 **Key Data Flow (per day):**
@@ -75,9 +86,9 @@ src/prism_sim/
 
 Key reference documents in `docs/planning/`:
 - `intent.md` - Technical source of truth (physics, ontology, validation targets)
-- `roadmap.md` - Implementation sequence with Task IDs
+- `roadmap.md` - Implementation sequence with Task IDs (initial build complete)
 
-**Mandatory:** All code changes and git commits must reference the Roadmap Task ID (e.g., `[Task 7.3]`) and relevant Intent section.
+Reference Task IDs in commits when working on roadmap items. For bug fixes and enhancements, use conventional commit format (e.g., `fix(mrp):`, `feat(allocation):`).
 
 ## Configuration
 
