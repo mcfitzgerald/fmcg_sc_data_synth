@@ -59,6 +59,10 @@ class MRPEngine:
         self._load_plant_capabilities(mrp_config)
 
         self._cache_node_info()
+        
+        # Demand history for moving average [Products]
+        self.demand_history = np.zeros((7, self.state.n_products), dtype=np.float64)
+        self._history_ptr = 0
 
         # Production Order counter for unique IDs
         self._po_counter = 0
@@ -132,28 +136,33 @@ class MRPEngine:
     def generate_production_orders(
         self,
         current_day: int,
-        daily_demand: np.ndarray,
+        daily_shipments: list[Order],  # Use shipments (RDC-to-Store) as signal
         active_production_orders: list[ProductionOrder],
     ) -> list[ProductionOrder]:
         """
-        Generate Production Orders based on RDC inventory and demand.
-
-        Uses Inventory Position:
-        IP = On Hand + On Order (In-Transit) + In-Production (WIP/Planned)
-
-        Args:
-            current_day: Current simulation day
-            daily_demand: Demand tensor [nodes, products] for demand estimation
-            active_production_orders: Currently active/planned production orders
-
-        Returns:
-            List of Production Orders to be processed by TransformEngine
+        Generate Production Orders based on RDC inventory and lumpy shipment signals.
         """
         production_orders: list[ProductionOrder] = []
 
-        # 1. Calculate In-Production qty per product
-        # FIX: Only count production that will be ready within the planning horizon (look-ahead)
-        lookahead_horizon = self.reorder_point_days  # Use ROP window as the relevant horizon
+        # 1. Update Demand History with daily shipment volume (The "Lumpy" Signal)
+        daily_vol = np.zeros(self.state.n_products)
+        for order in daily_shipments:
+            # We only care about shipments from RDCs to Stores for finished goods demand
+            source_node = self.world.nodes.get(order.source_id)
+            if source_node and source_node.type == NodeType.DC:
+                for line in order.lines:
+                    p_idx = self.state.product_id_to_idx.get(line.product_id)
+                    if p_idx is not None:
+                        daily_vol[p_idx] += line.quantity
+        
+        self.demand_history[self._history_ptr] = daily_vol
+        self._history_ptr = (self._history_ptr + 1) % 7
+
+        # Calculate Moving Average Demand
+        avg_daily_demand_vec = np.mean(self.demand_history, axis=0)
+
+        # 2. Calculate In-Production qty per product
+        lookahead_horizon = self.reorder_point_days
         in_production_qty: dict[str, float] = {}
         for po in active_production_orders:
             if po.status != ProductionOrderStatus.COMPLETE:
@@ -186,8 +195,8 @@ class MRPEngine:
                 product_id, in_transit_qty, in_production_qty
             )
 
-            # Estimate average daily demand for this product
-            avg_daily_demand = self._estimate_demand(p_idx, daily_demand)
+            # Use Moving Average Demand
+            avg_daily_demand = max(float(avg_daily_demand_vec[p_idx]), 1.0)
 
             # Calculate days of supply based on Inventory Position
             if avg_daily_demand > 0:
@@ -202,8 +211,8 @@ class MRPEngine:
                 net_requirement = target_inventory - inventory_position
 
                 if net_requirement > 0:
-                    # Round up to minimum batch size
-                    order_qty = max(net_requirement, self.min_production_qty)
+                    # Increase minimum batch size to amplify Bullwhip
+                    order_qty = max(net_requirement, self.min_production_qty * 2.0)
 
                     # Assign to a plant (simple round-robin for now)
                     plant_id = self._select_plant(product_id)
@@ -291,16 +300,12 @@ class MRPEngine:
             plant_idx = self.state.node_id_to_idx.get(plant_id)
             if plant_idx is None:
                 continue
-
+            
             # Inventory Position = On Hand + Pipeline
             on_hand = self.state.inventory[plant_idx]
             in_transit = pipeline[plant_idx]
             inv_position = on_hand + in_transit
 
-            # Mask: Only consider items where we have a requirement (Ingredients)
-            # and where IP < ROP
-            needs_ordering = (inv_position < rop_levels) & (ingredient_reqs > 0)
-            
             # Mask: Only consider items where we have a requirement (Ingredients)
             # and where IP < ROP
             needs_ordering = (inv_position < rop_levels) & (ingredient_reqs > 0)

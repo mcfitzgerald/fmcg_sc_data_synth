@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.3] - 2025-12-29
+
+### Fixed
+- **Inverse Bullwhip Effect:** Resolved the "Inverse Bullwhip" anomaly (where upstream variance was lower than downstream) by updating `MRPEngine` to use a 7-day moving average of **actual RDC shipments** (lumpy signal) instead of smoothed POS demand proxies. This restores realistic demand amplification upstream.
+- **Low OEE (28% -> 99%):** Fixed massive plant over-capacity by:
+  - Reducing `production_hours_per_day` from 24 to 8 (single shift).
+  - Increasing `batch_size_cases` in `simulation_config.json` to 100.
+  - Increasing `min_production_qty` logic in `mrp.py` to 2x net requirement.
+- **Service Level Metrics:** Introduced **Store Service Level (OSA)** tracking in `Orchestrator` and `RealismMonitor` to correctly measure On-Shelf Availability (Actual Sales / Demand). The legacy "Fill Rate" metric was skewed by massive ingredient orders hitting supplier capacity caps.
+
+### Changed
+- **Inventory Policy Tuning:** Increased `replenishment` target days (21d) and reorder points (10d) in `simulation_config.json` to support higher service levels.
+- **Reporting:** Updated "The Triangle Report" in `Orchestrator` to feature Store Service Level as the primary Service metric.
+
 ## [0.12.2] - 2025-12-29
 
 ### Fixed

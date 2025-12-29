@@ -2,7 +2,7 @@
 
 > **System Prompt Context:** This document contains the critical architectural, functional, and physical constraints of the Prism Sim project. Use this as primary context when reasoning about code changes, bug fixes, or feature expansions.
 
-**Version:** 0.12.2 | **Last Updated:** 2025-12-29
+**Version:** 0.12.3 | **Last Updated:** 2025-12-29
 
 ---
 
@@ -177,7 +177,8 @@ Every decision impacts the balance between:
 ```
 
 **Key Metrics Tracked:**
-- **Service Level (LIFR):** `Shipped_Qty / Ordered_Qty` (target >95%)
+- **Store Service Level (OSA):** `Actual_Sales / Consumer_Demand` (Target >90%)
+- **Service Level (LIFR):** `Shipped_Qty / Ordered_Qty` (Internal fill rate)
 - **OEE:** Plant capacity utilization (target 65-85%)
 - **Truck Fill:** Logistics efficiency (target >85%)
 - **Inventory Turns:** Cash efficiency (target 6-14x annually)
@@ -347,6 +348,7 @@ Orchestrator
 
 | Version | Key Changes |
 |---------|-------------|
+| 0.12.3 | **Inverse Bullwhip Fix** - MRP uses lumpy RDC shipment signals; Store Service Level metric added |
 | 0.12.2 | **Negative inventory fix** - Inventory Positivity law enforced across all deduction paths |
 | 0.12.1 | Tiered inventory policies, LIFR tracking, Bullwhip Crisis identified |
 | 0.12.0 | Fill-or-Kill allocation, MRP look-ahead horizon |

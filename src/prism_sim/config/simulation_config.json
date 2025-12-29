@@ -16,10 +16,10 @@
     },
     "agents": {
       "replenishment": {
-        "target_days_supply": 14.0,
-        "reorder_point_days": 7.0,
+        "target_days_supply": 21.0,
+        "reorder_point_days": 10.0,
         "min_order_qty": 10.0,
-        "batch_size_cases": 50.0
+        "batch_size_cases": 100.0
       }
     },
     "demand": {
@@ -57,10 +57,10 @@
       "default_lead_time_days": 3.0
     },
     "manufacturing": {
-      "target_days_supply": 28.0,
-      "reorder_point_days": 14.0,
+      "target_days_supply": 14.0,
+      "reorder_point_days": 7.0,
       "inventory_policies": {
-        "DEFAULT": { "reorder_point_days": 14.0, "target_days_supply": 28.0 },
+        "DEFAULT": { "reorder_point_days": 7.0, "target_days_supply": 14.0 },
         "INGREDIENT": { "reorder_point_days": 7.0, "target_days_supply": 14.0 },
         "PACKAGING": { "reorder_point_days": 7.0, "target_days_supply": 14.0 },
         "ACTIVE_CHEM": { "reorder_point_days": 30.0, "target_days_supply": 45.0 },
@@ -69,7 +69,7 @@
       "min_production_qty": 25000.0,
       "min_ingredient_moq": 100.0,
       "production_lead_time_days": 3,
-      "production_hours_per_day": 24.0,
+      "production_hours_per_day": 8.0,
       "efficiency_factor": 0.95,
       "unplanned_downtime_pct": 0.05,
       "backup_supplier_cost_premium": 0.25,

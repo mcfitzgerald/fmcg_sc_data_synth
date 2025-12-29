@@ -216,7 +216,7 @@ class Orchestrator:
 
         # 8. Manufacturing: MRP (Milestone 5.1)
         new_production_orders = self.mrp_engine.generate_production_orders(
-            day, daily_demand, self.active_production_orders
+            day, allocated_orders, self.active_production_orders
         )
         self.active_production_orders.extend(new_production_orders)
 
@@ -340,6 +340,17 @@ class Orchestrator:
             fill_rate = shipped_qty / ordered_qty
         self.monitor.record_service_level(fill_rate)
 
+        # Record Store Service Level (On-Shelf Availability proxy)
+        total_demand_qty = np.sum(daily_demand)
+        if total_demand_qty > 0:
+            # We need actual_sales. In _step we calculated it. 
+            # We should pass it or re-calculate here. 
+            # Re-calculating for simplicity as we have access to state.
+            available = np.maximum(0, self.state.actual_inventory)
+            actual_sales = np.minimum(daily_demand, available)
+            store_fill_rate = np.sum(actual_sales) / total_demand_qty
+            self.monitor.record_store_service_level(store_fill_rate)
+
         # Calculate Inventory Turns (Cash)
         total_sales = np.sum(daily_demand)  # Proxy for COGS
         total_inv = np.sum(np.maximum(0, self.state.actual_inventory))
@@ -440,15 +451,16 @@ class Orchestrator:
         oee = report.get("oee", {}).get("mean", 0)
         truck_fill = report.get("truck_fill", {}).get("mean", 0)
 
-        # Service Level (LIFR) from Monitor
-        service_index = report.get("service_level", {}).get("mean", 0.0) * 100.0
+        # Use Store Service Level (Consumer OSA) for the Triangle Report
+        # as it represents the actual "Service" delivered to customers.
+        service_index = report.get("store_service_level", {}).get("mean", 0.0) * 100.0
         inv_turns = report.get("inventory_turns", {}).get("mean", 0)
 
         summary = [
             "==================================================",
             "        THE SUPPLY CHAIN TRIANGLE REPORT          ",
             "==================================================",
-            f"1. SERVICE (Fill Rate Index):   {service_index:.2f}%",
+            f"1. SERVICE (Store Fill Rate):   {service_index:.2f}%",
             f"2. CASH (Inventory Turns):      {inv_turns:.2f}x",
             f"3. COST (Truck Fill Rate):      {truck_fill * truck_scale:.1f}%",
             "--------------------------------------------------",
