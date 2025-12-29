@@ -44,6 +44,9 @@ class MRPEngine:
         self.reorder_point_days = mrp_config.get("reorder_point_days", 7.0)
         self.min_production_qty = mrp_config.get("min_production_qty", 100.0)
         self.production_lead_time = mrp_config.get("production_lead_time_days", 3)
+        
+        # Pre-calculate Policy Vectors
+        self._build_policy_vectors(mrp_config)
 
         # Cache RDC and Plant node indices
         self._rdc_ids: list[str] = []
@@ -58,6 +61,39 @@ class MRPEngine:
 
         # Production Order counter for unique IDs
         self._po_counter = 0
+
+    def _build_policy_vectors(self, mrp_config: dict[str, Any]) -> None:
+        """Pre-calculate ROP and Target vectors for all products."""
+        policies = mrp_config.get("inventory_policies", {})
+        default_rop = mrp_config.get("reorder_point_days", 14.0)
+        default_target = mrp_config.get("target_days_supply", 28.0)
+        
+        n_products = self.state.n_products
+        self.rop_vector = np.full(n_products, default_rop, dtype=np.float64)
+        self.target_vector = np.full(n_products, default_target, dtype=np.float64)
+        
+        spof_id = mrp_config.get("spof", {}).get("ingredient_id", "")
+
+        for p_id, p in self.world.products.items():
+            p_idx = self.state.product_id_to_idx.get(p_id)
+            if p_idx is None:
+                continue
+                
+            # Determine Policy Key
+            key = "DEFAULT"
+            if p_id == spof_id:
+                key = "SPOF"
+            elif "ACT-CHEM" in p_id:
+                key = "ACTIVE_CHEM"
+            elif "PKG" in p_id:
+                key = "PACKAGING"
+            elif p.category == ProductCategory.INGREDIENT:
+                key = "INGREDIENT"
+                
+            policy = policies.get(key, policies.get("DEFAULT", {}))
+            
+            self.rop_vector[p_idx] = policy.get("reorder_point_days", default_rop)
+            self.target_vector[p_idx] = policy.get("target_days_supply", default_target)
 
     def _cache_node_info(self) -> None:
         """Cache RDC and Plant node IDs for efficient lookups."""
@@ -159,9 +195,9 @@ class MRPEngine:
                 dos_position = float("inf")
 
             # Check if we need to order
-            if dos_position < self.reorder_point_days:
+            if dos_position < self.rop_vector[p_idx]:
                 # Calculate quantity needed to reach target days supply
-                target_inventory = avg_daily_demand * self.target_days_supply
+                target_inventory = avg_daily_demand * self.target_vector[p_idx]
                 net_requirement = target_inventory - inventory_position
 
                 if net_requirement > 0:
@@ -235,8 +271,8 @@ class MRPEngine:
 
         # 3. Calculate Targets & ROPs
         # Target Inventory = Daily Req * Target Days
-        target_levels = ingredient_reqs * self.target_days_supply
-        rop_levels = ingredient_reqs * self.reorder_point_days
+        target_levels = ingredient_reqs * self.target_vector
+        rop_levels = ingredient_reqs * self.rop_vector
 
         # 4. Build Pipeline Vector (In-Transit to Plants)
         # Shape: [n_nodes, n_products] - but we only care about plants

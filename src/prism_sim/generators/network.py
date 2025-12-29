@@ -207,12 +207,18 @@ class NetworkGenerator:
         cities = self.pool.sample_cities(n)
 
         for i in range(n):
+            node_id = f"SUP-{i + 1:03d}"
+            # Constrain SUP-001 (SPOF) to finite but sufficient capacity
+            # Others get infinite capacity (default)
+            capacity = 500000.0 if i == 0 else float("inf")
+            
             nodes.append(
                 Node(
-                    id=f"SUP-{i + 1:03d}",
+                    id=node_id,
                     name=companies[i],
                     type=NodeType.SUPPLIER,
                     location=cities[i],
+                    throughput_capacity=capacity,
                 )
             )
         return nodes

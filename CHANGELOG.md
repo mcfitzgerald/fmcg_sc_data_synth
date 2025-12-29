@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.1] - 2025-12-29
+
+### Changed
+- **Simulation Physics Tuning:**
+  - **SPOF Isolation:** Updated `hierarchy.py` to restrict `ACT-CHEM-001` (SPOF ingredient) to only ~20% of the portfolio (Premium Oral Care), reducing systemic vulnerability.
+  - **Tiered Inventory Policies:** Updated `mrp.py` and `simulation_config.json` to support granular ROP/Target levels. Ingredients now use "Commodity" (7d/14d) vs. "Specialty" (30d/45d) policies.
+  - **Supplier Capacity:** Updated `NetworkGenerator` to set infinite capacity for bulk suppliers while constraining the SPOF supplier (`SUP-001`) to 500k units/day.
+  - **Allocation Logic:** Updated `AllocationAgent` to respect finite supplier capacity limits using Fair Share logic.
+  - **Initialization:** Increased Store/RDC initialization days (14d/28d) and implemented robust Plant ingredient seeding (5M units) to prevent cold-start starvation.
+- **Service Level Tracking:**
+  - Updated `RealismMonitor` and `Orchestrator` to track `Service Level (LIFR)` based on `Shipped / Ordered`, replacing the legacy backlog-based index.
+
+### Fixed
+- **MRP Initialization Bug:** Fixed `AttributeError` in `MRPEngine` caused by accessing uninitialized cache variables in `_build_policy_vectors`.
+
+### Identified
+- **The Bullwhip Crisis:** 365-day simulation revealed a catastrophic feedback loop where "Fill or Kill" logic combined with zero inventory triggers infinite reordering (460k -> 66M orders/day). Mitigation plan documented in `docs/planning/sim_tuning.md`.
+
 ## [0.12.0] - 2025-12-29
 
 ### Fixed

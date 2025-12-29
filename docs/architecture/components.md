@@ -172,6 +172,7 @@ flowchart LR
 - **Inventory Position:** Considers On-Hand, In-Transit, and WIP.
 - **Fair Share:** Distributes aggregate demand across plants.
 - **BOM Explosion:** Instant calculation of raw material needs for thousands of SKUs.
+- **Tiered Inventory Policies:** Supports granular ROP/Target settings per product category (e.g., Commodities vs. Specialty).
 
 **Location:** `src/prism_sim/simulation/mrp.py`
 
@@ -223,6 +224,7 @@ flowchart TD
 - Priority-based allocation
 - Fair-share when supply constrained
 - Channel balancing (Retail vs. DTC)
+- **Capacity Constraints:** Respects finite supplier throughput limits.
 
 **Location:** `src/prism_sim/agents/allocation.py`
 
@@ -356,6 +358,7 @@ Validates simulation physics and tracks KPIs.
 
 **Tracked Metrics:**
 
+- Service Level (LIFR)
 - Fill rate, OTIF
 - Inventory turns
 - Truck fill rate

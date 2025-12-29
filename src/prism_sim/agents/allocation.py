@@ -97,16 +97,30 @@ class AllocationAgent:
 
             if (
                 source_node is None
-                or source_node.type == NodeType.SUPPLIER
                 or source_idx is None
             ):
-                # External supplier - assume 100% fill for now (or infinite capacity)
-                # Mark as CLOSED so they don't linger
-                for o in source_orders:
-                    o.status = "CLOSED"
-                allocated_orders.extend(source_orders)
+                # Unknown node - skip
                 continue
 
+            if source_node.type == NodeType.SUPPLIER:
+                # Supplier Logic: Capacity Constraints
+                total_demand = sum(line.quantity for o in source_orders for line in o.lines)
+                capacity = getattr(source_node, "throughput_capacity", float("inf"))
+                
+                ratio = 1.0
+                if total_demand > capacity and capacity > 0:
+                    ratio = capacity / total_demand
+                
+                # Apply ratio
+                for order in source_orders:
+                    if ratio < 1.0:
+                        for line in order.lines:
+                            line.quantity *= ratio
+                    order.status = "CLOSED"
+                    allocated_orders.append(order)
+                continue
+
+            # RDC/Plant Logic: Inventory Constraints
             # Calculate demand and fill ratios
             demand_vector = self._calculate_demand_vector(source_orders)
             current_inv = self.state.inventory[source_idx, :]

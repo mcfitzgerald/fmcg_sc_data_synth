@@ -15,6 +15,7 @@ from prism_sim.network.core import (
     Shipment,
     ShipmentStatus,
 )
+from prism_sim.product.core import ProductCategory
 from prism_sim.simulation.builder import WorldBuilder
 from prism_sim.simulation.demand import POSEngine
 from prism_sim.simulation.logistics import LogisticsEngine
@@ -144,11 +145,13 @@ class Orchestrator:
             elif node.type == NodeType.PLANT:
                 node_idx = self.state.node_id_to_idx.get(node_id)
                 if node_idx is not None:
-                    for ing_id, qty in initial_plant_inv.items():
-                        ing_idx = self.state.product_id_to_idx.get(ing_id)
-                        if ing_idx is not None:
-                            # Use update_inventory to set both
-                            self.state.update_inventory(node_id, ing_id, qty)
+                    # Initialize ALL ingredients to prevent cold start starvation
+                    for product in self.world.products.values():
+                        if product.category == ProductCategory.INGREDIENT:
+                            # Use config override if present, else robust default (5M units)
+                            # 5M units covers ~20 days of production at 230k run rate
+                            qty = initial_plant_inv.get(product.id, 5000000.0)
+                            self.state.update_inventory(node_id, product.id, qty)
 
     def run(self, days: int = 30) -> None:
         print(f"Starting Simulation for {days} days...")
@@ -246,8 +249,13 @@ class Orchestrator:
         # 12. Monitors & Data Logging
         total_demand = np.sum(daily_demand)
         daily_shipments = new_shipments + plant_shipments
+        
+        total_shipped_qty = sum(line.quantity for s in daily_shipments for line in s.lines)
+        
         self._record_daily_metrics(
-            daily_demand, daily_shipments, arrived, plant_oee, day
+            daily_demand, daily_shipments, arrived, plant_oee, day,
+            ordered_qty=unconstrained_demand_qty,
+            shipped_qty=total_shipped_qty
         )
         self._log_daily_data(
             raw_orders, new_shipments, plant_shipments, new_batches, day
@@ -317,8 +325,16 @@ class Orchestrator:
         arrived: list[Shipment],
         plant_oee: dict[str, float],
         day: int,
+        ordered_qty: float = 0.0,
+        shipped_qty: float = 0.0,
     ) -> None:
         """Record simulation metrics for monitoring."""
+        # Record Service Level (Fill Rate)
+        fill_rate = 1.0
+        if ordered_qty > 0:
+            fill_rate = shipped_qty / ordered_qty
+        self.monitor.record_service_level(fill_rate)
+
         # Calculate Inventory Turns (Cash)
         total_sales = np.sum(daily_demand)  # Proxy for COGS
         total_inv = np.sum(np.maximum(0, self.state.actual_inventory))
@@ -419,8 +435,8 @@ class Orchestrator:
         oee = report.get("oee", {}).get("mean", 0)
         truck_fill = report.get("truck_fill", {}).get("mean", 0)
 
-        # Arbitrary scaling for demo
-        service_index = max(0.0, base_service - (total_backlog / backlog_penalty))
+        # Service Level (LIFR) from Monitor
+        service_index = report.get("service_level", {}).get("mean", 0.0) * 100.0
         inv_turns = report.get("inventory_turns", {}).get("mean", 0)
 
         summary = [

@@ -193,7 +193,7 @@ class ProductGenerator:
         if not ing_map:
             return []
 
-        for p in products:
+        for i, p in enumerate(products):
             bom: dict[str, float] = {}
             logic = self.recipe_logic.get(p.category.name, self.recipe_logic.get("DEFAULT", {}))
             base_pct = logic.get("base_pct", 0.9)
@@ -235,15 +235,33 @@ class ProductGenerator:
 
             # Active (Chem)
             chem_candidates = ing_map.get("CHEM", [])
-            if chem_candidates:
-                # Pick 1-2 actives
-                n_actives = self.rng.integers(1, 3)
-                actives = self.rng.choice(chem_candidates, size=n_actives, replace=False) # type: ignore
+            spof_id = "ACT-CHEM-001"
+            spof_ing = next((x for x in chem_candidates if x.id == spof_id), None)
+            
+            # Remove SPOF from general pool so it isn't picked randomly
+            general_chem_candidates = [x for x in chem_candidates if x.id != spof_id]
+
+            if general_chem_candidates:
+                # Determine if this SKU gets the SPOF ingredient
+                # Target: ~20% of portfolio (Premium Oral Care)
+                # We can use the loop index 'i' (enumerated)
+                is_premium_oral = (p.category == ProductCategory.ORAL_CARE) and (i % 5 == 0)
+                
+                if is_premium_oral and spof_ing:
+                    # This product DEPENDS on the SPOF
+                    actives = [spof_ing]
+                    # Maybe add a second minor active for realism
+                    if len(general_chem_candidates) > 0:
+                        actives.append(self.rng.choice(general_chem_candidates)) # type: ignore
+                else:
+                    # Standard product - use general pool
+                    n_actives = self.rng.integers(1, 3)
+                    actives = self.rng.choice(general_chem_candidates, size=n_actives, replace=False) # type: ignore
                 
                 total_active_kg = p.weight_kg * act_pct
                 for act in actives:
                     # Split weight evenly
-                    qty_kg = total_active_kg / n_actives
+                    qty_kg = total_active_kg / len(actives)
                     # Active ingredients defined as small units (e.g. 0.5kg bag) or drum?
                     # In generate_ingredients, Actives are 0.1-0.5kg per "case"? 
                     # Let's assume the ingredient unit is a "bag" or "drum"

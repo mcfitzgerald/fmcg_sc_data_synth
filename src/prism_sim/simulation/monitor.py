@@ -55,6 +55,7 @@ class RealismMonitor:
         self.slob_tracker = WelfordAccumulator()  # SLOB: Slow Moving & Obsolete
         self.cost_tracker = WelfordAccumulator()
         self.inventory_turns_tracker = WelfordAccumulator()
+        self.service_level_tracker = WelfordAccumulator()
 
         # Ranges from config
         self.oee_range = self.config.get("oee_range", [0.65, 0.85])
@@ -65,6 +66,9 @@ class RealismMonitor:
 
     def record_oee(self, oee_value: float) -> None:
         self.oee_tracker.update(oee_value)
+
+    def record_service_level(self, fill_rate: float) -> None:
+        self.service_level_tracker.update(fill_rate)
 
     def record_truck_fill(self, fill_rate: float) -> None:
         self.truck_fill_tracker.update(fill_rate)
@@ -80,6 +84,11 @@ class RealismMonitor:
 
     def get_report(self) -> dict[str, Any]:
         return {
+            "service_level": {
+                "mean": self.service_level_tracker.mean,
+                "std": self.service_level_tracker.std_dev,
+                "status": "OK",
+            },
             "oee": {
                 "mean": self.oee_tracker.mean,
                 "std": self.oee_tracker.std_dev,
