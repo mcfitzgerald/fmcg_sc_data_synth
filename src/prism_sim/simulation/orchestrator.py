@@ -1,5 +1,6 @@
-import numpy as np
 from typing import Any
+
+import numpy as np
 
 from prism_sim.agents.allocation import AllocationAgent
 from prism_sim.agents.replenishment import MinMaxReplenisher
@@ -34,7 +35,12 @@ class Orchestrator:
     """The main time-stepper loop for the Prism Digital Twin."""
 
     def __init__(
-        self, enable_logging: bool = False, output_dir: str = "data/output"
+        self,
+        enable_logging: bool = False,
+        output_dir: str = "data/output",
+        streaming: bool | None = None,
+        output_format: str | None = None,
+        inventory_sample_rate: int | None = None,
     ) -> None:
         # 1. Initialize World
         manifest = load_manifest()
@@ -49,7 +55,7 @@ class Orchestrator:
         # 3. Initialize Engines & Agents
         # Initialize POS Engine first to get demand estimates for priming
         self.pos_engine = POSEngine(self.world, self.state, self.config)
-        
+
         self._initialize_inventory()
 
         self.replenisher = MinMaxReplenisher(self.world, self.state, self.config)
@@ -69,8 +75,27 @@ class Orchestrator:
         self.risks = RiskEventManager(sim_params)
 
         # 6. Initialize Data Writer (Milestone 7)
+        # Load writer config from simulation_config.json, allow CLI overrides
+        writer_config = sim_params.get("writer", {})
+        stream_mode = (
+            streaming if streaming is not None
+            else writer_config.get("streaming", False)
+        )
+        out_fmt = (
+            output_format if output_format is not None
+            else writer_config.get("output_format", "csv")
+        )
+        inv_sample = (
+            inventory_sample_rate if inventory_sample_rate is not None
+            else writer_config.get("inventory_sample_rate", 1)
+        )
         self.writer = SimulationWriter(
-            enable_logging=enable_logging, output_dir=output_dir
+            enable_logging=enable_logging,
+            output_dir=output_dir,
+            streaming=stream_mode,
+            output_format=out_fmt,
+            parquet_batch_size=writer_config.get("parquet_batch_size", 10000),
+            inventory_sample_rate=inv_sample,
         )
 
         # 7. Manufacturing State
@@ -209,7 +234,7 @@ class Orchestrator:
 
         # 11. Validation & Resilience
         self._apply_post_step_validation(day, arrived)
-        
+
         # 11a. Mass Balance Audit
         self.auditor.end_day()
         mass_violations = self.auditor.check_mass_balance()

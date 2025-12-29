@@ -160,6 +160,12 @@
           "parameters": { "delay_multiplier": 10.0 }
         }
       ]
+    },
+    "writer": {
+      "output_format": "csv",
+      "streaming": false,
+      "parquet_batch_size": 10000,
+      "inventory_sample_rate": 1
     }
   }
 }

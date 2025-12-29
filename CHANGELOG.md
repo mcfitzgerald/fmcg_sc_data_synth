@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.0] - 2025-12-29
+
+### Added
+- **Streaming Writers (Task 7.3):** Implemented incremental disk writes for 365-day runs without memory exhaustion.
+  - **StreamingCSVWriter:** Writes rows directly to disk as they arrive, preventing memory accumulation.
+  - **StreamingParquetWriter:** Batches rows and flushes periodically for optimal compression (requires `pyarrow`).
+  - **CLI Flags:** Added `--streaming`, `--format`, and `--inventory-sample-rate` to `run_simulation.py`.
+  - **Config-Driven:** Writer settings can be configured in `simulation_config.json` under `writer` section.
+- **Inventory Sampling:** Added `inventory_sample_rate` parameter to reduce inventory data volume (e.g., log weekly instead of daily).
+
+### Changed
+- **SimulationWriter:** Refactored to support both buffered (legacy) and streaming modes with backward compatibility.
+- **Orchestrator:** Now reads writer configuration from `simulation_config.json` with CLI override support.
+
+### Performance
+- **30-day streaming test:** 549K orders, 557K shipments, 1.6M inventory records written incrementally in 10.4s.
+- **Memory efficiency:** Streaming mode eliminates in-memory accumulation for high-volume tables.
+
 ## [0.10.0] - 2025-12-28
 
 ### Architecture Overhaul

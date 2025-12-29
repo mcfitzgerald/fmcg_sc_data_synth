@@ -2,6 +2,22 @@
 
 This roadmap outlines the sequential milestones to transition from a statistical generator to a Discrete-Event Simulation (DES) governed by Supply Chain Physics.
 
+---
+
+## Remaining Work (Priority Order)
+
+The simulation is **functionally complete** for core physics. The following tasks remain for full-scale delivery:
+
+| Priority | Task | Description | Status |
+|----------|------|-------------|--------|
+| ~~P1~~ | ~~7.3~~ | ~~Streaming Writers (Parquet/CSV)~~ | **DONE v0.11.0** |
+| **P1** | 7.4 | Full Scale 365-day Run | Blocking - final validation |
+| **P2** | 6.5 | Legacy Validation (Zipf, Pareto, Hub) | Optional - realism checks |
+| **P3** | 7.2 | SQL Export (`seed.sql`) | Optional - database delivery |
+| **P4** | 9.1 | Full SCOR-DS Export | Optional - final deliverable |
+
+---
+
 ## Milestone 1: Project Scaffolding & Reference
 *   **Task 1.1:** [x] Initialize fresh repository with `poetry` and `git`.
 *   **Task 1.2:** [x] Establish directory structure:
@@ -49,23 +65,23 @@ This roadmap outlines the sequential milestones to transition from a statistical
     *   **Optimism Bias:** Forecast inflation curve.
     *   **Phantom Inventory:** Shrinkage with detection lag.
 *   **Task 6.4:** [x] **Risk Scenarios:** Execute deterministic risk events (e.g., "Port Strike") from `benchmark_manifest.json`.
-*   **Task 6.5:** **Legacy Validation:** Port legacy distribution checks (Zipf, Pareto, Hub Concentration) to `monitor.py`.
+*   **Task 6.5:** **Legacy Validation:** Port legacy distribution checks (Zipf, Pareto, Hub Concentration) to `monitor.py`. *(P3 - realism validation)*
 *   **Task 6.6:** [x] **Physics Audit:** Automated checks for Mass Balance ($Inv_{in} == Inv_{out}$).
 
 ## Milestone 7: SCOR-DS Expansion (Deep NAM)
 *   **Goal:** Scale to 4,500 nodes and generate full ~70-table schema (Levels 0-14).
-*   **Task 7.1:** **Generators (Static):**
-    *   Port `static_pool.py` (Faker) and `distributions.py` (Zipf/Barabási).
-    *   Create `NetworkGenerator` to build the 4,500-store topology.
+*   **Task 7.1:** [x] **Generators (Static):** *(Completed v0.8.0)*
+    *   [x] Port `static_pool.py` (Faker) and `distributions.py` (Zipf/Barabási).
+    *   [x] Create `NetworkGenerator` to build the 4,500-store topology.
 *   **Task 7.2:** **Writers (Static):**
-    *   Implement `StaticWriter` to export World CSVs (Locations, Products, Partners).
-    *   Implement `SQLWriter` to generate `seed.sql` for Postgres compatibility.
-*   **Task 7.3:** **Simulation Writers (Dynamic):**
-    *   Upgrade `SimulationWriter` to support streaming Parquet/CSV for high-volume tables.
-    *   Implement **In-Memory Validation Mode** to skip I/O for rapid parameter tuning.
-*   **Task 7.4:** **Full Scale Run:**
-    *   Execute 365-day run with full topology.
-    *   Validate row counts and referential integrity against `schema.sql`.
+    *   [x] Implement `StaticWriter` to export World CSVs (Locations, Products, Partners).
+    *   [ ] Implement `SQLWriter` to generate `seed.sql` for Postgres compatibility. *(P4 - optional)*
+*   **Task 7.3:** [x] **Simulation Writers (Dynamic):** *(Completed v0.11.0)*
+    *   [x] Upgrade `SimulationWriter` to support streaming Parquet/CSV for high-volume tables.
+    *   [x] Implement **In-Memory Validation Mode** to skip I/O for rapid parameter tuning. *(Completed v0.9.1)*
+*   **Task 7.4:** **Full Scale Run:** *(P2 - blocking)*
+    *   [ ] Execute 365-day run with full topology.
+    *   [ ] Validate row counts and referential integrity against `schema.sql`.
 
 ## Milestone 8: Architecture Overhaul (World Builder & Vectorization)
 *   **Goal:** Transition to procedural ingredients and vectorized execution for scale.
@@ -74,5 +90,5 @@ This roadmap outlines the sequential milestones to transition from a statistical
 *   **Task 8.3:** [x] **Vectorized Engines:** Refactor `MRPEngine` and `TransformEngine` to use matrix algebra for planning and execution.
 
 ## Milestone 9: Final Delivery
-*   **Task 9.1:** Generate full SCOR-DS dataset (CSV/Parquet/SQL export).
-*   **Task 9.2:** Generate "The Triangle Report": A summary of Service vs. Cost vs. Cash performance.
+*   **Task 9.1:** Generate full SCOR-DS dataset (CSV/Parquet/SQL export). *(P5 - final deliverable)*
+*   **Task 9.2:** [x] Generate "The Triangle Report": A summary of Service vs. Cost vs. Cash performance. *(Completed v0.6.0)*
