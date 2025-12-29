@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.2] - 2025-12-29
+
+### Fixed
+- **Negative Inventory Physics Violation:** Eliminated all sources of negative inventory that violated the Inventory Positivity law.
+  - **Demand Consumption:** Updated `Orchestrator` to constrain sales to available actual inventory (lost sales model). Previously subtracted demand blindly.
+  - **Allocation Agent:** Changed `AllocationAgent` to use `actual_inventory` instead of `perceived_inventory` for fill ratio calculations. When phantom inventory quirk creates divergence, allocation now respects physical reality.
+  - **Material Consumption:** Updated `TransformEngine._consume_materials()` to check and consume from `actual_inventory`, constraining consumption to available amounts.
+  - **Shrinkage Quirk:** Fixed `PhantomInventoryQuirk` to base shrinkage on actual inventory and constrain shrink amount to prevent negatives.
+  - **State Guards:** Added `np.maximum(0, ...)` floor guards in `StateManager.update_inventory()` and `update_inventory_batch()` to catch floating point precision errors.
+
+### Added
+- **Analysis Script:** Added `scripts/analyze_results.py` for reusable simulation output analysis. Supports JSON output and handles large inventory files via chunked reading.
+
+### Changed
+- **Category Demand Balancing:** Equalized `base_daily_demand` to 1.0 for all product categories (ORAL_CARE, PERSONAL_WASH, HOME_CARE).
+- **Plant Flexibility:** Added ORAL_CARE to PLANT-CA's `supported_categories` for better capacity balancing.
+
+### Results
+- **Before fix:** 3.4M cases backlog, 1,161 cells with negative inventory (min: -212.86)
+- **After fix:** 0 cases backlog, 0 cells with negative inventory
+
 ## [0.12.1] - 2025-12-29
 
 ### Changed

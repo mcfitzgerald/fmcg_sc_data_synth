@@ -2,7 +2,7 @@
 
 > **System Prompt Context:** This document contains the critical architectural, functional, and physical constraints of the Prism Sim project. Use this as primary context when reasoning about code changes, bug fixes, or feature expansions.
 
-**Version:** 0.12.1 | **Last Updated:** 2025-12-29
+**Version:** 0.12.2 | **Last Updated:** 2025-12-29
 
 ---
 
@@ -25,8 +25,14 @@ Any code change must preserve these. Violations indicate bugs:
 | **Mass Balance** | $I_t = I_{t-1} + Receipts - Shipments - Consumed + Produced$ | `monitor.py:PhysicsAuditor` |
 | **Little's Law** | $WIP = Throughput \times CycleTime$ | Implicit in logistics/transform |
 | **Capacity Constraints** | $Production \leq Rate \times Time \times OEE$ | `transform.py` |
-| **Inventory Positivity** | $Inventory \geq 0$ (cannot ship what you don't have) | `state.py`, `allocation.py` |
+| **Inventory Positivity** | $Inventory \geq 0$ (cannot ship/consume what you don't have) | `state.py`, `allocation.py`, `transform.py`, `orchestrator.py` |
 | **Kinematic Consistency** | $TransitTime = Distance / Speed$ (no teleporting) | `logistics.py` |
+
+**Inventory Positivity Enforcement (v0.12.2):**
+- `orchestrator.py`: Demand consumption constrained to `min(demand, available_actual)`
+- `allocation.py`: Fill ratios calculated from `actual_inventory` (not perceived)
+- `transform.py`: Material consumption constrained to `min(required, available_actual)`
+- `state.py`: Floor guards `np.maximum(0, ...)` on all inventory updates
 
 ---
 
@@ -276,6 +282,12 @@ When simulation behaves unexpectedly:
    - Check `PhysicsAuditor.audit()` output
    - Look for inventory updates outside `StateManager`
 
+6. **Negative inventory detected?** (Should not happen after v0.12.2)
+   - Check if new code bypasses `StateManager.update_inventory()` methods
+   - Verify `actual_inventory` is used (not `perceived_inventory`) for allocation/consumption decisions
+   - Look for direct tensor manipulation without floor guards
+   - Run: `inv[inv['actual_inventory'] < 0]` on inventory.csv to find violating cells
+
 ---
 
 ## 13. Architecture Diagrams
@@ -335,6 +347,7 @@ Orchestrator
 
 | Version | Key Changes |
 |---------|-------------|
+| 0.12.2 | **Negative inventory fix** - Inventory Positivity law enforced across all deduction paths |
 | 0.12.1 | Tiered inventory policies, LIFR tracking, Bullwhip Crisis identified |
 | 0.12.0 | Fill-or-Kill allocation, MRP look-ahead horizon |
 | 0.11.0 | Streaming writers for 365-day runs |
