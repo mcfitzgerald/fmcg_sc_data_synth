@@ -24,7 +24,7 @@ def main() -> None:
 
     # 1. Generators
     prod_gen = ProductGenerator(config=world_config, seed=42)
-    net_gen = NetworkGenerator(seed=42)
+    net_gen = NetworkGenerator(seed=42, config=world_config)
     writer = StaticWriter(str(output_dir))
 
     # 2. Products

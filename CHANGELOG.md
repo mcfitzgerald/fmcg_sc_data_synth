@@ -5,6 +5,50 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.0] - 2025-12-30
+
+### Phase A: Capacity Rebalancing & Option C Architecture
+
+This release implements Phase A of the brownfield digital twin stabilization plan, scaling demand/capacity to realistic FMCG industry benchmarks (400-500k cases/day) and implementing hierarchical DC + Store architecture.
+
+### Added
+- **Option C Network Architecture:**
+  - Hierarchical structure: DCs (logistics layer) + Stores (POS layer)
+  - 20 Retailer DCs with ~100 stores each (B2M_LARGE)
+  - 8 Distributor DCs with 500 small retailers each (B2M_DISTRIBUTOR)
+  - 30 Club stores direct to RDC (B2M_CLUB)
+  - 10 Ecom FCs and 2 DTC FCs
+  - Total: ~6,600 nodes (vs 155 aggregated DCs before)
+- **Store Format Scale Factors:** SUPERMARKET=1.0, CONVENIENCE=0.5, CLUB=15.0, ECOM_FC=50.0
+- **Phase A Implementation Notes** section in `fix_plan_v2.md` documenting all changes and learnings
+
+### Changed
+- **Capacity Scaling (2.5x increase):**
+  - Run rates: ORAL 3000→7500, PERSONAL 3600→9000, HOME 2400→6000 cases/hour
+  - Production hours: 8→20 hours/day (3-shift operation)
+  - Plant efficiency factors leveled to 78-88% OEE range
+- **Demand Calibration:**
+  - Base daily demand: 1.0→7.0 cases/SKU/store
+  - Target network demand: ~420k cases/day (aligned with multi-category CPG operations)
+- **Seasonality & Promos:**
+  - Seasonality amplitude: ±20%→±12% (staple category realism)
+  - Black Friday lift multiplier: 3.0x→2.0x
+- **Inventory Priming:**
+  - Store days supply: 28→14 days
+  - RDC-store multiplier: 1500→100 (fixed over-priming issue)
+
+### Fixed
+- **Demand Double-Counting:** DCs (RETAILER_DC, DISTRIBUTOR_DC) no longer generate POS demand; only stores do
+- **Network Generator Bugs:** `sample_company()`→`sample_companies(1)[0]`, `sample_city()`→`sample_cities(1)[0]`
+- **CSV Loader:** Added parsing for `channel`, `store_format`, `parent_account_id` enums in `builder.py`
+
+### Known Issues (Phase B Required)
+- Bullwhip effect still extreme (orders explode 60k→12.9M by day 20)
+- Production stops ~day 20 due to bullwhip-induced collapse
+- OEE at 39% (below target 75-85%), expected given order chaos
+
+---
+
 ## [0.13.0] - 2025-12-29
 
 ### Realism & Architecture Overhaul (Phases 0-5)

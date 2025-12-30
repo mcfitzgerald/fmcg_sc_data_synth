@@ -24,7 +24,7 @@
     },
     "demand": {
       "seasonality": {
-        "amplitude": 0.2,
+        "amplitude": 0.12,
         "phase_shift_days": 150,
         "cycle_days": 365
       },
@@ -33,18 +33,18 @@
         "gamma_scale": 0.1
       },
       "category_profiles": {
-        "ORAL_CARE": { "base_daily_demand": 1.0 },
-        "PERSONAL_WASH": { "base_daily_demand": 1.0 },
-        "HOME_CARE": { "base_daily_demand": 1.0 },
+        "ORAL_CARE": { "base_daily_demand": 7.0 },
+        "PERSONAL_WASH": { "base_daily_demand": 7.0 },
+        "HOME_CARE": { "base_daily_demand": 7.0 },
         "INGREDIENT": { "base_daily_demand": 0.0 }
       }
     },
     "inventory": {
       "initial_fg_level": 5.0,
       "initialization": {
-        "store_days_supply": 28.0,
-        "rdc_days_supply": 35.0,
-        "rdc_store_multiplier": 1500.0
+        "store_days_supply": 14.0,
+        "rdc_days_supply": 21.0,
+        "rdc_store_multiplier": 100.0
       }
     },
     "logistics": {
@@ -91,33 +91,33 @@
       "min_production_qty": 25000.0,
       "min_ingredient_moq": 100.0,
       "production_lead_time_days": 3,
-      "production_hours_per_day": 8.0,
+      "production_hours_per_day": 20.0,
       "efficiency_factor": 0.95,
       "unplanned_downtime_pct": 0.05,
       "backup_supplier_cost_premium": 0.25,
       "plant_parameters": {
         "PLANT-OH": {
-          "description": "Old legacy plant - High capacity but frequent breakdowns",
-          "efficiency_factor": 0.70,
-          "unplanned_downtime_pct": 0.15,
+          "description": "Legacy plant - upgraded efficiency, still higher downtime",
+          "efficiency_factor": 0.78,
+          "unplanned_downtime_pct": 0.10,
           "supported_categories": ["HOME_CARE"]
         },
         "PLANT-TX": {
-          "description": "Modern high-speed facility",
-          "efficiency_factor": 0.95,
-          "unplanned_downtime_pct": 0.02,
+          "description": "Modern high-speed facility (realistic OEE)",
+          "efficiency_factor": 0.88,
+          "unplanned_downtime_pct": 0.04,
           "supported_categories": ["ORAL_CARE"]
         },
         "PLANT-CA": {
           "description": "Flexible multi-category facility",
-          "efficiency_factor": 0.85,
-          "unplanned_downtime_pct": 0.05,
+          "efficiency_factor": 0.82,
+          "unplanned_downtime_pct": 0.06,
           "supported_categories": ["ORAL_CARE", "PERSONAL_WASH"]
         },
         "PLANT-GA": {
           "description": "Standard facility",
-          "efficiency_factor": 0.85,
-          "unplanned_downtime_pct": 0.05,
+          "efficiency_factor": 0.80,
+          "unplanned_downtime_pct": 0.07,
           "supported_categories": ["PERSONAL_WASH", "HOME_CARE"]
         }
       },
@@ -151,7 +151,7 @@
     },
     "quirks": {
       "port_congestion": {
-        "enabled": true,
+        "enabled": false,
         "ar_coefficient": 0.70,
         "noise_std_hours": 2.0,
         "cluster_threshold_hours": 4.0,
@@ -161,34 +161,34 @@
         "affected_ports": ["USLAX", "CNSHA"]
       },
       "optimism_bias": {
-        "enabled": true,
+        "enabled": false,
         "bias_pct": 0.15,
         "affected_age_months": 6
       },
       "phantom_inventory": {
-        "enabled": true,
+        "enabled": false,
         "shrinkage_pct": 0.02,
         "detection_lag_days": 14,
         "shrinkage_factor_min": 0.5,
         "shrinkage_factor_max": 1.0
       },
       "bullwhip_whip_crack": {
-        "enabled": true,
+        "enabled": false,
         "batching_factor": 3.0
       },
       "single_source_fragility": {
-        "enabled": true,
+        "enabled": false,
         "cascade_delay_multiplier": 2.5
       },
       "data_decay": {
-        "enabled": true,
+        "enabled": false,
         "base_rejection_rate": 0.02,
         "elevated_rejection_rate": 0.05,
         "days_to_expiry_threshold": 30
       }
     },
     "risk_events": {
-      "enabled": true,
+      "enabled": false,
       "events": [
         {
           "code": "RSK-BIO-001",

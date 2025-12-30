@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any
 
 from prism_sim.config.loader import load_world_definition
-from prism_sim.network.core import Link, Node, NodeType
+from prism_sim.network.core import CustomerChannel, Link, Node, NodeType, StoreFormat
 from prism_sim.product.core import Product, ProductCategory, Recipe
 from prism_sim.simulation.world import World
 
@@ -98,6 +98,21 @@ class WorldBuilder:
                 type_str = row["type"].split(".")[-1]
                 node_type = NodeType[type_str]
 
+                # Parse optional enums
+                channel = None
+                if row.get("channel") and row["channel"] not in ("None", ""):
+                    channel_str = row["channel"].split(".")[-1]
+                    channel = CustomerChannel[channel_str]
+
+                store_format = None
+                if row.get("store_format") and row["store_format"] not in ("None", ""):
+                    format_str = row["store_format"].split(".")[-1]
+                    store_format = StoreFormat[format_str]
+
+                parent_id = row.get("parent_account_id")
+                if parent_id in ("None", ""):
+                    parent_id = None
+
                 self.world.add_node(
                     Node(
                         id=row["id"],
@@ -106,6 +121,9 @@ class WorldBuilder:
                         location=row["location"],
                         throughput_capacity=float(row["throughput_capacity"]),
                         storage_capacity=float(row["storage_capacity"]),
+                        channel=channel,
+                        store_format=store_format,
+                        parent_account_id=parent_id,
                     )
                 )
 
