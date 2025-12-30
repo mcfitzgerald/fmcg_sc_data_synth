@@ -187,18 +187,19 @@ Every decision impacts the balance between:
 
 ## 9. Known Issues & Current State
 
-### The Bullwhip Crisis (v0.12.1)
-**Status:** IDENTIFIED - Mitigation planned in `docs/planning/sim_tuning.md`
+### The Bullwhip Crisis (v0.12.1 - FIXED in v0.12.3)
+**Status:** RESOLVED
 
-**Symptom:** 365-day simulation shows orders exploding from ~460k to 66M cases/day.
+**Original Symptom:** 365-day simulation showed orders exploding from ~460k to 66M cases/day.
 
-**Root Cause:** "Fill or Kill" allocation + zero inventory = infinite reordering loop.
-- Store orders 1000, gets 0 (killed), orders 1000 again next day
-- This creates a feedback loop amplifying demand 150x
+**Root Cause:** MRP was using smoothed POS demand proxies, which dampened the natural demand signal variance. Combined with "Fill or Kill" allocation, this created an "Inverse Bullwhip" where upstream variance was *lower* than downstream.
 
-**Planned Fix:**
-1. `min_fill_threshold` in `AllocationAgent` - don't ship dust
-2. `max_order_cap` in `MinMaxReplenisher` - dampen panic ordering
+**Fix (v0.12.3):** `MRPEngine` now uses a 7-day moving average of **actual RDC shipments** (lumpy signal) instead of smoothed POS demand. This restores realistic demand amplification upstream.
+
+### OEE Tuning (v0.12.3 - FIXED)
+**Original Symptom:** OEE at 28% (massive over-capacity).
+
+**Fix:** Reduced `production_hours_per_day` from 24 to 8 (single shift), increased batch sizes. OEE now at ~99%.
 
 ### SPOF Isolation (v0.12.1 - IMPLEMENTED)
 `ACT-CHEM-001` now isolated to ~20% of portfolio (Premium Oral Care only).
@@ -253,6 +254,10 @@ poetry run ruff check src/
 
 # Generate Static World (4,500 nodes)
 poetry run python scripts/generate_static_world.py
+
+# Analyze Results
+poetry run python scripts/analyze_bullwhip.py data/results/run_001
+poetry run python scripts/compare_scenarios.py data/results/baseline data/results/risk
 ```
 
 ---
