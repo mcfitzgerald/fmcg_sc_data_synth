@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.12.3] - 2025-12-29
 
+### Added
+- **Bullwhip Analysis Script:** Added `scripts/analyze_bullwhip.py` for analyzing variance amplification across supply chain echelons. Calculates CV ratios (Store → RDC → Plant), detects inverse bullwhip anomalies, and reports production oscillation patterns.
+- **Scenario Comparison Script:** Added `scripts/compare_scenarios.py` for comparing two simulation runs (e.g., baseline vs risk events). Shows shipment volume differences around key disruption days with day-by-day breakdown.
+
 ### Fixed
 - **Inverse Bullwhip Effect:** Resolved the "Inverse Bullwhip" anomaly (where upstream variance was lower than downstream) by updating `MRPEngine` to use a 7-day moving average of **actual RDC shipments** (lumpy signal) instead of smoothed POS demand proxies. This restores realistic demand amplification upstream.
 - **Low OEE (28% -> 99%):** Fixed massive plant over-capacity by:
