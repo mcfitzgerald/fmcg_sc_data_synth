@@ -2,9 +2,43 @@ from typing import Any
 
 import numpy as np
 
-from prism_sim.network.core import Node, NodeType, Order, OrderLine, OrderType
+from prism_sim.network.core import Node, NodeType, Order, OrderLine, OrderType, CustomerChannel
 from prism_sim.simulation.state import StateManager
 from prism_sim.simulation.world import World
+
+
+CHANNEL_POLICIES = {
+    "B2M_LARGE": {
+        "target_days": 7.0,
+        "reorder_point_days": 3.0,
+        "batch_size": 500.0,
+        "smoothing_factor": 0.3,
+    },
+    "B2M_CLUB": {
+        "target_days": 10.0,
+        "reorder_point_days": 4.0,
+        "batch_size": 200.0,
+        "smoothing_factor": 0.2,
+    },
+    "B2M_DISTRIBUTOR": {
+        "target_days": 14.0,
+        "reorder_point_days": 5.0,
+        "batch_size": 100.0,
+        "smoothing_factor": 0.1,
+    },
+    "ECOMMERCE": {
+        "target_days": 5.0,
+        "reorder_point_days": 2.0,
+        "batch_size": 50.0,
+        "smoothing_factor": 0.4,
+    },
+    "default": {
+        "target_days": 10.0,
+        "reorder_point_days": 4.0,
+        "batch_size": 100.0,
+        "smoothing_factor": 0.2,
+    },
+}
 
 
 class MinMaxReplenisher:
@@ -27,22 +61,55 @@ class MinMaxReplenisher:
             .get("replenishment", {})
         )
 
-        # Policy Parameters (Config driven)
-        self.target_days = float(
-            params.get("target_days_supply", 21.0) # Updated default
-        )
-        self.reorder_point_days = float(
-            params.get("reorder_point_days", 10.0)
-        )
-        self.min_order_qty = float(
-            params.get("min_order_qty", 10.0)
-        )
-        self.batch_size = float(
-            params.get("batch_size_cases", 100.0)
-        )
+        # Base Policy Parameters (Config driven default fallback)
+        self.base_target_days = float(params.get("target_days_supply", 10.0))
+        self.base_reorder_point_days = float(params.get("reorder_point_days", 4.0))
+        self.base_min_order_qty = float(params.get("min_order_qty", 50.0))
+        self.base_batch_size = float(params.get("batch_size_cases", 100.0))
 
         # Optimization: Cache Store->Supplier map
         self.store_supplier_map = self._build_supplier_map()
+        
+        # State for Demand Smoothing
+        self.smoothed_demand: np.ndarray | None = None
+        
+        # Vectorized Policy Parameters (N_Nodes, 1)
+        self._init_policy_vectors()
+
+    def _init_policy_vectors(self) -> None:
+        """Pre-calculate policy vectors based on node channels."""
+        n_nodes = self.state.n_nodes
+        
+        # Initialize with config defaults
+        self.target_days_vec = np.full((n_nodes, 1), self.base_target_days)
+        self.rop_vec = np.full((n_nodes, 1), self.base_reorder_point_days)
+        self.batch_vec = np.full((n_nodes, 1), self.base_batch_size)
+        self.min_qty_vec = np.full((n_nodes, 1), self.base_min_order_qty)
+        self.alpha_vec = np.full((n_nodes, 1), 0.2)  # Default smoothing factor
+
+        for n_id, node in self.world.nodes.items():
+            idx = self.state.node_id_to_idx.get(n_id)
+            if idx is None:
+                continue
+
+            # Determine policy key
+            policy_key = "default"
+            if node.channel:
+                key = node.channel.name if hasattr(node.channel, "name") else str(node.channel)
+                if key.upper() in CHANNEL_POLICIES:
+                    policy_key = key.upper()
+            
+            p = CHANNEL_POLICIES.get(policy_key, CHANNEL_POLICIES["default"])
+            
+            self.target_days_vec[idx] = p["target_days"]
+            self.rop_vec[idx] = p["reorder_point_days"]
+            self.batch_vec[idx] = p["batch_size"]
+            self.alpha_vec[idx] = p["smoothing_factor"]
+            
+            # OVERRIDE: Stores order cases, not pallets
+            if node.type == NodeType.STORE:
+                self.batch_vec[idx] = 20.0  # Reduced from 500/200/100 to 20
+                self.min_qty_vec[idx] = 10.0
 
     def _build_supplier_map(self) -> dict[str, str]:
         """Builds a lookup map for Store -> Source ID."""
@@ -51,9 +118,10 @@ class MinMaxReplenisher:
             mapping[link.target_id] = link.source_id
         return mapping
 
-    def generate_orders(self, day: int, demand_history: np.ndarray) -> list[Order]:
+    def generate_orders(self, day: int, demand_signal: np.ndarray) -> list[Order]:
         """
         Generates replenishment orders for Retail Stores and downstream DCs.
+        Uses exponential smoothing on the demand signal to dampen bullwhip.
         """
         orders = []
         week = (day // 7) + 1
@@ -62,22 +130,13 @@ class MinMaxReplenisher:
         active_promos = []
         promotions = self.config.get("promotions", [])
         for p in promotions:
-            # Promo orders usually placed slightly ahead? 
-            # Assume orders placed during promo week are FOR the promo demand.
             if p["start_week"] <= week <= p["end_week"]:
                 active_promos.append(p)
 
-        # 1. Identify Target Nodes (Stores + downstream DCs that order)
-        # We need to replenish any node that consumes demand (Stores) OR acts as a buffer
-        # In current logic, POSEngine generates demand for Stores.
-        # Downstream DCs (if any) should also reorder?
-        # For simplicity, we iterate all nodes that have links pointing to them.
-        # But we filter by Type=STORE or Type=DC (if not RDC/Plant).
-        
+        # 1. Identify Target Nodes
         target_indices = []
         target_ids = []
         
-        # Valid targets are nodes that are destinations in links
         valid_targets = set(self.store_supplier_map.keys())
         
         for n_id in valid_targets:
@@ -93,26 +152,41 @@ class MinMaxReplenisher:
 
         target_idx_arr = np.array(target_indices)
 
-        # 2. Get Inventory
-        current_inv = self.state.inventory[target_idx_arr, :]
-        # Shape: [N_Targets, Products]
+        # 2. Update Demand Smoothing
+        if self.smoothed_demand is None:
+            self.smoothed_demand = demand_signal.copy()
+        else:
+            # S_t = alpha * x_t + (1 - alpha) * S_{t-1}
+            self.smoothed_demand = (
+                self.alpha_vec * demand_signal + 
+                (1.0 - self.alpha_vec) * self.smoothed_demand
+            )
 
-        # 3. Get Demand Estimate
-        avg_demand = demand_history[target_idx_arr, :]
+        # 3. Get Inventory & Smoothed Demand for Targets
+        current_inv = self.state.inventory[target_idx_arr, :]
+        avg_demand = self.smoothed_demand[target_idx_arr, :]
+        
+        # Avoid division by zero or negative targets
         avg_demand = np.maximum(avg_demand, 0.1)
 
-        # 4. Calculate Targets
-        # Could customize per channel here if needed
-        target_stock = avg_demand * self.target_days
-        reorder_point = avg_demand * self.reorder_point_days
+        # 4. Calculate Targets (Vectorized)
+        t_days = self.target_days_vec[target_idx_arr]
+        rop_days = self.rop_vec[target_idx_arr]
+        batch_sz = self.batch_vec[target_idx_arr]
+        min_qty = self.min_qty_vec[target_idx_arr]
+
+        target_stock = avg_demand * t_days
+        reorder_point = avg_demand * rop_days
 
         # 5. Determine Order Quantities
         needs_order = current_inv < reorder_point
         raw_qty = target_stock - current_inv
-        order_qty = np.where(needs_order, raw_qty, 0.0)
+        
+        # Use vectorized min_qty
+        order_qty = np.where(needs_order, np.maximum(raw_qty, min_qty), 0.0)
 
         # 6. Apply Batching
-        batched_qty = np.ceil(order_qty / self.batch_size) * self.batch_size
+        batched_qty = np.ceil(order_qty / batch_sz) * batch_sz
 
         # 7. Create Orders
         rows, cols = np.nonzero(batched_qty)
@@ -138,19 +212,17 @@ class MinMaxReplenisher:
             orders_by_target[t_idx]["lines"].append(OrderLine(p_id, qty))
             
             # Check days supply for Rush classification
+            # Note: avg_demand here is the subset for this target row r
             d_supply = current_inv[r, c] / avg_demand[r, c]
             if d_supply < orders_by_target[t_idx]["days_supply_min"]:
                 orders_by_target[t_idx]["days_supply_min"] = d_supply
             
             # Check Promo
-            # If any active promo applies to this product and target channel, link it
             target_node = self.world.nodes.get(target_ids[r])
             if target_node and not orders_by_target[t_idx]["promo_id"]:
                  for promo in active_promos:
-                      # Check categories
                       cat_match = "all" in promo.get("affected_categories", ["all"]) or \
                                   self.world.products[p_id].category.name in promo.get("affected_categories", [])
-                      # Check channels
                       chan_match = not promo.get("affected_channels") or \
                                    (target_node.channel and target_node.channel.name in promo.get("affected_channels"))
                       

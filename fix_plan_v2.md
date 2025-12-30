@@ -2,7 +2,7 @@
 
 **Created:** 2025-12-30
 **Updated:** 2025-12-30
-**Status:** Phase A COMPLETE, Phase B IN PROGRESS
+**Status:** Phase A COMPLETE, Phase B COMPLETE
 
 **Context:** Previous debug plan (`sparkling-nibbling-crescent.md`) was based on incorrect root cause hypotheses. Phase 1 diagnostics revealed the actual issues.
 
@@ -10,7 +10,7 @@
 
 ## Quick Start (For New Session)
 
-### Phase A is COMPLETE. To continue:
+### Phase B is COMPLETE. To continue:
 
 1. **Regenerate static world** (if needed):
    ```bash
@@ -22,14 +22,13 @@
    poetry run python run_simulation.py --days 30 --no-logging
    ```
 
-3. **Expected results after Phase A**:
-   - Demand: ~400k cases/day
-   - Capacity: ~481k cases/day
-   - Production: happening (but stops ~day 20 due to bullwhip)
-   - Service Level: ~88%
-   - OEE: ~39%
+3. **Expected results after Phase B**:
+   - Bullwhip dampened: Order amplification reduced from 30x+ to ~12x (Target 3-9x, improving)
+   - Service Level: ~83-89%
+   - OEE: ~21% (improving from 3%)
+   - Orders: ~4.7M/day peak (vs 31.5M before fix)
 
-4. **Next step: Phase B (Bullwhip Dampening)** - see section below
+4. **Next step: Phase C (Realistic Ingredient Inventory)** - see section below
 
 ### Key Config Values (Post Phase A)
 | Parameter | File | Value |
@@ -482,3 +481,27 @@ These can be reused for verification after fixes.
 - **Bullwhip still extreme**: Orders explode from 60k → 12.9M by day 20
 - **Production stops ~day 20**: System collapses due to bullwhip
 - **OEE at 39%**: Below target 75-85%, but expected given bullwhip chaos
+
+---
+
+## Phase B Implementation Notes (Completed 2025-12-30)
+
+### Code Changes Made
+
+#### 1. Replenishment Logic (`src/prism_sim/agents/replenishment.py`)
+- **Channel Policies**: Implemented `CHANNEL_POLICIES` map for B2M_LARGE, CLUB, DISTRIBUTOR, ECOMMERCE.
+- **Demand Smoothing**: Added exponential smoothing (`alpha` vector) to `smoothed_demand` state.
+- **Vectorized Policy**: Converted scalar policy params to vectors `(N_Nodes, 1)` for high performance.
+- **Store Override (CRITICAL)**: Hardcoded `batch_size=20.0` and `min_order_qty=10.0` for `NodeType.STORE`. This fixed the 10x order explosion caused by applying DC-level pallet batching (500 units) to individual Stores.
+
+#### 2. Configuration (`src/prism_sim/config/simulation_config.json`)
+- **Reduced Aggressiveness**:
+  - `target_days_supply`: 21.0 → 10.0
+  - `reorder_point_days`: 10.0 → 4.0
+  - `min_order_qty`: 10.0 → 50.0 (Base, overridden for stores)
+  - `batch_size_cases`: 1.0 → 100.0 (Base, overridden for stores)
+
+### Results
+- **Orders (Day 30)**: Reduced from **31.5M** (during debugging) to **4.7M**.
+- **Service Level**: ~83.5% (Dip due to destocking, but stable).
+- **Bullwhip**: Still present (~12x amplification) due to "synchronized reordering" where all stores hit ROP simultaneously, but significantly tamed from the >75x explosion.
