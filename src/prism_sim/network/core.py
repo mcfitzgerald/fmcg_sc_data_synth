@@ -10,6 +10,25 @@ class NodeType(enum.Enum):
     SUPPLIER = "supplier"
 
 
+class CustomerChannel(enum.Enum):
+    B2M_LARGE = "b2m_large"        # Big retailers (Walmart DC, Target DC) - FTL
+    B2M_CLUB = "b2m_club"          # Club stores (Costco, Sam's) - FTL pallets
+    B2M_DISTRIBUTOR = "b2m_dist"   # 3P Distributors (consolidate for small retailers)
+    ECOMMERCE = "ecommerce"        # Amazon, pure-play digital
+    DTC = "dtc"                    # Direct to consumer (parcel)
+
+
+class StoreFormat(enum.Enum):
+    RETAILER_DC = "retailer_dc"    # Walmart/Target distribution center
+    HYPERMARKET = "hypermarket"    # Big box store
+    SUPERMARKET = "supermarket"    # Traditional grocery
+    CLUB = "club"                  # Costco, Sam's Club
+    CONVENIENCE = "convenience"   # Small format
+    PHARMACY = "pharmacy"         # CVS, Walgreens
+    DISTRIBUTOR_DC = "distributor_dc"  # 3P distributor warehouse
+    ECOM_FC = "ecom_fc"           # E-commerce fulfillment center
+
+
 @dataclass
 class Node:
     """Abstract base representing a location in the supply chain network."""
@@ -25,6 +44,11 @@ class Node:
 
     # State (will be vectorized later, but kept here for object clarity)
     current_inventory: float = 0.0
+
+    # Customer segmentation
+    channel: CustomerChannel | None = None
+    store_format: StoreFormat | None = None
+    parent_account_id: str | None = None  # Which retail account owns this
 
     def __post_init__(self) -> None:
         if not self.id:
@@ -50,6 +74,13 @@ class Link:
             raise ValueError("Link ID cannot be empty")
 
 
+class OrderType(enum.Enum):
+    STANDARD = "standard"      # Normal replenishment (70%)
+    RUSH = "rush"              # Expedited handling (10%)
+    BACKORDER = "backorder"    # Fill when available (10%)
+    PROMOTIONAL = "promotional" # Promo-driven (10%)
+
+
 @dataclass
 class OrderLine:
     product_id: str
@@ -64,6 +95,13 @@ class Order:
     creation_day: int
     lines: list[OrderLine] = field(default_factory=list)
     status: str = "OPEN"  # OPEN, IN_TRANSIT, CLOSED
+    
+    # Advanced attributes
+    order_type: OrderType = OrderType.STANDARD
+    promo_id: str | None = None
+    priority: int = 5  # 1=highest, 10=lowest
+    requested_date: int | None = None  # Day number
+
 
 
 class ShipmentStatus(enum.Enum):
@@ -86,6 +124,7 @@ class Shipment:
     total_weight_kg: float = 0.0
     total_volume_m3: float = 0.0
     truck_count: int = 1
+    emissions_kg: float = 0.0
 
 
 # --- Manufacturing Primitives ---

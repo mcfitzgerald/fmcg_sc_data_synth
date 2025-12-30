@@ -17,6 +17,7 @@ from prism_sim.network.core import (
     OrderLine,
     ProductionOrder,
     ProductionOrderStatus,
+    Shipment,
 )
 from prism_sim.product.core import ProductCategory
 from prism_sim.simulation.state import StateManager
@@ -136,7 +137,7 @@ class MRPEngine:
     def generate_production_orders(
         self,
         current_day: int,
-        daily_shipments: list[Order],  # Use shipments (RDC-to-Store) as signal
+        rdc_shipments: list[Shipment],  # FIX 3: Accept Shipments instead of Orders
         active_production_orders: list[ProductionOrder],
     ) -> list[ProductionOrder]:
         """
@@ -145,18 +146,7 @@ class MRPEngine:
         production_orders: list[ProductionOrder] = []
 
         # 1. Update Demand History with daily shipment volume (The "Lumpy" Signal)
-        daily_vol = np.zeros(self.state.n_products)
-        for order in daily_shipments:
-            # We only care about shipments from RDCs to Stores for finished goods demand
-            source_node = self.world.nodes.get(order.source_id)
-            if source_node and source_node.type == NodeType.DC:
-                for line in order.lines:
-                    p_idx = self.state.product_id_to_idx.get(line.product_id)
-                    if p_idx is not None:
-                        daily_vol[p_idx] += line.quantity
-        
-        self.demand_history[self._history_ptr] = daily_vol
-        self._history_ptr = (self._history_ptr + 1) % 7
+        self._update_demand_history(current_day, rdc_shipments)
 
         # Calculate Moving Average Demand
         avg_daily_demand_vec = np.mean(self.demand_history, axis=0)
@@ -232,6 +222,18 @@ class MRPEngine:
                     production_orders.append(po)
 
         return production_orders
+
+    def _update_demand_history(self, day: int, shipments: list[Shipment]) -> None:
+        """Update demand history with actual shipment quantities (FIX 3.3)."""
+        daily_vol = np.zeros(self.state.n_products)
+        for shipment in shipments:
+            for line in shipment.lines:
+                p_idx = self.state.product_id_to_idx.get(line.product_id)
+                if p_idx is not None:
+                    daily_vol[p_idx] += line.quantity
+
+        self.demand_history[self._history_ptr] = daily_vol
+        self._history_ptr = (self._history_ptr + 1) % 7
 
     def _estimate_demand(self, product_idx: int, daily_demand: np.ndarray) -> float:
         """

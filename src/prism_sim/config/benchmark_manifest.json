@@ -218,13 +218,13 @@
     "disposition_restock_min": 0.70,
     "disposition_destroy_max": 0.10,
 
-    "osa_range": [0.88, 0.96],
-    "inventory_turns_range": [6.0, 14.0],
+    "osa_range": [0.93, 0.99],
+    "inventory_turns_range": [8.0, 15.0],
     "max_discount_percent": 55,
     "shrinkage_rate_range": [0.01, 0.04],
 
     "schedule_adherence_tolerance_days": 1.1,
-    "truck_fill_rate_target": 0.50,
+    "truck_fill_rate_target": 0.85,
     "slob_inventory_max_pct": 0.30,
     "forecast_value_added_min": 0.0,
     "oee_range": [0.65, 0.85],

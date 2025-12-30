@@ -7,7 +7,14 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from prism_sim.product.core import Product, ProductCategory, Recipe
+from prism_sim.product.core import (
+    ContainerType,
+    PackagingType,
+    Product,
+    ProductCategory,
+    Recipe,
+    ValueSegment,
+)
 
 if TYPE_CHECKING:
     from numpy.random import Generator
@@ -28,12 +35,13 @@ class CategoryProfile:
 
 
 class ProductGenerator:
-    """Generates a realistic product portfolio using Zipfian popularity."""
+    """Generates a realistic product portfolio with Packaging Hierarchy and SKU variants."""
 
     def __init__(self, config: dict[str, Any], seed: int = 42) -> None:
         self.rng: Generator = np.random.default_rng(seed)
         self.config = config
         self._load_profiles()
+        self._load_packaging()
 
     def _load_profiles(self) -> None:
         """Load category profiles from config."""
@@ -57,49 +65,108 @@ class ProductGenerator:
         self.bom_complexity = self.config.get("bom_complexity", {})
         self.recipe_logic = self.config.get("recipe_logic", {})
 
+    def _load_packaging(self) -> None:
+        """Load packaging definitions."""
+        self.packaging_types: list[PackagingType] = []
+        raw_pkgs = self.config.get("packaging_types", [])
+        
+        for p in raw_pkgs:
+            self.packaging_types.append(PackagingType(
+                code=p["code"],
+                name=p.get("name", p["code"]),
+                container=ContainerType(p["container"]),
+                size_ml=p["size_ml"],
+                material=p.get("material", "plastic"),
+                recyclable=p.get("recyclable", True),
+                units_per_case=p["units_per_case"],
+                segment=ValueSegment(p["segment"])
+            ))
+
     def generate_products(self, n_skus: int = 50) -> list[Product]:
-        """Generate a list of products distributed across categories."""
+        """
+        Generate SKUs based on Brand-Pack Hierarchy.
+        (n_skus is ignored in favor of exhaustive generation or limited by it)
+        """
         products: list[Product] = []
-        cats = list(self.profiles.keys())
+        
+        # Brand-Category Mapping
+        brands = {
+            ProductCategory.ORAL_CARE: "PrismWhite",
+            ProductCategory.PERSONAL_WASH: "AquaPure",
+            ProductCategory.HOME_CARE: "ClearWave",
+        }
+        
+        # Packaging Suitability
+        # Which packaging types fit which category?
+        pack_map = {
+            ProductCategory.ORAL_CARE: [ContainerType.TUBE, ContainerType.PUMP],
+            ProductCategory.PERSONAL_WASH: [ContainerType.BOTTLE, ContainerType.PUMP, ContainerType.POUCH],
+            ProductCategory.HOME_CARE: [ContainerType.BOTTLE, ContainerType.POUCH],
+        }
 
-        for i in range(n_skus):
-            category = cats[i % len(cats)]
-            profile = self.profiles[category]
+        counter = 0
+        
+        for category, brand in brands.items():
+            valid_containers = pack_map.get(category, [])
+            valid_packs = [p for p in self.packaging_types if p.container in valid_containers]
+            
+            # For each valid packaging type, generate 1-3 variants (flavors/scents)
+            for pkg in valid_packs:
+                n_variants = self.rng.integers(1, 3) # 1 or 2 variants
+                
+                for v in range(n_variants):
+                    counter += 1
+                    # Stop if we exceed requested n_skus drastically, but usually we want full range
+                    if n_skus > 0 and counter > n_skus * 1.5: 
+                         break 
 
-            sku_id = f"SKU-{category.name.split('_')[0]}-{i + 1:03d}"
-            name = f"Prism {category.name.replace('_', ' ').title()} {i + 1}"
+                    sku_id = f"SKU-{category.name.split('_')[0]}-{counter:03d}"
+                    variant_name = f"{brand} {pkg.size_ml}ml {pkg.container.value.title()}"
+                    if v > 0:
+                        variant_name += f" Var-{v+1}"
 
-            noise = self.rng.normal(1.0, 0.1)
-            weight = profile.avg_weight_kg * noise
-            vol_cc = profile.avg_volume_cc * noise
+                    profile = self.profiles[category]
+                    
+                    # Calculate weight based on size_ml and specific gravity
+                    # Water = 1g/ml. Paste ~1.3. Soap ~1.1.
+                    specific_gravity = 1.0
+                    if category == ProductCategory.ORAL_CARE: specific_gravity = 1.3
+                    elif category == ProductCategory.PERSONAL_WASH: specific_gravity = 1.05
+                    
+                    net_weight_kg = (pkg.size_ml * specific_gravity) / 1000.0
+                    case_weight_kg = net_weight_kg * pkg.units_per_case * 1.05 # +5% packaging weight
+                    
+                    # Dimensions from profile scaled by size
+                    # Simplified: scale base profile by cube root of volume ratio
+                    base_vol = profile.avg_volume_cc
+                    target_vol = pkg.size_ml * pkg.units_per_case * 1.2 # Packing factor
+                    scale = (target_vol / base_vol) ** (1/3)
+                    
+                    r1, r2, r3 = profile.dim_ratios
+                    x = (target_vol / (r1 * r2 * r3)) ** (1/3)
+                    
+                    products.append(Product(
+                        id=sku_id,
+                        name=variant_name,
+                        category=category,
+                        brand=brand,
+                        packaging_type_id=pkg.code,
+                        units_per_case=pkg.units_per_case,
+                        value_segment=pkg.segment,
+                        recyclable=pkg.recyclable,
+                        material=pkg.material,
+                        
+                        weight_kg=round(case_weight_kg, 2),
+                        length_cm=round(r1 * x, 1),
+                        width_cm=round(r2 * x, 1),
+                        height_cm=round(r3 * x, 1),
+                        
+                        cases_per_pallet=profile.cases_per_pallet_range[0], # Simplified
+                        cost_per_case=round(self.rng.uniform(*profile.cost_range), 2),
+                        price_per_case=round(self.rng.uniform(*profile.cost_range) * 1.5, 2),
+                    ))
 
-            r1, r2, r3 = profile.dim_ratios
-            x = (vol_cc / (r1 * r2 * r3)) ** (1 / 3)
-
-            length = r1 * x
-            width = r2 * x
-            height = r3 * x
-
-            cases_pal = int(self.rng.integers(*profile.cases_per_pallet_range))
-            cost = self.rng.uniform(*profile.cost_range)
-            price = cost * self.rng.uniform(1.3, 1.8)
-
-            products.append(
-                Product(
-                    id=sku_id,
-                    name=name,
-                    category=category,
-                    weight_kg=round(weight, 2),
-                    length_cm=round(length, 1),
-                    width_cm=round(width, 1),
-                    height_cm=round(height, 1),
-                    cases_per_pallet=cases_pal,
-                    cost_per_case=round(cost, 2),
-                    price_per_case=round(price, 2),
-                )
-            )
-
-        return products
+        return products[:n_skus] if n_skus > 0 else products
 
     def generate_ingredients(self, n_per_type: int = 5) -> list[Product]:
         """Generate a pool of ingredients based on profiles."""
@@ -123,7 +190,7 @@ class ProductGenerator:
                     name=name,
                     category=ProductCategory.INGREDIENT,
                     weight_kg=round(weight, 3),
-                    length_cm=10, width_cm=10, height_cm=10, # Generic dims
+                    length_cm=10, width_cm=10, height_cm=10,
                     cases_per_pallet=1000,
                     cost_per_case=round(cost, 3)
                 ))
@@ -131,7 +198,7 @@ class ProductGenerator:
         # 2. Active Chemicals
         act_profile = self.ingredient_profiles.get("ACTIVE_CHEM", {})
         act_prefix = act_profile.get("prefix", "ACT")
-        for i in range(n_per_type * 2): # More chemicals for variety
+        for i in range(n_per_type * 2):
             ing_id = f"{act_prefix}-CHEM-{i + 1:03d}"
             name = f"Active Agent {i + 1}"
             
@@ -153,7 +220,7 @@ class ProductGenerator:
         blk_prefix = blk_profile.get("prefix", "BLK")
         base_types = ["WATER", "OIL", "SILICATE"]
         for b_type in base_types:
-            for i in range(3): # Fewer bulk types needed
+            for i in range(3):
                 ing_id = f"{blk_prefix}-{b_type}-{i + 1:03d}"
                 name = f"Bulk {b_type.title()} Grade {i + 1}"
                 
@@ -178,10 +245,9 @@ class ProductGenerator:
         """Generate recipes using logic-driven semantic BOM rules."""
         recipes: list[Recipe] = []
 
-        # Index ingredients by type/tag for fast lookup
+        # Index ingredients by type/tag
         ing_map: dict[str, list[Product]] = {}
         for ing in ingredients:
-            # Parse type from ID structure: PREFIX-TYPE-NUMBER
             parts = ing.id.split("-")
             if len(parts) >= 2:
                 key = parts[1] # e.g. BOTTLE, CAP, CHEM, WATER
@@ -189,7 +255,6 @@ class ProductGenerator:
                     ing_map[key] = []
                 ing_map[key].append(ing)
 
-        # Fallback for safety
         if not ing_map:
             return []
 
@@ -200,32 +265,38 @@ class ProductGenerator:
             act_pct = logic.get("active_pct", 0.1)
             
             # 1. Packaging Logic
-            if p.category == ProductCategory.ORAL_CARE:
-                # Tube + Cap + Box
-                self._add_random_component(bom, ing_map.get("TUBE", ing_map.get("BOTTLE", [])), 1)
+            # Use packaging_type_id to guide BOM
+            # e.g., PKG-TUBE-100 -> Needs TUBE, CAP, BOX
+            
+            pkg_code = p.packaging_type_id
+            container_type = None
+            if pkg_code:
+                # Find the packaging def (inefficient linear search but fine for setup)
+                pkg_def = next((pk for pk in self.packaging_types if pk.code == pkg_code), None)
+                if pkg_def:
+                    container_type = pkg_def.container
+
+            # Add primary container
+            if container_type == ContainerType.TUBE:
+                self._add_random_component(bom, ing_map.get("TUBE", []), 1)
                 self._add_random_component(bom, ing_map.get("CAP", []), 1)
                 self._add_random_component(bom, ing_map.get("BOX", []), 1)
-                
-            elif p.category == ProductCategory.PERSONAL_WASH:
-                # Wrapper + Box
-                self._add_random_component(bom, ing_map.get("WRAPPER", []), 1)
-                self._add_random_component(bom, ing_map.get("BOX", []), 1)
-                
-            elif p.category == ProductCategory.HOME_CARE:
-                # Bottle + Cap + Label
+            elif container_type == ContainerType.BOTTLE:
                 self._add_random_component(bom, ing_map.get("BOTTLE", []), 1)
                 self._add_random_component(bom, ing_map.get("CAP", []), 1)
                 self._add_random_component(bom, ing_map.get("LABEL", []), 1)
-                
+            elif container_type == ContainerType.PUMP:
+                self._add_random_component(bom, ing_map.get("BOTTLE", []), 1) # Use bottle as base
+                self._add_random_component(bom, ing_map.get("CAP", []), 1) # Assume pump cap
+            elif container_type == ContainerType.POUCH:
+                 # We don't have POUCH in default ingredient types (BOTTLE, CAP, BOX...)
+                 # Use WRAPPER as proxy or BOTTLE if missing
+                 self._add_random_component(bom, ing_map.get("WRAPPER", ing_map.get("BOTTLE", [])), 1)
             else:
-                # Fallback generic
-                self._add_random_component(bom, ing_map.get("BOX", []), 1)
+                 # Fallback
+                 self._add_random_component(bom, ing_map.get("BOX", []), 1)
 
             # 2. Chemical Logic
-            # Base (Bulk) - consume in fractions of a tote (which is 1000kg)
-            # We need to convert p.weight_kg into units of the ingredient
-            # If ingredient is 1000kg tote, and we need 0.9kg: usage = 0.0009
-            
             base_candidates = ing_map.get("WATER", []) + ing_map.get("OIL", []) + ing_map.get("SILICATE", [])
             if base_candidates:
                 base_ing = self.rng.choice(base_candidates) # type: ignore
@@ -237,35 +308,22 @@ class ProductGenerator:
             chem_candidates = ing_map.get("CHEM", [])
             spof_id = "ACT-CHEM-001"
             spof_ing = next((x for x in chem_candidates if x.id == spof_id), None)
-            
-            # Remove SPOF from general pool so it isn't picked randomly
             general_chem_candidates = [x for x in chem_candidates if x.id != spof_id]
 
             if general_chem_candidates:
-                # Determine if this SKU gets the SPOF ingredient
-                # Target: ~20% of portfolio (Premium Oral Care)
-                # We can use the loop index 'i' (enumerated)
-                is_premium_oral = (p.category == ProductCategory.ORAL_CARE) and (i % 5 == 0)
+                is_premium_oral = (p.category == ProductCategory.ORAL_CARE) and (p.value_segment == ValueSegment.PREMIUM)
                 
                 if is_premium_oral and spof_ing:
-                    # This product DEPENDS on the SPOF
                     actives = [spof_ing]
-                    # Maybe add a second minor active for realism
                     if len(general_chem_candidates) > 0:
                         actives.append(self.rng.choice(general_chem_candidates)) # type: ignore
                 else:
-                    # Standard product - use general pool
                     n_actives = self.rng.integers(1, 3)
                     actives = self.rng.choice(general_chem_candidates, size=n_actives, replace=False) # type: ignore
                 
                 total_active_kg = p.weight_kg * act_pct
                 for act in actives:
-                    # Split weight evenly
                     qty_kg = total_active_kg / len(actives)
-                    # Active ingredients defined as small units (e.g. 0.5kg bag) or drum?
-                    # In generate_ingredients, Actives are 0.1-0.5kg per "case"? 
-                    # Let's assume the ingredient unit is a "bag" or "drum"
-                    # If generated weight is 0.5kg, and we need 0.1kg -> 0.2 units.
                     qty_units = qty_kg / act.weight_kg
                     bom[act.id] = float(round(qty_units, 6))
 

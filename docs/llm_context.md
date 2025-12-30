@@ -105,28 +105,17 @@ product_id_to_idx: dict[str, int]
 Every `tick()` (1 day) in `Orchestrator._run_day()`:
 
 ```
-1. ARRIVALS      → Process in-transit shipments that arrived today
-2. DEMAND        → POSEngine generates retail sales (consumes store inventory)
-3. REPLENISHMENT → MinMaxReplenisher creates orders (Store→RDC, RDC→Plant)
-4. ALLOCATION    → AllocationAgent allocates inventory to orders (Fair Share)
-5. MRP           → MRPEngine plans production orders for plants
-6. PRODUCTION    → TransformEngine executes manufacturing (consumes ingredients)
-7. LOGISTICS     → LogisticsEngine creates shipments, advances in-transit
-8. QUIRKS        → QuirkManager applies behavioral realism
-9. MONITORING    → PhysicsAuditor validates mass balance, records metrics
-```
-
-**Data Flow Diagram:**
-```
-Retailers ──[POS Sales]──→ Demand Signal
-    ↓
-    [Replenishment Orders]
-    ↓
-RDCs ←──[Shipments]── Plants ←──[Production Orders]── MRP
-    ↓                    ↓
-    [Allocation]         [BOM Explosion]
-    ↓                    ↓
-Inventory Tensors ←── Recipe Matrix ←── Suppliers
+1. RISK EVENTS   → Trigger disruptions (RiskEventManager)
+2. PRE-QUIRKS    → Apply Phantom Inventory shrinkage (QuirkManager)
+3. ARRIVALS      → Process in-transit shipments that arrived today
+4. DEMAND        → POSEngine generates retail sales (consumes store inventory)
+5. REPLENISHMENT → MinMaxReplenisher creates orders (Store→RDC, RDC→Plant)
+6. ALLOCATION    → AllocationAgent allocates inventory to orders (Fair Share)
+7. LOGISTICS     → LogisticsEngine creates shipments (FTL rules, Emissions)
+8. MRP           → MRPEngine plans production (uses RDC→Store shipment signal)
+9. PRODUCTION    → TransformEngine executes manufacturing
+10. POST-QUIRKS  → Apply logistics delays/congestion (QuirkManager)
+11. MONITORING   → PhysicsAuditor validates mass balance, records KPIs
 ```
 
 ---
@@ -177,11 +166,11 @@ Every decision impacts the balance between:
 ```
 
 **Key Metrics Tracked:**
-- **Store Service Level (OSA):** `Actual_Sales / Consumer_Demand` (Target >90%)
-- **Service Level (LIFR):** `Shipped_Qty / Ordered_Qty` (Internal fill rate)
-- **OEE:** Plant capacity utilization (target 65-85%)
-- **Truck Fill:** Logistics efficiency (target >85%)
-- **Inventory Turns:** Cash efficiency (target 6-14x annually)
+- **Store Service Level (OSA):** `Actual_Sales / Consumer_Demand` (Target >93%)
+- **Perfect Order Rate:** OTIF + Damage Free + Doc Accuracy (Target >90%)
+- **Cash-to-Cash Cycle:** DSO + DIO - DPO (Target 45 days)
+- **Scope 3 Emissions:** kg CO2 per case shipped (Sustainability)
+- **Inventory Turns:** Cash efficiency (Target 8-15x)
 
 ---
 
@@ -227,8 +216,8 @@ Supplier `SUP-001` constrained to 500k units/day.
   "simulation": {
     "inventory": {
       "initialization": {
-        "store_days_supply": 14.0,
-        "rdc_days_supply": 28.0
+        "store_days_supply": 28.0,
+        "rdc_days_supply": 35.0
       }
     }
   }
@@ -353,6 +342,7 @@ Orchestrator
 
 | Version | Key Changes |
 |---------|-------------|
+| 0.13.0 | **Realism Overhaul** - Risk, Quirks, Channels, Emissions, Expanded KPIs |
 | 0.12.3 | **Inverse Bullwhip Fix** - MRP uses lumpy RDC shipment signals; Store Service Level metric added |
 | 0.12.2 | **Negative inventory fix** - Inventory Positivity law enforced across all deduction paths |
 | 0.12.1 | Tiered inventory policies, LIFR tracking, Bullwhip Crisis identified |

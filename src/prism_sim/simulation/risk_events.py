@@ -73,15 +73,84 @@ class RiskEventManager:
 
     def get_logistics_delay_multiplier(self) -> float:
         """
-        Calculate cumulative delay multiplier from all active events.
-
-        Reads 'delay_multiplier' from event parameters.
+        Calculate cumulative delay multiplier from active PORT STRIKE events.
         """
         multiplier = 1.0
         if not self.enabled:
             return multiplier
 
         for e in self.active_events:
-            m = e.parameters.get("delay_multiplier", 1.0)
-            multiplier *= m
+            if e.event_type == "port_strike":
+                m = e.parameters.get("delay_multiplier", 1.0)
+                multiplier *= m
+        return multiplier
+
+    def get_batch_overrides(self) -> dict[str, str]:
+        """
+        Get batch status overrides from active CONTAMINATION events.
+
+        Returns:
+            Dict of {ingredient_id: new_status} (e.g. {"ING-SORB": "rejected"})
+        """
+        overrides = {}
+        if not self.enabled:
+            return overrides
+
+        for e in self.active_events:
+            if e.event_type == "contamination":
+                target = e.parameters.get("target_ingredient")
+                status = e.parameters.get("qc_status_override")
+                if target and status:
+                    overrides[target] = status
+        return overrides
+
+    def get_supplier_overrides(self) -> dict[str, float]:
+        """
+        Get supplier reliability overrides from active SUPPLIER OPACITY events.
+
+        Returns:
+            Dict of {supplier_id: new_reliability_score}
+        """
+        overrides = {}
+        if not self.enabled:
+            return overrides
+
+        for e in self.active_events:
+            if e.event_type == "supplier_opacity":
+                target = e.parameters.get("target_supplier")
+                score = e.parameters.get("degraded_otd_rate")
+                if target and score is not None:
+                    overrides[target] = float(score)
+        return overrides
+
+    def get_dc_overrides(self) -> list[str]:
+        """
+        Get list of DCs affected by active CYBER OUTAGE events.
+
+        Returns:
+            List of DC IDs that are effectively down.
+        """
+        down_dcs = []
+        if not self.enabled:
+            return down_dcs
+
+        for e in self.active_events:
+            if e.event_type == "cyber_outage":
+                target = e.parameters.get("target_dc")
+                if target:
+                    down_dcs.append(target)
+        return down_dcs
+
+    def get_emission_overrides(self) -> float:
+        """
+        Get CO2 cost multiplier from active CARBON TAX events.
+        """
+        multiplier = 1.0
+        if not self.enabled:
+            return multiplier
+
+        for e in self.active_events:
+            if e.event_type == "carbon_tax_spike":
+                m = e.parameters.get("co2_cost_multiplier", 1.0)
+                multiplier *= m
         return multiplier

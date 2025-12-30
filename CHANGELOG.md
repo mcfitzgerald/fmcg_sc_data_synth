@@ -5,6 +5,42 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.13.0] - 2025-12-29
+
+### Realism & Architecture Overhaul (Phases 0-5)
+This release implements a massive overhaul of the simulation physics and network structure to align with FMCG industry standards (P&G/Colgate benchmarks).
+
+### Added
+- **Customer Channel Structure (Fix 0A):**
+  - Added `CustomerChannel` (B2M_LARGE, CLUB, DISTRIBUTOR, ECOM) and `StoreFormat` enums.
+  - Implemented channel-specific logistics rules (FTL vs. LTL) and minimum order quantities.
+- **Packaging Hierarchy (Fix 0B):**
+  - Added `PackagingType` and `ContainerType` to support realistic SKU variants (Tubes, Bottles, Pumps).
+  - Procedurally generated SKU variants based on packaging profiles.
+- **Order Types (Fix 0C):**
+  - Added `OrderType` (STANDARD, RUSH, PROMOTIONAL, BACKORDER) with priority handling in Allocation.
+- **Promo Calendar (Fix 0D):**
+  - Ported vectorized `PromoCalendar` from reference implementation for realistic demand lift and hangover effects.
+- **Risk Events (Fix 5):**
+  - Implemented full `RiskEventManager` with 5 scenarios: Contamination, Port Strike, Supplier Opacity, Cyber Outage, Carbon Tax.
+- **Behavioral Quirks (Fix 6):**
+  - Added 6 behavioral pathologies: `BullwhipWhipCrack`, `SingleSourceFragility`, `DataDecay`, `PortCongestion`, `OptimismBias`, `PhantomInventory`.
+- **Sustainability Metrics (Fix 10):**
+  - Added Scope 3 CO2 emissions tracking in `LogisticsEngine` (0.1 kg/ton-km).
+  - Added `emissions_kg` tracking to Shipments.
+- **Expanded KPIs (Fix 8):**
+  - Added trackers for Perfect Order Rate, Cash-to-Cash Cycle, MAPE, Shrinkage Rate, and SLOB %.
+
+### Changed
+- **Orchestrator:**
+  - Updated MRP signal to use **RDC-to-Store Shipments** (true pull signal) instead of allocated orders to fix inverse bullwhip.
+  - Integrated `RiskEventManager` and `QuirkManager` into the daily loop.
+  - Updated `Triangle Report` to include new KPIs.
+- **Configuration:**
+  - Overhauled `simulation_config.json` with comprehensive settings for all new engines.
+  - Updated `benchmark_manifest.json` with strict validation targets (OSA 93-99%, Turns 8-15x).
+  - Increased inventory initialization targets (Store: 28d, RDC: 35d) to prevent drain.
+
 ## [0.12.3] - 2025-12-29
 
 ### Added

@@ -16,8 +16,8 @@
     },
     "agents": {
       "replenishment": {
-        "target_days_supply": 21.0,
-        "reorder_point_days": 10.0,
+        "target_days_supply": 28.0,
+        "reorder_point_days": 14.0,
         "min_order_qty": 10.0,
         "batch_size_cases": 100.0
       }
@@ -42,8 +42,8 @@
     "inventory": {
       "initial_fg_level": 5.0,
       "initialization": {
-        "store_days_supply": 14.0,
-        "rdc_days_supply": 28.0,
+        "store_days_supply": 28.0,
+        "rdc_days_supply": 35.0,
         "rdc_store_multiplier": 1500.0
       }
     },
@@ -54,7 +54,29 @@
         "epsilon_weight_kg": 0.001,
         "epsilon_volume_m3": 0.0001
       },
-      "default_lead_time_days": 3.0
+      "default_lead_time_days": 3.0,
+      "channel_rules": {
+        "B2M_LARGE": {
+          "mode": "FTL",
+          "min_order_pallets": 20,
+          "target_fill_rate": 0.90
+        },
+        "B2M_CLUB": {
+          "mode": "FTL",
+          "min_order_pallets": 15,
+          "target_fill_rate": 0.85
+        },
+        "B2M_DISTRIBUTOR": {
+          "mode": "FTL",
+          "min_order_pallets": 10,
+          "target_fill_rate": 0.80
+        },
+        "ECOMMERCE": {
+          "mode": "FTL",
+          "min_order_pallets": 5,
+          "target_fill_rate": 0.75
+        }
+      }
     },
     "manufacturing": {
       "target_days_supply": 14.0,
@@ -149,24 +171,75 @@
         "detection_lag_days": 14,
         "shrinkage_factor_min": 0.5,
         "shrinkage_factor_max": 1.0
+      },
+      "bullwhip_whip_crack": {
+        "enabled": true,
+        "batching_factor": 3.0
+      },
+      "single_source_fragility": {
+        "enabled": true,
+        "cascade_delay_multiplier": 2.5
+      },
+      "data_decay": {
+        "enabled": true,
+        "base_rejection_rate": 0.02,
+        "elevated_rejection_rate": 0.05,
+        "days_to_expiry_threshold": 30
       }
     },
     "risk_events": {
       "enabled": true,
       "events": [
         {
+          "code": "RSK-BIO-001",
+          "type": "contamination",
+          "trigger_day": 150,
+          "duration_days": 1,
+          "parameters": {
+            "target_ingredient": "ING-SORB-001",
+            "qc_status_override": "rejected"
+          }
+        },
+        {
           "code": "RSK-LOG-002",
           "type": "port_strike",
           "trigger_day": 120,
           "duration_days": 14,
-          "parameters": { "delay_multiplier": 4.0 }
+          "parameters": {
+            "delay_multiplier": 4.0,
+            "delay_distribution": "gamma",
+            "gamma_shape": 2.0,
+            "affected_ports": ["USLAX"]
+          }
+        },
+        {
+          "code": "RSK-SUP-003",
+          "type": "supplier_opacity",
+          "trigger_day": 100,
+          "duration_days": 30,
+          "parameters": {
+            "target_supplier": "SUP-001",
+            "degraded_otd_rate": 0.40
+          }
         },
         {
           "code": "RSK-CYB-004",
           "type": "cyber_outage",
           "trigger_day": 200,
           "duration_days": 3,
-          "parameters": { "delay_multiplier": 10.0 }
+          "parameters": {
+            "target_dc": "RDC-MW",
+            "delay_multiplier": 10.0
+          }
+        },
+        {
+          "code": "RSK-ENV-005",
+          "type": "carbon_tax_spike",
+          "trigger_day": 180,
+          "duration_days": 185,
+          "parameters": {
+            "co2_cost_multiplier": 3.0
+          }
         }
       ]
     },

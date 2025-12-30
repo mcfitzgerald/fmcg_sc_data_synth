@@ -57,6 +57,13 @@ class RealismMonitor:
         self.inventory_turns_tracker = WelfordAccumulator()
         self.service_level_tracker = WelfordAccumulator()  # Aggregate Fill Rate
         self.store_service_level_tracker = WelfordAccumulator()  # Consumer Service Level
+        
+        # New KPIs (Fix 8)
+        self.perfect_order_tracker = WelfordAccumulator()
+        self.cash_to_cash_tracker = WelfordAccumulator()
+        self.scope_3_tracker = WelfordAccumulator()
+        self.mape_tracker = WelfordAccumulator()
+        self.shrinkage_tracker = WelfordAccumulator()
 
         # Ranges from config
         self.oee_range = self.config.get("oee_range", [0.65, 0.85])
@@ -85,6 +92,21 @@ class RealismMonitor:
 
     def record_inventory_turns(self, turns: float) -> None:
         self.inventory_turns_tracker.update(turns)
+        
+    def record_perfect_order(self, rate: float) -> None:
+        self.perfect_order_tracker.update(rate)
+
+    def record_cash_to_cash(self, days: float) -> None:
+        self.cash_to_cash_tracker.update(days)
+
+    def record_scope_3(self, emissions_per_case: float) -> None:
+        self.scope_3_tracker.update(emissions_per_case)
+
+    def record_mape(self, mape: float) -> None:
+        self.mape_tracker.update(mape)
+
+    def record_shrinkage_rate(self, rate: float) -> None:
+        self.shrinkage_tracker.update(rate)
 
     def get_report(self) -> dict[str, Any]:
         return {
@@ -146,6 +168,26 @@ class RealismMonitor:
                     else "DRIFT"
                 ),
             },
+            "perfect_order_rate": {
+                "mean": self.perfect_order_tracker.mean,
+                "status": "OK" if self.perfect_order_tracker.mean >= 0.90 else "LOW"
+            },
+            "cash_to_cash_days": {
+                "mean": self.cash_to_cash_tracker.mean,
+                "status": "OK"
+            },
+            "scope_3_emissions": {
+                "mean": self.scope_3_tracker.mean,
+                "status": "OK"
+            },
+            "mape": {
+                "mean": self.mape_tracker.mean,
+                "status": "OK"
+            },
+            "shrinkage_rate": {
+                "mean": self.shrinkage_tracker.mean,
+                "status": "OK"
+            }
         }
 
 

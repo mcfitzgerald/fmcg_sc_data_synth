@@ -1,7 +1,14 @@
 import math
 from typing import Any
 
-from prism_sim.network.core import Link, Order, OrderLine, Shipment, ShipmentStatus
+from prism_sim.network.core import (
+    CustomerChannel,
+    Link,
+    Order,
+    OrderLine,
+    Shipment,
+    ShipmentStatus,
+)
 from prism_sim.simulation.state import StateManager
 from prism_sim.simulation.world import World
 
@@ -9,7 +16,7 @@ from prism_sim.simulation.world import World
 class LogisticsEngine:
     """
     Handles the physical movement of goods (Levels 10-11).
-    Implements 'Tetris' logic (Bin Packing) and Lead Time delays.
+    Implements 'Tetris' logic (Bin Packing), Lead Time delays, and Channel FTL rules.
     """
 
     def __init__(
@@ -19,18 +26,21 @@ class LogisticsEngine:
         self.state = state
         self.config = config
 
-        constraints = (
-            config.get("simulation_parameters", {})
-            .get("logistics", {})
-            .get("constraints", {})
-        )
+        log_config = config.get("simulation_parameters", {}).get("logistics", {})
+        constraints = log_config.get("constraints", {})
         self.max_weight_kg = float(constraints.get("truck_max_weight_kg", 20000.0))
         self.max_volume_m3 = float(constraints.get("truck_max_volume_m3", 60.0))
         self.epsilon_weight = float(constraints.get("epsilon_weight_kg", 0.001))
         self.epsilon_volume = float(constraints.get("epsilon_volume_m3", 0.0001))
+        
+        # Channel Rules
+        self.channel_rules = log_config.get("channel_rules", {})
 
         self.route_map: dict[tuple[str, str], Link] = {}
         self._build_route_map()
+        
+        # State for consolidation
+        self.held_orders: list[Order] = []
 
     def _build_route_map(self) -> None:
         for link in self.world.links.values():
@@ -39,39 +49,65 @@ class LogisticsEngine:
     def create_shipments(self, orders: list[Order], current_day: int) -> list[Shipment]:
         """
         Converts Allocations (Orders) into Shipments (Trucks).
-        Applies Weight/Cube constraints.
+        Applies Channel FTL rules and Weight/Cube constraints.
         """
-        # Group by Route
-        lines_by_route: dict[tuple[str, str], list[OrderLine]] = {}
+        # 1. Combine new orders with held orders
+        active_orders = self.held_orders + orders
+        self.held_orders = []  # Reset, will repopulate with remaining
 
-        # We decompose Orders into Lines for packing
-        for order in orders:
+        # 2. Group by Route (Source -> Target)
+        orders_by_route: dict[tuple[str, str], list[Order]] = {}
+        for order in active_orders:
             route = (order.source_id, order.target_id)
-            if route not in lines_by_route:
-                lines_by_route[route] = []
-            lines_by_route[route].extend(order.lines)
+            if route not in orders_by_route:
+                orders_by_route[route] = []
+            orders_by_route[route].append(order)
 
-        new_shipments = []
+        new_shipments: list[Shipment] = []
         shipment_counter = 0
 
-        for route, lines in lines_by_route.items():
+        # 3. Process each route
+        for route, route_orders in orders_by_route.items():
             source_id, target_id = route
+            target_node = self.world.nodes.get(target_id)
+            
+            # Determine Channel Rules
+            channel = target_node.channel if target_node else None
+            rules = self._get_channel_rules(channel)
+            min_pallets = rules.get("min_order_pallets", 0)
+            
+            # Calculate total pallets for this route
+            total_pallets = sum(self._calculate_pallets(o) for o in route_orders)
+            
+            # Check FTL constraint
+            if total_pallets < min_pallets and min_pallets > 0:
+                # Not enough volume, hold ALL orders for this route
+                # (Simple logic: hold everything. improved logic: split?)
+                # For now, hold everything to consolidate.
+                self.held_orders.extend(route_orders)
+                continue
+
+            # If we proceed, we pack shipments
+            # We decompose orders into lines for packing "Tetris" style
+            lines_for_packing: list[OrderLine] = []
+            for order in route_orders:
+                lines_for_packing.extend(order.lines)
 
             # Find Lead Time
             link = self.route_map.get(route)
-            lead_time = link.lead_time_days if link else 1  # Default 1 if no link
+            lead_time = link.lead_time_days if link else 1.0
             arrival_day = current_day + int(lead_time)
 
-            # Bin Packing
+            # Bin Packing Loop
             current_shipment = self._new_shipment(
                 source_id, target_id, current_day, arrival_day, shipment_counter
             )
             shipment_counter += 1
 
-            for line in lines:
+            for line in lines_for_packing:
                 product = self.world.products.get(line.product_id)
                 if not product:
-                    continue  # Skip unknown products
+                    continue
 
                 remaining_qty = line.quantity
 
@@ -98,26 +134,25 @@ class LogisticsEngine:
                         vol_space = self.max_volume_m3
 
                     # How much fits?
-                    # Avoid div by zero
                     unit_weight = max(product.weight_kg, self.epsilon_weight)
                     unit_vol = max(product.volume_m3, self.epsilon_volume)
 
                     max_by_weight = weight_space / unit_weight
                     max_by_vol = vol_space / unit_vol
 
-                    # We allow fractional cases to handle "Fair Share" allocations
                     fit_qty = min(remaining_qty, max_by_weight, max_by_vol)
 
                     if fit_qty < 1e-9:
-                        # Item too big?
                         if not current_shipment.lines:
-                            # If truck is empty and still can't fit anything, it's a Physics Violation.
+                            # Item exceeds empty truck dimensions?
+                            # Forcing 1 unit if it's just a float issue, 
+                            # but if it's physically too big, error.
+                            # Assuming standard pallets fit.
                             raise ValueError(
-                                f"Product {product.id} (W:{unit_weight}kg, V:{unit_vol}m3) "
-                                f"exceeds truck capacity (MaxW:{self.max_weight_kg}, MaxV:{self.max_volume_m3})"
+                                f"Product {product.id} exceeds truck capacity"
                             )
                         else:
-                            # Truck is just full (item implies it needs more space than avail)
+                            # Full
                             new_shipments.append(current_shipment)
                             current_shipment = self._new_shipment(
                                 source_id,
@@ -135,11 +170,28 @@ class LogisticsEngine:
                     current_shipment.total_volume_m3 += fit_qty * unit_vol
                     remaining_qty -= fit_qty
 
-            # Add final shipment if not empty
+            # Add final shipment
             if current_shipment.lines:
+                # Add Emissions calculation
+                dist = link.distance_km if link else 0.0
+                current_shipment.emissions_kg = self._calculate_emissions(current_shipment, dist)
                 new_shipments.append(current_shipment)
 
         return new_shipments
+
+    def _calculate_emissions(self, shipment: Shipment, distance_km: float) -> float:
+        """
+        Calculate Scope 3 emissions for a shipment.
+        Factor: 0.1 kg CO2 per ton-km.
+        """
+        weight_tons = shipment.total_weight_kg / 1000.0
+        base_emissions = weight_tons * distance_km * 0.1
+        
+        # Emissions can be affected by risk events (carbon tax spike)
+        # Note: We don't have direct access to risks here easily without passing it, 
+        # but we can check config for a static multiplier or assume it's applied later.
+        # For now, return base.
+        return base_emissions
 
     def update_shipments(
         self, shipments: list[Shipment], current_day: int
@@ -170,3 +222,30 @@ class LogisticsEngine:
             lines=[],
             status=ShipmentStatus.IN_TRANSIT,
         )
+
+    def _get_channel_rules(self, channel: CustomerChannel | None) -> dict[str, Any]:
+        """Get logistics rules for a channel."""
+        if not channel:
+            return {}
+        return self.channel_rules.get(channel.value, self.channel_rules.get(channel.name, {}))
+
+    def _calculate_pallets(self, order: Order) -> float:
+        """Calculate total pallets for an order."""
+        pallets = 0.0
+        for line in order.lines:
+            product = self.world.products.get(line.product_id)
+            if product and product.cases_per_pallet > 0:
+                pallets += line.quantity / product.cases_per_pallet
+        return pallets
+    
+    def get_staged_inventory(self) -> dict[str, float]:
+        """
+        Return the amount of inventory currently held in staging (waiting for FTL).
+        Used for Mass Balance checks.
+        Returns: product_id -> total_quantity
+        """
+        staged: dict[str, float] = {}
+        for order in self.held_orders:
+            for line in order.lines:
+                staged[line.product_id] = staged.get(line.product_id, 0.0) + line.quantity
+        return staged

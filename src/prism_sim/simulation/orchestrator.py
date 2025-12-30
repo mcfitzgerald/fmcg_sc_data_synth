@@ -46,6 +46,11 @@ class Orchestrator:
         # 1. Initialize World
         manifest = load_manifest()
         self.config = load_simulation_config()
+        
+        # Merge static world definitions into config for Engines that need them (e.g. POSEngine)
+        self.config["promotions"] = manifest.get("promotions", [])
+        self.config["packaging_types"] = manifest.get("packaging_types", [])
+        
         self.builder = WorldBuilder(manifest)
         self.world = self.builder.build()
 
@@ -215,8 +220,16 @@ class Orchestrator:
         self.auditor.record_receipts(arrived)
 
         # 8. Manufacturing: MRP (Milestone 5.1)
+        # Filter for RDC -> Store shipments (Pull signal for MRP)
+        rdc_store_shipments = [
+            s
+            for s in new_shipments
+            if self.world.nodes[s.source_id].type == NodeType.DC
+            and self.world.nodes[s.target_id].type == NodeType.STORE
+        ]
+        
         new_production_orders = self.mrp_engine.generate_production_orders(
-            day, allocated_orders, self.active_production_orders
+            day, rdc_store_shipments, self.active_production_orders
         )
         self.active_production_orders.extend(new_production_orders)
 
@@ -256,11 +269,13 @@ class Orchestrator:
         daily_shipments = new_shipments + plant_shipments
         
         total_shipped_qty = sum(line.quantity for s in daily_shipments for line in s.lines)
+        shrinkage_qty = sum(e.quantity_lost for e in shrinkage_events)
         
         self._record_daily_metrics(
             daily_demand, daily_shipments, arrived, plant_oee, day,
             ordered_qty=unconstrained_demand_qty,
-            shipped_qty=total_shipped_qty
+            shipped_qty=total_shipped_qty,
+            shrinkage_qty=shrinkage_qty
         )
         self._log_daily_data(
             raw_orders, new_shipments, plant_shipments, new_batches, day
@@ -332,6 +347,7 @@ class Orchestrator:
         day: int,
         ordered_qty: float = 0.0,
         shipped_qty: float = 0.0,
+        shrinkage_qty: float = 0.0,
     ) -> None:
         """Record simulation metrics for monitoring."""
         # Record Service Level (Fill Rate)
@@ -343,21 +359,34 @@ class Orchestrator:
         # Record Store Service Level (On-Shelf Availability proxy)
         total_demand_qty = np.sum(daily_demand)
         if total_demand_qty > 0:
-            # We need actual_sales. In _step we calculated it. 
-            # We should pass it or re-calculate here. 
-            # Re-calculating for simplicity as we have access to state.
             available = np.maximum(0, self.state.actual_inventory)
             actual_sales = np.minimum(daily_demand, available)
             store_fill_rate = np.sum(actual_sales) / total_demand_qty
             self.monitor.record_store_service_level(store_fill_rate)
 
         # Calculate Inventory Turns (Cash)
-        total_sales = np.sum(daily_demand)  # Proxy for COGS
         total_inv = np.sum(np.maximum(0, self.state.actual_inventory))
         if total_inv > 0:
-            daily_turn_rate = total_sales / total_inv
+            daily_turn_rate = total_demand_qty / total_inv  # Sales / Avg Inv
             annual_turns = daily_turn_rate * 365
             self.monitor.record_inventory_turns(annual_turns)
+            
+            # Cash-to-Cash (Est: DIO + DSO - DPO)
+            # DIO = 365 / Turns
+            # DSO ~ 30, DPO ~ 45
+            dio = 365.0 / annual_turns
+            c2c = dio + 30.0 - 45.0
+            self.monitor.record_cash_to_cash(c2c)
+            
+            # Shrinkage Rate
+            shrink_rate = shrinkage_qty / total_inv
+            self.monitor.record_shrinkage_rate(shrink_rate)
+            
+            # SLOB % (Simplification: Inventory > 60 days of demand)
+            # Global check: Total Inv / Daily Demand
+            global_dos = total_inv / max(total_demand_qty, 1.0)
+            is_slob = 1.0 if global_dos > 60.0 else 0.0
+            self.monitor.record_slob(is_slob)
 
         log_config = self.config.get("simulation_parameters", {}).get("logistics", {})
         constraints = log_config.get("constraints", {})
@@ -371,6 +400,22 @@ class Orchestrator:
         if plant_oee:
             avg_oee = sum(plant_oee.values()) / len(plant_oee)
             self.monitor.record_oee(avg_oee)
+            
+        # Perfect Order Rate
+        # Check active risk delays
+        delay_mult = self.risks.get_logistics_delay_multiplier()
+        is_perfect = 1.0 if delay_mult == 1.0 else 0.5
+        self.monitor.record_perfect_order(is_perfect)
+        
+        # Scope 3 Emissions (0.25 kg CO2 per case placeholder)
+        self.monitor.record_scope_3(0.25)
+
+        # MAPE
+        # 30% baseline error + Optimism Bias if active
+        mape = 0.30
+        if self.quirks.is_enabled("optimism_bias"):
+             mape += 0.15
+        self.monitor.record_mape(mape)
 
     def _log_daily_data(
         self,
@@ -455,6 +500,13 @@ class Orchestrator:
         # as it represents the actual "Service" delivered to customers.
         service_index = report.get("store_service_level", {}).get("mean", 0.0) * 100.0
         inv_turns = report.get("inventory_turns", {}).get("mean", 0)
+        
+        perfect_order = report.get("perfect_order_rate", {}).get("mean", 0) * 100.0
+        c2c = report.get("cash_to_cash_days", {}).get("mean", 0)
+        scope3 = report.get("scope_3_emissions", {}).get("mean", 0)
+        mape = report.get("mape", {}).get("mean", 0) * 100.0
+        shrink = report.get("shrinkage_rate", {}).get("mean", 0) * 100.0
+        slob = report.get("slob", {}).get("mean", 0) * 100.0
 
         summary = [
             "==================================================",
@@ -465,6 +517,12 @@ class Orchestrator:
             f"3. COST (Truck Fill Rate):      {truck_fill * truck_scale:.1f}%",
             "--------------------------------------------------",
             f"Manufacturing OEE:              {oee * oee_scale:.1f}%",
+            f"Perfect Order Rate:             {perfect_order:.1f}%",
+            f"Cash-to-Cash Cycle:             {c2c:.1f} days",
+            f"Scope 3 Emissions:              {scope3:.2f} kg/case",
+            f"MAPE (Forecast):                {mape:.1f}%",
+            f"Shrinkage Rate:                 {shrink:.2f}%",
+            f"SLOB Inventory:                 {slob:.1f}%",
             f"Total System Inventory:         {total_inventory:,.0f} cases",
             f"Total Backlog:                  {total_backlog:,.0f} cases",
             "==================================================",

@@ -9,6 +9,33 @@ class ProductCategory(enum.Enum):
     INGREDIENT = "ingredient"  # Raw material
 
 
+class ContainerType(enum.Enum):
+    TUBE = "tube"           # Toothpaste
+    BOTTLE = "bottle"       # Dish soap, body wash
+    PUMP = "pump"           # Premium body wash
+    POUCH = "pouch"         # Sachets, refills
+    GLASS = "glass"         # Premium
+
+
+class ValueSegment(enum.Enum):
+    PREMIUM = "premium"     # Glass, large pump bottles
+    MAINSTREAM = "mainstream"  # Standard sizes
+    VALUE = "value"         # Large refills, bulk
+    TRIAL = "trial"         # Sachets, travel sizes
+
+
+@dataclass
+class PackagingType:
+    code: str               # PKG-TUBE-100
+    name: str               # "100ml Tube"
+    container: ContainerType
+    size_ml: int
+    material: str           # "plastic", "glass"
+    recyclable: bool
+    units_per_case: int     # Critical for logistics
+    segment: ValueSegment
+
+
 @dataclass
 class Product:
     """Represents a SKU (Stock Keeping Unit) with physical supply chain attributes."""
@@ -30,6 +57,21 @@ class Product:
     # Financials
     cost_per_case: float = 0.0
     price_per_case: float = 0.0
+    
+    # Extended Attributes (Fix 0B)
+    brand: str | None = None
+    packaging_type_id: str | None = None
+
+    # Derived from packaging
+    units_per_case: int = 1
+    # case_weight_kg is already present as weight_kg
+
+    # Segment/positioning
+    value_segment: ValueSegment | None = None
+
+    # Sustainability
+    recyclable: bool = False
+    material: str | None = None
 
     @property
     def volume_m3(self) -> float:
