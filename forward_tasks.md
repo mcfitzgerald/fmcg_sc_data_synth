@@ -1,10 +1,20 @@
 # Forward Tasks - Phase C Continuation
 
-## Session Summary (Dec 31, 2024 - v0.15.5) - COMPLETED
+## Session Summary (Dec 31, 2024 - v0.15.6) - COMPLETED
 
 ### Fixes Completed
 
-#### 1. Customer DC Bullwhip Cascade - FIXED (v0.15.4)
+#### 1. MRP Demand Signal Dampening - FIXED (v0.15.6)
+**Root Cause:** In 365-day simulations, production collapsed to zero during days 252-279. When stores had sufficient inventory, they ordered less, reducing the MRP shipment signal. The previous 10% collapse threshold didn't catch the gradual decline (signal was at 40-50% of expected). MRP calculated high Days-of-Supply and stopped production. Eventually stores depleted, triggering massive bullwhip (35M orders on day 281).
+
+**Fix (Three-Pronged Approach):**
+1. **Raised signal threshold** from 10% → 40% of expected demand
+2. **Added velocity tracking** - detects week-over-week declining trends (week1 < 60% of week2)
+3. **Added 30% production floor** - ensures minimum production regardless of signal
+
+**Files:** `mrp.py`
+
+#### 2. Customer DC Bullwhip Cascade - FIXED (v0.15.4)
 **Root Cause:** Customer DCs (RET-DC, DIST-DC, ECOM-FC) used POS demand signal (=0, floored to 0.1) instead of derived demand. When stores ordered on Day 1, customer DCs saw inventory drop below their tiny ROP and mass-ordered on Day 2 (272M orders).
 
 **Fix (MRP Derived Demand Theory):**
@@ -15,16 +25,6 @@
 
 **Files:** `replenishment.py`, `orchestrator.py`
 
-#### 2. MRP Ingredient Ordering Explosion - FIXED (v0.15.4)
-**Root Cause:** ACTIVE_CHEM policy had 30-day ROP / 45-day target, causing plants to order 272M cases when inventory < 30M.
-
-**Fix:**
-- Reduced ACTIVE_CHEM policy to 7/14 days (was 30/45)
-- Capped daily production estimate at 2x expected demand
-- Capped ingredient order quantities
-
-**Files:** `mrp.py`, `simulation_config.json`
-
 #### 3. Fragmented Store Orders - FIXED (v0.15.5)
 **Root Cause:** Stores ordered 20-40 cases but FTL required 300-1200 cases (5-20 pallets). Orders were held in `held_orders` for FTL consolidation, causing service level issues and low truck fill when they eventually shipped.
 
@@ -32,48 +32,42 @@
 - Differentiated shipping modes: FTL for DC-to-DC, LTL for DC-to-Store
 - LTL shipments ship immediately without pallet minimum (min 10 cases)
 - FTL shipments maintain pallet minimums for consolidation
-- Added `store_delivery_mode: "LTL"` and `ltl_min_cases: 10` config options
-- Added `default_ftl_min_pallets: 10` for routes without channel rules
 
 **Files:** `logistics.py`, `simulation_config.json`
 
-**Note on Truck Fill Metric:** The truck fill rate dropped because:
-1. Most shipments are now LTL to stores (intentionally small)
-2. FMCG products "cube out" (fill by volume) before "weighting out" (fill by weight)
-3. Weight-based truck fill isn't appropriate for light, bulky products
-4. The 85% target was designed for FTL-only networks; with LTL, service level is the better metric
+### Results (v0.15.6 - 365-day simulation)
 
-### Results (v0.15.5)
-
-| Metric | v0.15.4 | v0.15.5 | Target |
+| Metric | v0.15.5 | v0.15.6 | Target |
 |--------|---------|---------|--------|
-| Day 2 Orders | 100K | 100K | <1M ✓ |
-| Service Level (90-day) | 83% | **92.8%** | 98.5% |
-| Truck Fill Rate | 15% | 4.2% | 85% (see note) |
-| Manufacturing OEE | 81% | **83%** | 75-85% ✓ |
+| Store Service Level | 69.95% | **73.34%** | 98.5% |
+| Manufacturing OEE | 62% | **78.6%** | 75-85% ✓ |
+| Production Days 252-279 | 0 (collapsed) | 227K-484K | >0 ✓ |
+| Inventory Turns | 0.23x | 0.23x | 6-14x |
 
 ---
 
 ## Remaining Issues (Priority Order)
 
-### 1. Service Level (92.8% vs 98.5% target)
-**Status:** Improved significantly, but still below target
-
-**Problem:** Service level improved by ~10 percentage points but still short of 98.5% target.
+### 1. Service Level (73.34% vs 98.5% target)
+**Status:** Improved from 69.95%, but still below target
 
 **Potential Fixes:**
 1. Higher initial inventory levels (increase `store_days_supply`, `rdc_days_supply`)
 2. Safety stock adjustments (increase ROP/target gap)
 3. Production capacity tuning (additional shifts or plants)
 4. Demand forecast smoothing improvements
+5. Reduce bullwhip amplitude further
 
-### 2. Truck Fill Rate (4.2% vs 85% target)
-**Status:** Metric needs re-evaluation
+### 2. Inventory Turns (0.23x vs 6-14x target)
+**Status:** Critical - indicates massive inventory buildup
 
-**Analysis:** The low truck fill rate is expected behavior with LTL mode:
-- LTL shipments are intentionally small (shipped by parcel/LTL carriers)
-- FMCG products (toiletries) "cube out" before "weighting out"
-- Weight-based fill rate isn't meaningful for volume-constrained products
+**Analysis:** System is accumulating ~600M cases of inventory, suggesting:
+- Production exceeding consumption
+- Inventory not flowing through to stores efficiently
+- Possible demand/capacity mismatch
+
+### 3. Truck Fill Rate (3.6% vs 85% target)
+**Status:** Metric needs re-evaluation for LTL mode
 
 **Recommendations:**
 1. Track FTL and LTL fill rates separately
@@ -107,7 +101,8 @@ Plants → RDCs → Customer DCs → Stores → Consumers
 ## Commands
 ```bash
 poetry run python run_simulation.py --days 30 --no-logging  # Quick validation
-poetry run python run_simulation.py --days 90 --no-logging  # Full test
+poetry run python run_simulation.py --days 90 --no-logging  # Medium test
+poetry run python run_simulation.py --days 365 --streaming  # Full year with data
 poetry run pytest  # Run tests (4 pre-existing failures unrelated to our changes)
 ```
 

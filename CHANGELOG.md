@@ -5,6 +5,46 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.15.6] - 2025-12-31
+
+### MRP Demand Signal Stabilization & Production Floor
+
+This release eliminates production collapse in 365-day simulations by improving MRP demand signal handling and adding a minimum production floor.
+
+### Fixed
+- **Production Collapse (Critical):** Production dropped to zero for days 252-279 due to demand signal dampening. When stores had sufficient inventory, order volumes dropped, which reduced the MRP shipment signal, causing MRP to calculate high Days-of-Supply and skip production orders. Eventually stores depleted, triggering massive bullwhip (35M orders on day 281).
+
+### Added
+- **Demand Velocity Tracking:** MRP now tracks week-over-week demand trends. If week 1 demand falls below 60% of week 2, the fallback signal is activated to prevent cascading decline.
+- **Minimum Production Floor (30%):** When production orders fall below 30% of expected demand, MRP either scales up existing orders or creates new orders for top products, ensuring production never stops completely.
+
+### Changed
+- **MRP Signal Threshold:** Raised the collapse detection threshold from 10% to 40% of expected demand (`mrp.py:228`). The previous threshold was too low to catch gradual decline.
+- **Smoothing Window:** Extended demand and production history from 7 to 14 days for smoother signals and better trend detection.
+
+### Results (365-day simulation)
+| Metric | v0.15.5 | v0.15.6 |
+|--------|---------|---------|
+| Store Service Level | 69.95% | **73.34%** |
+| Manufacturing OEE | 62.0% | **78.6%** |
+| Production Days 252-279 | **0** (collapsed) | 227K-484K |
+| Total Inventory | 603M | 587M |
+
+### Technical Details
+The production collapse occurred because:
+1. Stores had sufficient inventory after initial bullwhip → ordered less
+2. Lower orders → lower shipments → lower MRP demand signal (40-50% of expected)
+3. Previous 10% threshold didn't trigger fallback
+4. MRP calculated high DOS (inventory / low_demand) → skipped production
+5. Days 252-279: zero production → stores depleted → Day 281: 35M order explosion
+
+The fix uses three mechanisms:
+1. **Higher threshold (40%)** catches gradual decline earlier
+2. **Velocity tracking** detects week-over-week declining trends
+3. **Production floor (30%)** ensures minimum production regardless of signal
+
+---
+
 ## [0.15.5] - 2025-12-31
 
 ### LTL Mode for Store Deliveries & Service Level Improvement

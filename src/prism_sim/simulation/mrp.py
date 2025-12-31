@@ -62,15 +62,21 @@ class MRPEngine:
         self._cache_node_info()
         
         # Demand history for moving average [Products]
-        self.demand_history = np.zeros((7, self.state.n_products), dtype=np.float64)
+        # v0.15.6: Extended from 7 to 14 days for smoother signal
+        self.demand_history = np.zeros((14, self.state.n_products), dtype=np.float64)
         self._history_ptr = 0
 
         # C.1 FIX: Cache expected daily demand for fallback (prevents death spiral)
         self._build_expected_demand_vector()
 
         # C.5 FIX: Production order history for smoothing (reduces volatility)
-        self.production_order_history = np.zeros(7, dtype=np.float64)
+        # v0.15.6: Extended from 7 to 14 days
+        self.production_order_history = np.zeros(14, dtype=np.float64)
         self._prod_hist_ptr = 0
+
+        # v0.15.6: Velocity tracking - detect declining demand trends
+        self._week1_demand_sum = 0.0
+        self._week2_demand_sum = 0.0
 
         # Production Order counter for unique IDs
         self._po_counter = 0
@@ -203,12 +209,30 @@ class MRPEngine:
         # Calculate Moving Average Demand
         avg_daily_demand_vec = np.mean(self.demand_history, axis=0)
 
+        # v0.15.6: Calculate demand velocity (week-over-week trend)
+        # Detect declining trends before full collapse
+        week1_avg = np.mean(self.demand_history[:7], axis=0)
+        week2_avg = np.mean(self.demand_history[7:], axis=0)
+        self._week1_demand_sum = float(np.sum(week1_avg))
+        self._week2_demand_sum = float(np.sum(week2_avg))
+
         # C.1 FIX: Fallback to prevent death spiral
-        # When shipment signal collapses (< 10% of expected), use expected demand floor
+        # v0.15.6: Raised threshold from 10% to 40% AND added velocity check
+        # When shipment signal is low OR declining rapidly, use expected demand floor
         total_signal = np.sum(avg_daily_demand_vec)
         expected_total = np.sum(self.expected_daily_demand)
-        if expected_total > 0 and total_signal < expected_total * 0.1:
-            # Signal has collapsed - use maximum of actual signal and expected
+
+        use_fallback = False
+        if expected_total > 0:
+            # Condition 1: Signal below 40% of expected (raised from 10%)
+            if total_signal < expected_total * 0.4:
+                use_fallback = True
+            # Condition 2: Velocity declining - week1 < 60% of week2 (rapid decline)
+            elif self._week2_demand_sum > 0 and self._week1_demand_sum < self._week2_demand_sum * 0.6:
+                use_fallback = True
+
+        if use_fallback:
+            # Signal has collapsed or declining - use maximum of actual signal and expected
             avg_daily_demand_vec = np.maximum(avg_daily_demand_vec, self.expected_daily_demand)
 
         # 2. Calculate In-Production qty per product
@@ -281,9 +305,47 @@ class MRPEngine:
 
                     production_orders.append(po)
 
+        # v0.15.6: Minimum production floor - never drop below 30% of expected
+        # This prevents complete production shutdown when demand signal dampens
+        total_orders_today = sum(po.quantity_cases for po in production_orders)
+        expected_production = np.sum(self.expected_daily_demand)
+        min_production_floor = expected_production * 0.3
+
+        if total_orders_today < min_production_floor and expected_production > 0:
+            # Production is too low - boost up to minimum floor
+            # Create additional orders to fill the gap
+            shortfall = min_production_floor - total_orders_today
+            # Distribute shortfall across existing orders or create new ones
+            if production_orders:
+                # Scale up existing orders proportionally
+                scale_factor = min_production_floor / max(total_orders_today, 1.0)
+                for po in production_orders:
+                    po.quantity_cases = po.quantity_cases * scale_factor
+                total_orders_today = min_production_floor
+            else:
+                # No orders exist - create minimum orders for top products
+                # Select top products by expected demand
+                top_products = np.argsort(self.expected_daily_demand)[-10:][::-1]
+                qty_per_product = shortfall / len(top_products)
+                for p_idx in top_products:
+                    if self.expected_daily_demand[p_idx] > 0:
+                        product_id = self.state.product_idx_to_id[p_idx]
+                        plant_id = self._select_plant(product_id)
+                        po = ProductionOrder(
+                            id=self._generate_po_id(current_day),
+                            plant_id=plant_id,
+                            product_id=product_id,
+                            quantity_cases=qty_per_product,
+                            creation_day=current_day,
+                            due_day=current_day + self.production_lead_time,
+                            status=ProductionOrderStatus.PLANNED,
+                            planned_start_day=current_day + 1,
+                        )
+                        production_orders.append(po)
+                total_orders_today = sum(po.quantity_cases for po in production_orders)
+
         # C.5 FIX: Smooth production orders to reduce volatility
         # Cap total daily orders at 1.5x rolling average (after warmup)
-        total_orders_today = sum(po.quantity_cases for po in production_orders)
         avg_recent = np.mean(self.production_order_history)
 
         if avg_recent > 0 and total_orders_today > avg_recent * 1.5:
@@ -295,7 +357,8 @@ class MRPEngine:
         # Update production history with ACTUAL (post-scaled) total
         actual_total = sum(po.quantity_cases for po in production_orders)
         self.production_order_history[self._prod_hist_ptr] = actual_total
-        self._prod_hist_ptr = (self._prod_hist_ptr + 1) % 7
+        # v0.15.6: Extended history from 7 to 14 days
+        self._prod_hist_ptr = (self._prod_hist_ptr + 1) % 14
 
         return production_orders
 
@@ -309,7 +372,8 @@ class MRPEngine:
                     daily_vol[p_idx] += line.quantity
 
         self.demand_history[self._history_ptr] = daily_vol
-        self._history_ptr = (self._history_ptr + 1) % 7
+        # v0.15.6: Extended history from 7 to 14 days
+        self._history_ptr = (self._history_ptr + 1) % 14
 
     def _estimate_demand(self, product_idx: int, daily_demand: np.ndarray) -> float:
         """
