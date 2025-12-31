@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.15.2] - 2025-12-30
+
+### Ingredient Replenishment Fix
+
+This release fixes the critical ingredient replenishment mismatch that caused 365-day simulations to collapse on days 362-365 due to ingredient exhaustion.
+
+### Fixed
+- **Ingredient Replenishment Signal (Critical):** `generate_purchase_orders()` now uses production-based signal (active production orders) instead of POS demand for ingredient ordering. Previously, ingredient replenishment was based on POS demand (~400k/day), but actual consumption was driven by production orders amplified by bullwhip (~5-6M/day), causing a net burn rate of ~1,380 units/day shortfall.
+
+### Changed
+- **Orchestrator:** Updated to pass `active_production_orders` to `generate_purchase_orders()` instead of `daily_demand`.
+
+### Results
+| Metric | v0.15.1 (Collapse) | v0.15.2 |
+|--------|-------------------|---------|
+| Service Level | 52.54% | 58.16% |
+| Manufacturing OEE | 55.1% | 61.8% |
+| Production Day 365 | 0 (collapse) | 259,560 cases |
+| System Survival | Collapsed day 362-365 | Full year |
+
+---
+
 ## [0.15.1] - 2025-12-30
 
 ### MRP Inventory Position Fix

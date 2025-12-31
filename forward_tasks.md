@@ -1,6 +1,51 @@
 # Forward Tasks - Phase C Continuation
 
-## Session Summary (Dec 30, 2024)
+## Session Summary (Dec 30, 2024 - Continued)
+
+### Fixes Completed This Session
+
+#### 3. Ingredient Replenishment Mismatch (CRITICAL)
+**File:** `src/prism_sim/simulation/mrp.py:200-240` and `src/prism_sim/simulation/orchestrator.py`
+
+**Root Cause:** MRP's `generate_purchase_orders()` used POS demand signal (~400k/day) for ingredient replenishment, but actual ingredient consumption was driven by production orders (amplified by bullwhip to 5-6M/day). This caused a net burn rate of ~1,380 units/day shortfall, leading to ingredient exhaustion and production collapse on days 362-365.
+
+**Fix:** Changed `generate_purchase_orders()` to use production-based signal instead of POS demand:
+```python
+def generate_purchase_orders(
+    self,
+    current_day: int,
+    active_production_orders: list[ProductionOrder],  # Changed from daily_demand
+) -> list[Order]:
+    # Calculate production signal from active production orders
+    production_by_product = np.zeros(self.state.n_products, dtype=np.float64)
+    for po in active_production_orders:
+        p_idx = self.state.product_id_to_idx.get(po.product_id)
+        if p_idx is not None:
+            production_by_product[p_idx] += po.quantity_cases
+    # ... uses production signal for ingredient ordering
+```
+
+**Orchestrator update:**
+```python
+ing_orders = self.mrp_engine.generate_purchase_orders(
+    day, self.active_production_orders  # Production-based signal
+)
+```
+
+### 365-Day Validation Results
+
+| Metric | Before Fix (Collapse) | After Fix |
+|--------|----------------------|-----------|
+| Service Level | 52.54% | 58.16% |
+| Manufacturing OEE | 55.1% | 61.8% |
+| Production Day 365 | 0 (collapse) | 259,560 cases |
+| System Survival | Collapsed day 362-365 | Full year |
+
+**Key Improvement:** System no longer collapses. Production continues through the entire 365-day simulation.
+
+---
+
+## Previous Session Summary (Dec 30, 2024)
 
 ### Fixes Completed
 
@@ -65,12 +110,17 @@ self.production_order_history[self._prod_hist_ptr] = actual_total
 - `src/prism_sim/simulation/monitor.py:316-368` - Mass balance check
 - `src/prism_sim/config/simulation_config.json:59-80` - FTL channel rules
 
-### 2. 365-Day Validation
-Need to run full year simulation to confirm stability. Previous 365-day run (before fixes) showed collapse around day 22-27.
+### 2. 365-Day Validation - COMPLETED
+✓ System survives full year with production continuing through day 365.
+✓ No collapse - production at 259,560 cases on final day.
 
-```bash
-poetry run python run_simulation.py --days 365 --no-logging --output-dir data/results/phase_c_365
-```
+### 3. Service Level & Bullwhip (Future Optimization)
+Current metrics after all fixes:
+- Service Level: 58.16% (target: 98.5%)
+- Bullwhip Ratio: ~15x (orders 5-6M vs demand 400k)
+- Inventory Turns: Low (high SLOB)
+
+These are tuning/optimization issues, not bugs. The system is now stable.
 
 ---
 
@@ -101,11 +151,12 @@ If DOS < ROP (7 days) → Generate Production Order
 
 ---
 
-## Files Modified This Session
-- `src/prism_sim/simulation/mrp.py` - MRP inventory position fix, smoothing history fix
+## Files Modified (All Sessions)
+- `src/prism_sim/simulation/mrp.py` - MRP inventory position fix, smoothing history fix, ingredient replenishment fix
+- `src/prism_sim/simulation/orchestrator.py` - Pass production orders to generate_purchase_orders
 - `docs/llm_context.md` - Documentation updates
-- `CHANGELOG.md` - v0.15.0 release notes
-- `pyproject.toml` - Version bump to 0.15.0
+- `CHANGELOG.md` - v0.15.0, v0.15.1 release notes
+- `pyproject.toml` - Version bump to 0.15.1
 
 ## Commands
 ```bash

@@ -2,7 +2,7 @@
 
 > **System Prompt Context:** This document contains the critical architectural, functional, and physical constraints of the Prism Sim project. Use this as primary context when reasoning about code changes, bug fixes, or feature expansions.
 
-**Version:** 0.15.1 | **Last Updated:** 2025-12-30
+**Version:** 0.15.2 | **Last Updated:** 2025-12-30
 
 ---
 
@@ -390,6 +390,30 @@ if node_id.startswith("RDC-"):
 
 **Result:** Service Level: 60.19% (vs 51.6%), Manufacturing OEE: 88.2% (vs 44.9%), Zero-Production Days: 0 (vs 94).
 
+### Ingredient Replenishment Mismatch (v0.15.1 - FIXED in v0.15.2)
+**Status:** RESOLVED
+
+**Original Symptom:** 365-day simulation collapsed on days 362-365 with production dropping to 0 due to ingredient exhaustion.
+
+**Root Cause:** MRP's `generate_purchase_orders()` used POS demand signal (~400k/day) for ingredient replenishment, but actual ingredient consumption was driven by production orders (amplified by bullwhip to 5-6M/day). This caused a net burn rate of ~1,380 units/day shortfall over 362 days.
+
+**Fix:** Changed `generate_purchase_orders()` to use production-based signal instead of POS demand:
+```python
+def generate_purchase_orders(
+    self,
+    current_day: int,
+    active_production_orders: list[ProductionOrder],  # Changed from daily_demand
+) -> list[Order]:
+    # Calculate production signal from active production orders
+    production_by_product = np.zeros(self.state.n_products, dtype=np.float64)
+    for po in active_production_orders:
+        p_idx = self.state.product_id_to_idx.get(po.product_id)
+        if p_idx is not None:
+            production_by_product[p_idx] += po.quantity_cases
+```
+
+**Result:** System survives full 365-day simulation. Production continues through day 365 (259,560 cases).
+
 ### Mass Balance Violations (Known Issue)
 **Status:** OPEN - Expected behavior for FTL consolidation
 
@@ -553,6 +577,7 @@ Orchestrator
 
 | Version | Key Changes |
 |---------|-------------|
+| 0.15.2 | **Ingredient Replenishment Fix** - Use production-based signal for ingredient ordering instead of POS demand; System survives full 365-day simulation without collapse |
 | 0.15.1 | **MRP Inventory Position Fix** - Only count manufacturer RDCs in inventory position (not customer DCs); Fix C.5 smoothing history bug; Document mass balance FTL timing issue |
 | 0.15.0 | **Phase C Fixes** - MRP demand fallback, supplier-plant routing fix, production smoothing, realistic inventory levels |
 | 0.14.0 | **Option C Architecture** - Multi-tier DC structure, capacity rebalancing |

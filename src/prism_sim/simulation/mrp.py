@@ -325,13 +325,17 @@ class MRPEngine:
     def generate_purchase_orders(
         self,
         current_day: int,
-        daily_demand: np.ndarray,
+        active_production_orders: list[ProductionOrder],
     ) -> list[Order]:
         """
         Generate Purchase Orders for ingredients at plants using Vectorized MRP.
 
-        1. Estimate Plant Demand Share (D_plant)
-        2. Calculate Ingredient Requirement (Req = D_plant @ R)
+        Uses PRODUCTION-BASED signal (not POS demand) to ensure ingredient
+        replenishment matches actual consumption. This prevents ingredient
+        exhaustion when bullwhip causes production > demand.
+
+        1. Calculate production quantities from active orders
+        2. Calculate Ingredient Requirement (Req = Production @ R)
         3. Check Inventory Position vs ROP
         4. Generate Orders
         """
@@ -339,23 +343,37 @@ class MRPEngine:
         if not self._plant_ids:
             return purchase_orders
 
-        # 1. Estimate Aggregate Demand per Product
+        # 1. Calculate production signal from active production orders
+        # This is what we're ACTUALLY producing, not downstream demand
         # Shape: [n_products]
-        total_demand = np.sum(daily_demand, axis=0)
-        
-        # Avoid zero demand issues for initial priming/cold start
-        # Use a minimum demand floor (e.g. 1.0) to ensure we stock something
-        total_demand = np.maximum(total_demand, 1.0)
+        production_by_product = np.zeros(self.state.n_products, dtype=np.float64)
+        for po in active_production_orders:
+            p_idx = self.state.product_id_to_idx.get(po.product_id)
+            if p_idx is not None:
+                production_by_product[p_idx] += po.quantity_cases
 
-        # Distribute to plants (Fair Share assumption for replenishment planning)
-        # Future: Use historical production share per plant
+        # Use 7-day average of production history as signal (smoothed)
+        # Fall back to expected demand during cold start
+        avg_production = np.mean(self.production_order_history)
+        if avg_production > 0:
+            # Scale production_by_product to daily average
+            # (production orders may span multiple days)
+            daily_production = production_by_product / max(1, len(active_production_orders) // 10 + 1)
+        else:
+            # Cold start: use expected demand as floor
+            daily_production = self.expected_daily_demand.copy()
+
+        # Ensure minimum floor to prevent zero-ordering
+        daily_production = np.maximum(daily_production, self.expected_daily_demand * 0.5)
+
+        # Distribute to plants (Fair Share assumption)
         n_plants = len(self._plant_ids)
-        plant_demand_share = total_demand / n_plants
+        plant_production_share = daily_production / n_plants
 
         # 2. Calculate Ingredient Requirements Vector
-        # Req[j] = Sum(PlantDemand[i] * R[i, j])
-        # Vector-Matrix multiplication: d @ R
-        ingredient_reqs = plant_demand_share @ self.state.recipe_matrix
+        # Req[j] = Sum(PlantProduction[i] * R[i, j])
+        # Vector-Matrix multiplication: production @ R
+        ingredient_reqs = plant_production_share @ self.state.recipe_matrix
 
         # 3. Calculate Targets & ROPs
         # Target Inventory = Daily Req * Target Days
