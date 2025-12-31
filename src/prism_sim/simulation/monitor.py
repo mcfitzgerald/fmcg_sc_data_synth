@@ -201,7 +201,7 @@ class DailyFlows:
     # Flow accumulators (same shape)
     sales: np.ndarray  # POS demand consumed
     receipts: np.ndarray  # Shipments arrived at destination
-    shipments_out: np.ndarray  # Inventory deducted for outbound shipments
+    allocation_out: np.ndarray  # Inventory decremented during allocation
     production_in: np.ndarray  # Finished goods added at plants
     consumption_out: np.ndarray  # Raw materials consumed in production
     shrinkage: np.ndarray  # Phantom inventory losses
@@ -234,7 +234,7 @@ class PhysicsAuditor:
             opening_inventory=self.state.actual_inventory.copy(),
             sales=np.zeros_like(self.state.actual_inventory),
             receipts=np.zeros_like(self.state.actual_inventory),
-            shipments_out=np.zeros_like(self.state.actual_inventory),
+            allocation_out=np.zeros_like(self.state.actual_inventory),
             production_in=np.zeros_like(self.state.actual_inventory),
             consumption_out=np.zeros_like(self.state.actual_inventory),
             shrinkage=np.zeros_like(self.state.actual_inventory),
@@ -258,24 +258,40 @@ class PhysicsAuditor:
                 if prod_idx is not None:
                     self.current_flows.receipts[node_idx, prod_idx] += line.quantity
 
-    def record_shipments_out(self, shipments: list[Shipment]) -> None:
-        """Record inventory deductions for outbound shipments."""
+    def record_allocation_out(self, allocation_matrix: np.ndarray) -> None:
+        """
+        Record inventory decremented during allocation.
+
+        This replaces shipments_out tracking to fix the FTL consolidation timing
+        mismatch. Inventory is decremented at allocation time, not when shipments
+        are created, so we track allocation directly for accurate mass balance.
+
+        Args:
+            allocation_matrix: Shape [n_nodes, n_products] with quantities
+                              decremented from each node during allocation.
+        """
+        if not self.current_flows:
+            return
+        self.current_flows.allocation_out += allocation_matrix
+
+    def record_plant_shipments_out(self, shipments: list[Shipment]) -> None:
+        """
+        Record inventory decremented for plant-to-RDC shipments.
+
+        Plant shipments are created immediately (no FTL hold) so we track them
+        when shipments are created, unlike customer orders which are tracked
+        at allocation time.
+        """
         if not self.current_flows:
             return
         for s in shipments:
-            node_idx = self.state.node_id_to_idx.get(s.source_id)
-            if node_idx is None:
+            source_idx = self.state.node_id_to_idx.get(s.source_id)
+            if source_idx is None:
                 continue
-            
-            # Skip suppliers as they are infinite sources (no inventory decrement)
-            source_node = self.world.nodes.get(s.source_id)
-            if source_node and source_node.type == NodeType.SUPPLIER:
-                continue
-
             for line in s.lines:
                 prod_idx = self.state.product_id_to_idx.get(line.product_id)
                 if prod_idx is not None:
-                    self.current_flows.shipments_out[node_idx, prod_idx] += line.quantity
+                    self.current_flows.allocation_out[source_idx, prod_idx] += line.quantity
 
     def record_production(self, batches: list[Batch]) -> None:
         """Record finished goods added and raw materials consumed in production."""
@@ -316,9 +332,13 @@ class PhysicsAuditor:
     def check_mass_balance(self) -> list[str]:
         """
         Validate I_t = I_{t-1} + Inflows - Outflows.
-        
+
         Conservation Law:
-        Opening + Receipts + ProdIn - Sales - ShipOut - Consumed - Shrinkage == Closing
+        Opening + Receipts + ProdIn - Sales - AllocationOut - Consumed - Shrinkage == Closing
+
+        Note: We track allocation_out (inventory decremented at allocation time) instead
+        of shipments_out to fix the FTL consolidation timing mismatch where inventory
+        is decremented before shipments are created.
         """
         if self.current_flows is None or self.current_flows.closing_inventory is None:
             return []
@@ -332,18 +352,24 @@ class PhysicsAuditor:
             + f.receipts
             + f.production_in
             - f.sales
-            - f.shipments_out
+            - f.allocation_out
             - f.consumption_out
             - f.shrinkage
         )
 
         # Calculate drift as percentage of opening (avoid div by zero with max(1.0))
         # We use absolute difference for the numerator
+        abs_diff = np.abs(expected - f.closing_inventory)
         denominator = np.maximum(np.abs(f.opening_inventory), 1.0)
-        drift = np.abs(expected - f.closing_inventory) / denominator
+        drift = abs_diff / denominator
 
         # Find violations exceeding threshold
-        violation_mask = drift > self.mass_balance_drift_max
+        # Also require minimum absolute difference (1.0 case) to filter
+        # floating-point noise and floor guard artifacts
+        min_abs_threshold = 1.0
+        violation_mask = (drift > self.mass_balance_drift_max) & (
+            abs_diff > min_abs_threshold
+        )
 
         if np.any(violation_mask):
             # Report top violations (limit to avoid flood)

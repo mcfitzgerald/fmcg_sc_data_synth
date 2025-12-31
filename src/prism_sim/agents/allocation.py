@@ -1,9 +1,18 @@
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
 
 from prism_sim.network.core import NodeType, Order, OrderType
 from prism_sim.simulation.state import StateManager
+
+
+@dataclass
+class AllocationResult:
+    """Result of allocation with tracking for mass balance audit."""
+
+    allocated_orders: list[Order]
+    allocation_matrix: np.ndarray  # Shape [n_nodes, n_products] - qty decremented
 
 
 class AllocationAgent:
@@ -70,15 +79,24 @@ class AllocationAgent:
             )
             return np.nan_to_num(fill_ratios, nan=1.0)
 
-    def allocate_orders(self, orders: list[Order]) -> list[Order]:
+    def allocate_orders(self, orders: list[Order]) -> AllocationResult:
         """
         Processes orders against available inventory at the source.
-        
+
         Implements 'Fill or Kill' logic for FMCG realism.
         Respects Order Type priority.
+
+        Returns:
+            AllocationResult with allocated_orders and allocation_matrix tracking
+            inventory decrements for mass balance auditing.
         """
         orders_by_source = self._group_orders_by_source(orders)
         allocated_orders: list[Order] = []
+
+        # Track all allocations for mass balance audit
+        allocation_matrix = np.zeros(
+            (self.state.n_nodes, self.state.n_products), dtype=np.float64
+        )
 
         for source_id, source_orders in orders_by_source.items():
             source_node = self.state.world.nodes.get(source_id)
@@ -88,40 +106,19 @@ class AllocationAgent:
                 continue
 
             # Sort by priority before allocation
-            # Note: For Fair Share to work across ALL orders, we usually pool demand.
-            # But priority implies High Priority gets 100% before Low Priority gets anything.
-            # So we should process by priority group?
-            # Current Fair Share is global.
-            # Let's implement Strict Priority:
-            # - Rush orders get allocated first (greedy).
-            # - Remaining inventory is Fair Shared among Standard/Promo.
-            
             sorted_orders = self._prioritize_orders(source_orders)
-            
-            # Simple approach: Global Fair Share (current logic)
-            # Complex approach: Tiered allocation.
-            # Given we want RUSH to mean RUSH, let's process Rush separately?
-            # For simplicity and "Fix 0C" scope, let's keep global fair share but ensure
-            # prioritisation is ready if we switch to iterative allocation.
-            # Actually, Fair Share is usually better for FMCG than greedy priority 
-            # unless stock is critical.
-            # Let's stick to Fair Share for now as it stabilizes the system, 
-            # but maybe we can weight the demand vector?
-            # Or just sorting is enough if we had a sequential allocator.
-            # With _calculate_fill_ratios, sorting doesn't matter for the ratio itself.
-            
-            # Implementation decision: Keep Global Fair Share for stability in "Fix 0C".
-            # Prioritization mainly affects who gets the stock if we were doing sequential.
-            
+
             if source_node.type == NodeType.SUPPLIER:
-                # Supplier Logic
-                total_demand = sum(line.quantity for o in source_orders for line in o.lines)
+                # Supplier Logic - infinite source, no inventory decrement
+                total_demand = sum(
+                    line.quantity for o in source_orders for line in o.lines
+                )
                 capacity = getattr(source_node, "throughput_capacity", float("inf"))
-                
+
                 ratio = 1.0
                 if total_demand > capacity and capacity > 0:
                     ratio = capacity / total_demand
-                
+
                 for order in source_orders:
                     if ratio < 1.0:
                         for line in order.lines:
@@ -142,6 +139,8 @@ class AllocationAgent:
                     allocated_qty = demand_vector[p_idx] * ratio
                     p_id = self.state.product_idx_to_id[p_idx]
                     self.state.update_inventory(source_id, p_id, -allocated_qty)
+                    # Track for mass balance audit
+                    allocation_matrix[source_idx, p_idx] += allocated_qty
 
             # Apply to orders
             for order in sorted_orders:
@@ -156,10 +155,12 @@ class AllocationAgent:
                             new_lines.append(line)
                     else:
                         new_lines.append(line)
-                
+
                 order.lines = new_lines
                 order.status = "CLOSED"
                 if new_lines:
                     allocated_orders.append(order)
 
-        return allocated_orders
+        return AllocationResult(
+            allocated_orders=allocated_orders, allocation_matrix=allocation_matrix
+        )

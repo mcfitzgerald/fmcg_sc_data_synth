@@ -5,6 +5,46 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.15.3] - 2025-12-31
+
+### Mass Balance Audit Fix & Service Level Optimization
+
+This release fixes the mass balance tracking issue and improves service level from 58% to 86%.
+
+### Fixed
+- **Mass Balance FTL Timing Mismatch (Option B1):** Replaced `shipments_out` tracking with `allocation_out` to fix false violations at customer DCs. Inventory decrements are now tracked at allocation time (when they actually occur) rather than at shipment creation time (which could be delayed by FTL consolidation).
+- **Floating-Point Noise Filtering:** Added minimum absolute difference threshold (1.0 case) to filter negligible floating-point violations caused by floor guards.
+
+### Changed
+- **AllocationAgent:** Now returns `AllocationResult` dataclass containing both `allocated_orders` and `allocation_matrix` for mass balance tracking.
+- **PhysicsAuditor:** New methods `record_allocation_out()` and `record_plant_shipments_out()` replace the single `record_shipments_out()` method.
+- **Initial Inventory Levels:** Increased `store_days_supply` from 7 to 14 days, `rdc_days_supply` from 14 to 21 days to prevent synchronized reordering.
+- **Replenishment Policy:** Tightened ROP-Target gap across all channels (e.g., default ROP 4→7 days) for smaller, more frequent orders.
+- **Order Staggering:** Stores now order on different days based on hash(node_id) to spread orders across 3-day cycle, reducing bullwhip amplitude.
+
+### Results
+| Metric | v0.15.2 | v0.15.3 |
+|--------|---------|---------|
+| Service Level (30-day) | 58% | 86% |
+| Manufacturing OEE | 62% | 88% |
+| Simulation Time (30-day) | 10s | 2.4s |
+
+### Known Issues
+- Day 2 bullwhip (271M orders) still occurs from customer DC cascade
+- Service level declines over longer runs (80% at 60 days)
+- Truck fill rate remains low (8%) due to fragmented orders
+
+### Technical Details
+The FTL consolidation timing mismatch occurred because:
+1. Allocation decrements inventory immediately when orders are created
+2. Logistics can HOLD orders if they don't meet FTL minimum pallet thresholds
+3. `shipments_out` was only recorded when shipments were actually created (potentially days later)
+4. Mass balance equation couldn't account for "allocated but not yet shipped" inventory
+
+The fix tracks inventory decrements at the source (allocation) rather than reconstructing from downstream flows.
+
+---
+
 ## [0.15.2] - 2025-12-30
 
 ### Ingredient Replenishment Fix

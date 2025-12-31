@@ -8,33 +8,34 @@ from prism_sim.simulation.world import World
 
 
 CHANNEL_POLICIES = {
+    # Tightened target-ROP gap to reduce bullwhip (smaller, more frequent orders)
     "B2M_LARGE": {
         "target_days": 7.0,
-        "reorder_point_days": 3.0,
+        "reorder_point_days": 5.0,  # Was 3.0 - tightened
         "batch_size": 500.0,
         "smoothing_factor": 0.3,
     },
     "B2M_CLUB": {
         "target_days": 10.0,
-        "reorder_point_days": 4.0,
+        "reorder_point_days": 7.0,  # Was 4.0 - tightened
         "batch_size": 200.0,
         "smoothing_factor": 0.2,
     },
     "B2M_DISTRIBUTOR": {
         "target_days": 14.0,
-        "reorder_point_days": 5.0,
+        "reorder_point_days": 10.0,  # Was 5.0 - tightened
         "batch_size": 100.0,
         "smoothing_factor": 0.1,
     },
     "ECOMMERCE": {
         "target_days": 5.0,
-        "reorder_point_days": 2.0,
+        "reorder_point_days": 3.0,  # Was 2.0 - tightened
         "batch_size": 50.0,
         "smoothing_factor": 0.4,
     },
     "default": {
         "target_days": 10.0,
-        "reorder_point_days": 4.0,
+        "reorder_point_days": 7.0,  # Was 4.0 - tightened
         "batch_size": 100.0,
         "smoothing_factor": 0.2,
     },
@@ -122,10 +123,15 @@ class MinMaxReplenisher:
         """
         Generates replenishment orders for Retail Stores and downstream DCs.
         Uses exponential smoothing on the demand signal to dampen bullwhip.
+        Includes order staggering to prevent synchronized ordering waves.
         """
         orders = []
         week = (day // 7) + 1
-        
+
+        # Order staggering: Stores only order on certain days to reduce bullwhip
+        # Use hash of node ID to determine ordering day (spreads across 3-day cycle)
+        order_cycle_days = 3  # Stores order every 3 days on average
+
         # Identify active promos for this week
         active_promos = []
         promotions = self.config.get("promotions", [])
@@ -133,19 +139,31 @@ class MinMaxReplenisher:
             if p["start_week"] <= week <= p["end_week"]:
                 active_promos.append(p)
 
-        # 1. Identify Target Nodes
+        # 1. Identify Target Nodes (with staggering for stores)
         target_indices = []
         target_ids = []
-        
+
         valid_targets = set(self.store_supplier_map.keys())
-        
+
         for n_id in valid_targets:
             node = self.world.nodes.get(n_id)
-            if node and (node.type == NodeType.STORE or (node.type == NodeType.DC and "RDC" not in node.id)):
-                 idx = self.state.node_id_to_idx.get(n_id)
-                 if idx is not None:
-                     target_indices.append(idx)
-                     target_ids.append(n_id)
+            if node and (
+                node.type == NodeType.STORE
+                or (node.type == NodeType.DC and "RDC" not in node.id)
+            ):
+                idx = self.state.node_id_to_idx.get(n_id)
+                if idx is None:
+                    continue
+
+                # Apply order staggering for stores to reduce bullwhip
+                # Each store orders on its assigned day in the cycle
+                if node.type == NodeType.STORE:
+                    order_day = hash(n_id) % order_cycle_days
+                    if day % order_cycle_days != order_day:
+                        continue  # Skip this store today, it orders on a different day
+
+                target_indices.append(idx)
+                target_ids.append(n_id)
 
         if not target_indices:
             return []

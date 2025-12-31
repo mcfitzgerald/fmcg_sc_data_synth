@@ -2,7 +2,7 @@
 
 > **System Prompt Context:** This document contains the critical architectural, functional, and physical constraints of the Prism Sim project. Use this as primary context when reasoning about code changes, bug fixes, or feature expansions.
 
-**Version:** 0.15.2 | **Last Updated:** 2025-12-30
+**Version:** 0.15.3 | **Last Updated:** 2025-12-31
 
 ---
 
@@ -414,20 +414,23 @@ def generate_purchase_orders(
 
 **Result:** System survives full 365-day simulation. Production continues through day 365 (259,560 cases).
 
-### Mass Balance Violations (Known Issue)
-**Status:** OPEN - Expected behavior for FTL consolidation
+### Mass Balance FTL Timing Mismatch (v0.15.2 - FIXED in v0.15.3)
+**Status:** RESOLVED
 
-**Symptom:** Mass balance violations at customer DCs (DIST-DC-001, etc.) showing `Expected < 0, Actual = 0`.
+**Original Symptom:** Mass balance violations at customer DCs (DIST-DC-001, etc.) showing `Expected < 0, Actual = 0`.
 
 **Root Cause:** FTL consolidation timing mismatch:
 1. Allocation decrements inventory immediately when orders are created
 2. Logistics can HOLD orders if they don't meet FTL minimum pallet thresholds
-3. `shipments_out` is recorded when shipments are actually created (may be days later)
-4. Mass balance equation doesn't account for "allocated but not yet shipped" inventory
+3. `shipments_out` was recorded when shipments are actually created (may be days later)
+4. Mass balance equation didn't account for "allocated but not yet shipped" inventory
 
-**Impact:** This is an **accounting/auditing issue**, not an actual physics violation. The inventory is correctly managed; the mass balance tracker can't account for temporal mismatches from FTL consolidation.
+**Fix:** Replaced `shipments_out` tracking with `allocation_out`:
+- `AllocationAgent` now returns `AllocationResult` with `allocation_matrix` tracking decrements
+- `PhysicsAuditor.record_allocation_out()` records inventory decrements at allocation time
+- Added minimum absolute difference threshold (1.0 case) to filter floating-point noise
 
-**Relevant Config:** `simulation_config.json` → `logistics.channel_rules.*.min_order_pallets`
+**Result:** No false mass balance violations at customer DCs. Audit now correctly tracks inventory changes.
 
 ---
 
@@ -577,6 +580,7 @@ Orchestrator
 
 | Version | Key Changes |
 |---------|-------------|
+| 0.15.3 | **Mass Balance Audit Fix** - Replace shipments_out with allocation_out tracking to fix FTL timing mismatch; Add floating-point noise filtering |
 | 0.15.2 | **Ingredient Replenishment Fix** - Use production-based signal for ingredient ordering instead of POS demand; System survives full 365-day simulation without collapse |
 | 0.15.1 | **MRP Inventory Position Fix** - Only count manufacturer RDCs in inventory position (not customer DCs); Fix C.5 smoothing history bug; Document mass balance FTL timing issue |
 | 0.15.0 | **Phase C Fixes** - MRP demand fallback, supplier-plant routing fix, production smoothing, realistic inventory levels |

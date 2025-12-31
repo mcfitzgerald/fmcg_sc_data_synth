@@ -205,11 +205,12 @@ class Orchestrator:
         )
 
         # 4. Allocation (Milestone 4.1)
-        allocated_orders = self.allocator.allocate_orders(raw_orders)
+        allocation_result = self.allocator.allocate_orders(raw_orders)
+        allocated_orders = allocation_result.allocated_orders
+        self.auditor.record_allocation_out(allocation_result.allocation_matrix)
 
         # 5. Logistics (Milestone 4.2)
         new_shipments = self.logistics.create_shipments(allocated_orders, day)
-        self.auditor.record_shipments_out(new_shipments)
         self._apply_logistics_quirks_and_risks(new_shipments)
         self.state.active_shipments.extend(new_shipments)
 
@@ -253,7 +254,7 @@ class Orchestrator:
 
         # 10. Ship finished goods from Plants to RDCs
         plant_shipments = self._create_plant_shipments(new_batches, day)
-        self.auditor.record_shipments_out(plant_shipments)
+        self.auditor.record_plant_shipments_out(plant_shipments)
         self._apply_logistics_quirks_and_risks(plant_shipments)
         self.state.active_shipments.extend(plant_shipments)
 

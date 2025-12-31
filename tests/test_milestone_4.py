@@ -63,7 +63,8 @@ def test_allocation_shortage(minimal_world):
     ]
 
     # Run Allocation
-    allocated = allocator.allocate_orders(orders)
+    result = allocator.allocate_orders(orders)
+    allocated = result.allocated_orders
 
     # Check Fair Share
     # Total Demand 160, Avail 100. Ratio = 0.625
@@ -72,6 +73,9 @@ def test_allocation_shortage(minimal_world):
     assert len(allocated) == 2
     assert allocated[0].lines[0].quantity == pytest.approx(expected_qty)
     assert allocated[1].lines[0].quantity == pytest.approx(expected_qty)
+
+    # Verify allocation_matrix tracks what was decremented
+    assert result.allocation_matrix[dc_idx, soap_idx] == pytest.approx(100.0)
 
     # Check Inventory Decrement
     assert state.inventory[dc_idx, soap_idx] == pytest.approx(0.0)

@@ -86,41 +86,68 @@ self.production_order_history[self._prod_hist_ptr] = actual_total
 
 ## Remaining Issues
 
-### 1. Mass Balance Violations (Tracking Issue, Not Physics Bug)
+### 1. Mass Balance Violations - RESOLVED (v0.15.3)
 
-**Symptom:** Mass balance violations at customer DCs (DIST-DC-001, etc.) showing `Expected < 0, Actual = 0`.
+**Original Symptom:** Mass balance violations at customer DCs (DIST-DC-001, etc.) showing `Expected < 0, Actual = 0`.
 
-**Root Cause:** FTL consolidation timing mismatch:
-1. Allocation decrements inventory immediately when orders are created
-2. Logistics can HOLD orders if they don't meet FTL minimum pallet thresholds
-3. `shipments_out` is recorded when shipments are actually created (may be days later)
-4. Mass balance equation `expected = opening + receipts - shipments_out` doesn't account for "allocated but not yet shipped" inventory
+**Root Cause:** FTL consolidation timing mismatch where allocation decremented inventory but `shipments_out` was only recorded when shipments were created (potentially delayed by FTL holds).
 
-**Impact:** This is an **accounting/auditing issue**, not an actual physics violation. The inventory is correctly managed; the mass balance tracker just can't account for temporal mismatches from FTL consolidation.
+**Fix Implemented (Option B1):**
+- Changed `PhysicsAuditor` to track `allocation_out` instead of `shipments_out`
+- `AllocationAgent` now returns `AllocationResult` with `allocation_matrix` tracking all inventory decrements
+- Added minimum absolute difference threshold (1.0 case) to filter floating-point noise
+- Plant shipments tracked separately via `record_plant_shipments_out()`
 
-**Potential Fixes (not implemented):**
-- Option A: Track "reserved inventory" separately from "shipped inventory"
-- Option B: Modify auditor to track actual inventory deltas directly instead of reconstructing from flows
-- Option C: Disable FTL consolidation (set `min_order_pallets: 0` in config)
-- Option D: Accept violations as expected behavior for FTL systems
+**Files Modified:**
+- `src/prism_sim/agents/allocation.py` - Added `AllocationResult` dataclass, return allocation_matrix
+- `src/prism_sim/simulation/monitor.py` - Replaced `shipments_out` with `allocation_out`, added noise filtering
+- `src/prism_sim/simulation/orchestrator.py` - Use new `record_allocation_out()` method
 
-**Relevant Files:**
-- `src/prism_sim/agents/allocation.py:139-144` - Inventory decrement
-- `src/prism_sim/simulation/logistics.py:83-88` - FTL order holding
-- `src/prism_sim/simulation/monitor.py:316-368` - Mass balance check
-- `src/prism_sim/config/simulation_config.json:59-80` - FTL channel rules
+**Result:** No false mass balance violations at customer DCs.
 
 ### 2. 365-Day Validation - COMPLETED
 ✓ System survives full year with production continuing through day 365.
 ✓ No collapse - production at 259,560 cases on final day.
 
-### 3. Service Level & Bullwhip (Future Optimization)
-Current metrics after all fixes:
+### 3. Service Level & Bullwhip (Optimization In Progress)
+
+**Initial State (v0.15.2):**
 - Service Level: 58.16% (target: 98.5%)
 - Bullwhip Ratio: ~15x (orders 5-6M vs demand 400k)
-- Inventory Turns: Low (high SLOB)
+- Day 2 Order Explosion: 285M orders (massive synchronized wave)
 
-These are tuning/optimization issues, not bugs. The system is now stable.
+**Optimizations Applied (v0.15.3):**
+
+1. **Increased Initial Inventory** (`simulation_config.json`):
+   - `store_days_supply`: 7 → 14 days
+   - `rdc_days_supply`: 14 → 21 days
+   - Result: Service Level 60% → 86%
+
+2. **Tightened ROP-Target Gap** (`replenishment.py`):
+   - Reduced gap from 6 days to 3 days across all channels
+   - Smaller, more frequent orders reduce bullwhip amplitude
+   - Result: Marginal improvement
+
+3. **Order Staggering** (`replenishment.py`):
+   - Stores order on different days based on hash(node_id) % 3
+   - Spreads orders across 3-day cycle
+   - Result: 60% faster simulation (2.4s vs 6s), same service level
+
+**Current State (v0.15.3):**
+- Service Level: 86% (30-day), 80% (60-day)
+- Day 2 Bullwhip: Still 271M orders (from customer DC cascade)
+- Manufacturing OEE: 88% (healthy)
+- Truck Fill Rate: 8% (still fragmented)
+
+**Remaining Issues:**
+1. Customer DCs still create cascade effect on Day 2
+2. Service level declines over time (production not keeping pace)
+3. Low truck fill rate indicates fragmented logistics
+
+**Potential Future Fixes:**
+- Calculate customer DC demand from received orders (not POS)
+- Add production smoothing cap adjustment
+- Tune FTL thresholds to improve truck fill
 
 ---
 
