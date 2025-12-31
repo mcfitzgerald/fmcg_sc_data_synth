@@ -2,7 +2,7 @@
 
 > **System Prompt Context:** This document contains the critical architectural, functional, and physical constraints of the Prism Sim project. Use this as primary context when reasoning about code changes, bug fixes, or feature expansions.
 
-**Version:** 0.12.3 | **Last Updated:** 2025-12-29
+**Version:** 0.15.0 | **Last Updated:** 2025-12-30
 
 ---
 
@@ -71,7 +71,10 @@ Any code change must preserve these. Violations indicate bugs:
 | Concept | File | Key Classes |
 |---------|------|-------------|
 | **Network primitives** | `network/core.py` | `Node`, `Link`, `Order`, `Shipment`, `Batch` |
+| **Channel enums** | `network/core.py` | `CustomerChannel`, `StoreFormat`, `OrderType` |
 | **Product definitions** | `product/core.py` | `Product`, `Recipe`, `ProductCategory` |
+| **Packaging enums** | `product/core.py` | `PackagingType`, `ContainerType`, `ValueSegment` |
+| **Promo calendar** | `simulation/demand.py` | `PromoCalendar`, `PromoEffect` |
 
 ### Generators (Static World Creation)
 | Concept | File | Key Classes |
@@ -151,7 +154,160 @@ Configured in `simulation_config.json` under `manufacturing.inventory_policies`.
 
 ---
 
-## 8. The Supply Chain Triangle
+## 8. Customer Channels & Store Formats (v0.13.0)
+
+The simulation models realistic B2B customer segmentation with channel-specific logistics rules:
+
+### Customer Channels (`CustomerChannel` enum)
+| Channel | Description | Logistics Mode | Min Order (Pallets) |
+|---------|-------------|----------------|---------------------|
+| `B2M_LARGE` | Big retailers (Walmart DC, Target DC) | FTL | 20 |
+| `B2M_CLUB` | Club stores (Costco, Sam's Club) | FTL | 15 |
+| `B2M_DISTRIBUTOR` | 3P Distributors (consolidate for small retailers) | FTL | 10 |
+| `ECOMMERCE` | Amazon, pure-play digital | FTL | 5 |
+| `DTC` | Direct to consumer | Parcel | N/A |
+
+### Store Formats (`StoreFormat` enum)
+`RETAILER_DC`, `HYPERMARKET`, `SUPERMARKET`, `CLUB`, `CONVENIENCE`, `PHARMACY`, `DISTRIBUTOR_DC`, `ECOM_FC`
+
+### Channel Economics
+Configured in `world_definition.json` under `channel_economics`:
+```json
+{
+  "B2M_LARGE": {"volume_pct": 40, "margin_pct": 18, "payment_days": 45},
+  "B2M_CLUB": {"volume_pct": 15, "margin_pct": 16, "payment_days": 30},
+  "B2M_DISTRIBUTOR": {"volume_pct": 25, "margin_pct": 22, "payment_days": 30},
+  "ECOMMERCE": {"volume_pct": 15, "margin_pct": 25, "payment_days": 15},
+  "DTC": {"volume_pct": 5, "margin_pct": 35, "payment_days": 0}
+}
+```
+
+**Key Insight:** CPG manufacturers ship FTL to Retailer DCs, Club stores, and Distributors—NOT to individual stores. Small retailers are served by 3P distributors.
+
+---
+
+## 9. Order Types (v0.13.0)
+
+Orders are classified by type with different priority handling in allocation:
+
+| Order Type | Distribution | Priority | Behavior |
+|------------|--------------|----------|----------|
+| `STANDARD` | 70% | 3 | Normal (s,S) replenishment |
+| `RUSH` | 10% | 1 | Expedited, reduced lead time |
+| `PROMOTIONAL` | 10% | 2 | Linked to promo calendar, larger batches |
+| `BACKORDER` | 10% | 4 | Created when allocation fails, persists until filled |
+
+**Order Dataclass Attributes:**
+- `order_type`: `OrderType` enum
+- `promo_id`: Link to promotion (for PROMOTIONAL orders)
+- `priority`: 1=highest, 10=lowest
+- `requested_date`: Target delivery day
+
+---
+
+## 10. Packaging Hierarchy & SKU Variants (v0.13.0)
+
+Products have realistic packaging attributes for logistics and demand modeling:
+
+### Container Types (`ContainerType` enum)
+`TUBE` (toothpaste), `BOTTLE` (dish soap), `PUMP` (premium body wash), `POUCH` (refills), `GLASS` (premium)
+
+### Value Segments (`ValueSegment` enum)
+| Segment | Description | Channel Affinity |
+|---------|-------------|------------------|
+| `PREMIUM` | Glass, large pump bottles | DTC, Ecommerce |
+| `MAINSTREAM` | Standard sizes | B2M_LARGE, B2M_DISTRIBUTOR |
+| `VALUE` | Large refills, bulk | B2M_CLUB |
+| `TRIAL` | Sachets, travel sizes | Ecommerce, DTC |
+
+### PackagingType Dataclass
+```python
+@dataclass
+class PackagingType:
+    code: str               # PKG-TUBE-100
+    name: str               # "100ml Tube"
+    container: ContainerType
+    size_ml: int
+    material: str           # "plastic", "glass"
+    recyclable: bool
+    units_per_case: int     # Critical for logistics
+    segment: ValueSegment
+```
+
+**Product Extended Attributes:**
+- `brand`: PrismWhite, ClearWave, AquaPure
+- `packaging_type_id`: Link to PackagingType
+- `value_segment`: Premium/Mainstream/Value/Trial
+- `recyclable`, `material`: Sustainability tracking
+
+---
+
+## 11. Promo Calendar (v0.13.0)
+
+The `PromoCalendar` class manages promotional lift and hangover effects with O(1) vectorized lookup:
+
+```python
+# Core index structure: week → channel/account → sku → PromoEffect
+_index: dict[int, dict[str, dict[str, PromoEffect]]]
+
+@dataclass(frozen=True)
+class PromoEffect:
+    promo_id: str
+    lift_multiplier: float      # e.g., 2.5x during promo
+    hangover_multiplier: float  # e.g., 0.7x after promo ends
+    discount_percent: float
+    is_hangover: bool = False
+```
+
+**Promo Config Example** (`world_definition.json`):
+```json
+{
+  "code": "PROMO-BF-2024",
+  "name": "Black Friday 2024",
+  "start_week": 48, "end_week": 48,
+  "lift_multiplier": 3.0,
+  "hangover_weeks": 1, "hangover_multiplier": 0.6,
+  "discount_percent": 25.0,
+  "affected_channels": ["B2M_LARGE", "ECOMMERCE"]
+}
+```
+
+---
+
+## 12. Risk Events (v0.13.0)
+
+`RiskEventManager` triggers deterministic disruptions. All 5 events have individual enable/disable toggles:
+
+| Code | Type | Trigger Day | Effect |
+|------|------|-------------|--------|
+| `RSK-BIO-001` | Contamination | 150 | Batches with target ingredient → `REJECTED` |
+| `RSK-LOG-002` | Port Strike | 120 | 4x logistics delays for 14 days (Gamma dist) |
+| `RSK-SUP-003` | Supplier Opacity | 100 | SPOF supplier OTD drops: 92% → 40% |
+| `RSK-CYB-004` | Cyber Outage | 200 | Target DC WMS down for 72 hours |
+| `RSK-ENV-005` | Carbon Tax | 180 | 3x CO2 cost multiplier |
+
+Configured in `simulation_config.json` under `risk_events`.
+
+---
+
+## 13. Behavioral Quirks (v0.13.0)
+
+`QuirkManager` injects realistic supply chain pathologies. All 6 quirks have individual toggles:
+
+| Quirk | Effect | Key Parameters |
+|-------|--------|----------------|
+| `bullwhip_whip_crack` | Order batching during promos amplifies bullwhip | `batching_factor: 3.0` |
+| `phantom_inventory` | Shrinkage creates actual vs perceived divergence | `shrinkage_pct: 0.02`, `detection_lag_days: 14` |
+| `port_congestion_flicker` | AR(1) correlated delays create clustered late arrivals | `ar_coef: 0.70`, `cluster_size: 3` |
+| `single_source_fragility` | SPOF ingredient delays cascade through BOM | `delay_multiplier: 2.5` |
+| `human_optimism_bias` | Over-forecast for new products | `bias_pct: 0.15`, `affected_age_months: 6` |
+| `data_decay` | Older batches have higher rejection rates | `base_rate: 0.02`, `elevated_rate: 0.05` |
+
+Configured in `simulation_config.json` under `quirks`.
+
+---
+
+## 14. The Supply Chain Triangle
 
 Every decision impacts the balance between:
 
@@ -165,16 +321,23 @@ Every decision impacts the balance between:
 (Freight, Prod)   (Inventory, WC)
 ```
 
-**Key Metrics Tracked:**
-- **Store Service Level (OSA):** `Actual_Sales / Consumer_Demand` (Target >93%)
-- **Perfect Order Rate:** OTIF + Damage Free + Doc Accuracy (Target >90%)
-- **Cash-to-Cash Cycle:** DSO + DIO - DPO (Target 45 days)
-- **Scope 3 Emissions:** kg CO2 per case shipped (Sustainability)
-- **Inventory Turns:** Cash efficiency (Target 8-15x)
+**Key Metrics Tracked (Expanded in v0.13.0):**
+| Metric | Formula / Description | Target |
+|--------|----------------------|--------|
+| **Store Service Level (OSA)** | `Actual_Sales / Consumer_Demand` | >93% |
+| **Perfect Order Rate** | OTIF + Damage Free + Doc Accuracy | >90% |
+| **Cash-to-Cash Cycle** | DSO + DIO - DPO | 40-50 days |
+| **Scope 3 Emissions** | kg CO2 per case shipped (`Shipment.emissions_kg`) | Track |
+| **Inventory Turns** | `COGS / Avg_Inventory` | 8-15x |
+| **MAPE** | Forecast accuracy | 20-50% |
+| **Shrinkage Rate** | Phantom inventory % | 1-4% |
+| **SLOB %** | Slow/Obsolete inventory | <30% |
+| **Truck Fill Rate** | `Actual_Load / Capacity` | >85% |
+| **OEE** | Overall Equipment Effectiveness | 65-85% |
 
 ---
 
-## 9. Known Issues & Current State
+## 15. Known Issues & Current State
 
 ### The Bullwhip Crisis (v0.12.1 - FIXED in v0.12.3)
 **Status:** RESOLVED
@@ -194,9 +357,25 @@ Every decision impacts the balance between:
 `ACT-CHEM-001` now isolated to ~20% of portfolio (Premium Oral Care only).
 Supplier `SUP-001` constrained to 500k units/day.
 
+### System Death Spiral (v0.14.0 - FIXED in v0.15.0)
+**Status:** RESOLVED
+
+**Original Symptom:** 365-day baseline simulation collapsed around day 22-27. Service Level dropped to 8.8%, Production/Shipments went to zero.
+
+**Root Cause:** MRP used RDC→Store shipments as demand signal. When shipments stopped (due to inventory drain), MRP got zero signal → no production orders → no replenishment → death spiral.
+
+**Fixes (v0.15.0):**
+1. **C.1: MRP Demand Fallback** (`mrp.py`): Added expected demand vector as floor. When shipment signal drops below 10% of expected, MRP uses expected demand to prevent spiral.
+2. **C.2: Supplier-Plant Routing** (`mrp.py`): Fixed `_find_supplier_for_ingredient()` to verify link exists before routing SPOF ingredient to a supplier.
+3. **C.3: Production Capacity** (`simulation_config.json`): Increased `production_hours_per_day` from 20 to 24 (3-shift 24/7 operation).
+4. **C.4: Realistic Inventory** (`simulation_config.json`): Reduced initial inventory to realistic levels (Store: 7d, RDC: 14d).
+5. **C.5: Production Smoothing** (`mrp.py`): Added 7-day rolling average cap (1.5x) on production order volatility.
+
+**Result:** System survives 365-day simulation without collapse. Service Level: 51.6% (vs 8.8% pre-fix).
+
 ---
 
-## 10. Configuration Files
+## 16. Configuration Files
 
 | File | Purpose |
 |------|---------|
@@ -226,7 +405,7 @@ Supplier `SUP-001` constrained to 500k units/day.
 
 ---
 
-## 11. Key Commands
+## 17. Key Commands
 
 ```bash
 # Run Simulation (default 90 days)
@@ -251,7 +430,7 @@ poetry run python scripts/compare_scenarios.py data/results/baseline data/result
 
 ---
 
-## 12. Debugging Checklist
+## 18. Debugging Checklist
 
 When simulation behaves unexpectedly:
 
@@ -285,7 +464,7 @@ When simulation behaves unexpectedly:
 
 ---
 
-## 13. Architecture Diagrams
+## 19. Architecture Diagrams
 
 ### System Layers
 ```
@@ -338,11 +517,11 @@ Orchestrator
 
 ---
 
-## 14. Version History (Key Milestones)
+## 20. Version History (Key Milestones)
 
 | Version | Key Changes |
 |---------|-------------|
-| 0.13.0 | **Realism Overhaul** - Risk, Quirks, Channels, Emissions, Expanded KPIs |
+| 0.13.0 | **Realism Overhaul** - CustomerChannel/StoreFormat/OrderType enums, PackagingType hierarchy, PromoCalendar with lift/hangover, 5 Risk Events, 6 Behavioral Quirks, Channel Economics, Scope 3 Emissions, Expanded KPIs (Perfect Order, Cash-to-Cash, MAPE, Shrinkage, SLOB) |
 | 0.12.3 | **Inverse Bullwhip Fix** - MRP uses lumpy RDC shipment signals; Store Service Level metric added |
 | 0.12.2 | **Negative inventory fix** - Inventory Positivity law enforced across all deduction paths |
 | 0.12.1 | Tiered inventory policies, LIFR tracking, Bullwhip Crisis identified |

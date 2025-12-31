@@ -65,6 +65,13 @@ class MRPEngine:
         self.demand_history = np.zeros((7, self.state.n_products), dtype=np.float64)
         self._history_ptr = 0
 
+        # C.1 FIX: Cache expected daily demand for fallback (prevents death spiral)
+        self._build_expected_demand_vector()
+
+        # C.5 FIX: Production order history for smoothing (reduces volatility)
+        self.production_order_history = np.zeros(7, dtype=np.float64)
+        self._prod_hist_ptr = 0
+
         # Production Order counter for unique IDs
         self._po_counter = 0
 
@@ -100,6 +107,44 @@ class MRPEngine:
             
             self.rop_vector[p_idx] = policy.get("reorder_point_days", default_rop)
             self.target_vector[p_idx] = policy.get("target_days_supply", default_target)
+
+    def _build_expected_demand_vector(self) -> None:
+        """
+        C.1 FIX: Build expected daily demand vector from config.
+
+        Used as fallback when shipment signals collapse to prevent death spiral.
+        Expected demand = base_daily_demand * n_stores (per product category).
+        """
+        demand_config = self.config.get("simulation_parameters", {}).get("demand", {})
+        cat_profiles = demand_config.get("category_profiles", {})
+
+        # Count stores (nodes that consume - typically stores/DCs)
+        n_stores = sum(
+            1 for node in self.world.nodes.values()
+            if node.type == NodeType.STORE
+        )
+        # Fallback if no stores found
+        if n_stores == 0:
+            n_stores = 100
+
+        self.expected_daily_demand = np.zeros(self.state.n_products, dtype=np.float64)
+
+        for p_id, product in self.world.products.items():
+            p_idx = self.state.product_id_to_idx.get(p_id)
+            if p_idx is None:
+                continue
+
+            # Skip ingredients - they don't have consumer demand
+            if product.category == ProductCategory.INGREDIENT:
+                continue
+
+            # Get category profile
+            cat_key = product.category.name  # e.g., "ORAL_CARE"
+            profile = cat_profiles.get(cat_key, {})
+            base_demand = profile.get("base_daily_demand", 7.0)
+
+            # Expected demand = base per store * number of stores
+            self.expected_daily_demand[p_idx] = base_demand * n_stores
 
     def _cache_node_info(self) -> None:
         """Cache RDC and Plant node IDs for efficient lookups."""
@@ -150,6 +195,14 @@ class MRPEngine:
 
         # Calculate Moving Average Demand
         avg_daily_demand_vec = np.mean(self.demand_history, axis=0)
+
+        # C.1 FIX: Fallback to prevent death spiral
+        # When shipment signal collapses (< 10% of expected), use expected demand floor
+        total_signal = np.sum(avg_daily_demand_vec)
+        expected_total = np.sum(self.expected_daily_demand)
+        if expected_total > 0 and total_signal < expected_total * 0.1:
+            # Signal has collapsed - use maximum of actual signal and expected
+            avg_daily_demand_vec = np.maximum(avg_daily_demand_vec, self.expected_daily_demand)
 
         # 2. Calculate In-Production qty per product
         lookahead_horizon = self.reorder_point_days
@@ -220,6 +273,21 @@ class MRPEngine:
                     )
 
                     production_orders.append(po)
+
+        # C.5 FIX: Smooth production orders to reduce volatility
+        # Cap total daily orders at 1.5x rolling average (after warmup)
+        total_orders_today = sum(po.quantity_cases for po in production_orders)
+        avg_recent = np.mean(self.production_order_history)
+
+        if avg_recent > 0 and total_orders_today > avg_recent * 1.5:
+            # Scale down all orders proportionally
+            scale_factor = (avg_recent * 1.5) / total_orders_today
+            for po in production_orders:
+                po.quantity_cases = po.quantity_cases * scale_factor
+
+        # Update production history
+        self.production_order_history[self._prod_hist_ptr] = total_orders_today
+        self._prod_hist_ptr = (self._prod_hist_ptr + 1) % 7
 
         return production_orders
 
@@ -343,14 +411,23 @@ class MRPEngine:
 
     def _find_supplier_for_ingredient(self, plant_id: str, ing_id: str) -> str | None:
         """Find a supplier that provides the ingredient to the plant."""
-        # Special case for SPOF specialty ingredient
         mfg_config = self.config.get("simulation_parameters", {}).get(
             "manufacturing", {}
         )
         spof_config = mfg_config.get("spof", {})
+
+        # C.2 FIX: Check SPOF ingredient - but verify link exists!
         if ing_id == spof_config.get("ingredient_id"):
-            val = spof_config.get("primary_supplier_id")
-            return str(val) if val else None
+            primary = spof_config.get("primary_supplier_id")
+            if primary:
+                # Only use primary supplier if valid link exists to this plant
+                has_link = any(
+                    link.source_id == primary and link.target_id == plant_id
+                    for link in self.world.links.values()
+                )
+                if has_link:
+                    return str(primary)
+                # Fall through to generic case if no link exists
 
         # Generic case: find any supplier linked to this plant
         for link in self.world.links.values():

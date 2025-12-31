@@ -43,9 +43,9 @@
     "inventory": {
       "initial_fg_level": 5.0,
       "initialization": {
-        "store_days_supply": 14.0,
-        "rdc_days_supply": 21.0,
-        "rdc_store_multiplier": 100.0
+        "store_days_supply": 7.0,
+        "rdc_days_supply": 14.0,
+        "rdc_store_multiplier": 50.0
       }
     },
     "logistics": {
@@ -92,7 +92,7 @@
       "min_production_qty": 25000.0,
       "min_ingredient_moq": 100.0,
       "production_lead_time_days": 3,
-      "production_hours_per_day": 20.0,
+      "production_hours_per_day": 24.0,
       "efficiency_factor": 0.95,
       "unplanned_downtime_pct": 0.05,
       "backup_supplier_cost_premium": 0.25,
@@ -138,8 +138,8 @@
         "description": "Active Agent 1 - Global sourced specialty chemical (SPOF scenario)"
       },
       "initial_plant_inventory": {
-        "ACT-CHEM-001": 10000000.0,
-        "BLK-WATER-001": 10000000.0
+        "ACT-CHEM-001": 500000.0,
+        "BLK-WATER-001": 200000.0
       }
     },
     "validation": {

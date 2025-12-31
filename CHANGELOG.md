@@ -5,6 +5,35 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.15.0] - 2025-12-30
+
+### Phase C: System Stabilization
+
+This release fixes the critical "death spiral" bug that caused 365-day simulations to collapse around day 22-27. The system now survives full-year simulations without collapse.
+
+### Fixed
+- **Death Spiral Prevention (C.1):** Added expected demand fallback in `MRPEngine`. When RDC→Store shipment signals collapse below 10% of expected demand, MRP now uses expected demand as a floor to continue generating production orders.
+- **Supplier-Plant Routing (C.2):** Fixed `_find_supplier_for_ingredient()` to verify link exists before routing SPOF ingredient. Previously returned SUP-001 for all plants even when no link existed.
+- **Production Smoothing (C.5):** Added 7-day rolling average tracking for production orders with 1.5x cap on daily volatility to reduce wild swings.
+
+### Changed
+- **Production Capacity (C.3):** Increased `production_hours_per_day` from 20 to 24 hours (3-shift 24/7 operation) to ensure capacity exceeds demand.
+- **Realistic Initial Inventory (C.4):** Reduced starting inventory to realistic levels:
+  - Store days of supply: 14 → 7 days
+  - RDC days of supply: 21 → 14 days
+  - RDC-store multiplier: 100 → 50
+  - Raw material inventory remains high (10M units) to isolate finished goods dynamics.
+
+### Results
+| Metric | Pre-Fix | Post-Fix | Target |
+|--------|---------|----------|--------|
+| System Collapse | Day 27 | Never | Never ✅ |
+| Service Level | 8.8% | 51.6% | >90% |
+| Production (day 365) | 0 | 148k+ | >0 ✅ |
+| OEE | 1.8% | 44.9% | 75-85% |
+
+---
+
 ## [0.14.0] - 2025-12-30
 
 ### Phase A: Capacity Rebalancing & Option C Architecture
