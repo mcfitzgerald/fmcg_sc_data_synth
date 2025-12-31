@@ -64,7 +64,13 @@ class Orchestrator:
 
         self._initialize_inventory()
 
-        self.replenisher = MinMaxReplenisher(self.world, self.state, self.config)
+        # Get equilibrium demand estimate for warm start
+        # This prevents Day 1-2 bullwhip cascade from cold start
+        warm_start_demand = self.pos_engine.get_average_demand_estimate()
+
+        self.replenisher = MinMaxReplenisher(
+            self.world, self.state, self.config, warm_start_demand=warm_start_demand
+        )
         self.allocator = AllocationAgent(self.state, self.config)
         self.logistics = LogisticsEngine(self.world, self.state, self.config)
 
@@ -143,8 +149,26 @@ class Orchestrator:
             elif node.type == NodeType.DC:
                 node_idx = self.state.node_id_to_idx.get(node_id)
                 if node_idx is not None:
-                    self.state.perceived_inventory[node_idx, :] = rdc_level
-                    self.state.actual_inventory[node_idx, :] = rdc_level
+                    if node_id.startswith("RDC-"):
+                        # Manufacturer RDCs use fixed multiplier
+                        dc_level = rdc_level
+                    else:
+                        # Customer DCs: scale by downstream store count
+                        # Count downstream stores for this DC
+                        downstream_stores = sum(
+                            1
+                            for link in self.world.links.values()
+                            if link.source_id == node_id
+                            and self.world.nodes.get(link.target_id)
+                            and self.world.nodes[link.target_id].type
+                            == NodeType.STORE
+                        )
+                        # Customer DC level = base_demand × store_count × target_days
+                        # Use higher target (14 days) for customer DCs to buffer bullwhip
+                        dc_level = base_demand * max(downstream_stores, 1) * 14.0
+
+                    self.state.perceived_inventory[node_idx, :] = dc_level
+                    self.state.actual_inventory[node_idx, :] = dc_level
 
             # Seed raw materials at Plants
             elif node.type == NodeType.PLANT:
@@ -208,6 +232,10 @@ class Orchestrator:
         allocation_result = self.allocator.allocate_orders(raw_orders)
         allocated_orders = allocation_result.allocated_orders
         self.auditor.record_allocation_out(allocation_result.allocation_matrix)
+
+        # v0.15.4: Record allocation outflow for customer DC demand signal
+        # This prevents bullwhip cascade by using actual outflow as demand
+        self.replenisher.record_outflow(allocation_result.allocation_matrix)
 
         # 5. Logistics (Milestone 4.2)
         new_shipments = self.logistics.create_shipments(allocated_orders, day)

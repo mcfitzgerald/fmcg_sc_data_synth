@@ -366,6 +366,11 @@ class MRPEngine:
         # Ensure minimum floor to prevent zero-ordering
         daily_production = np.maximum(daily_production, self.expected_daily_demand * 0.5)
 
+        # v0.15.4: Cap daily production estimate to prevent bullwhip-driven explosion
+        # Max ingredient ordering = 2x expected demand (reasonable buffer)
+        max_daily = self.expected_daily_demand * 2.0
+        daily_production = np.minimum(daily_production, max_daily)
+
         # Distribute to plants (Fair Share assumption)
         n_plants = len(self._plant_ids)
         plant_production_share = daily_production / n_plants
@@ -379,6 +384,10 @@ class MRPEngine:
         # Target Inventory = Daily Req * Target Days
         target_levels = ingredient_reqs * self.target_vector
         rop_levels = ingredient_reqs * self.rop_vector
+
+        # v0.15.4: Cap ingredient order quantities to prevent explosion
+        # Max order per ingredient per day = daily requirement × target days × 2
+        max_order_per_ingredient = ingredient_reqs * self.target_vector * 2.0
 
         # 4. Build Pipeline Vector (In-Transit to Plants)
         # Shape: [n_nodes, n_products] - but we only care about plants
@@ -412,11 +421,14 @@ class MRPEngine:
 
             for p_idx in order_indices:
                 qty_needed = target_levels[p_idx] - inv_position[p_idx]
-                
+
                 # Apply MOQ
                 # Ideally MOQ should be per ingredient from config/product
                 # Using global min_production_qty as proxy or 1 pallet
-                qty_to_order = max(qty_needed, self.min_ingredient_moq) # Simple MOQ
+                qty_to_order = max(qty_needed, self.min_ingredient_moq)
+
+                # v0.15.4: Cap order quantity to prevent explosion
+                qty_to_order = min(qty_to_order, max_order_per_ingredient[p_idx])
 
                 ing_id = self.state.product_idx_to_id[p_idx]
                 supplier_id = self._find_supplier_for_ingredient(plant_id, ing_id)

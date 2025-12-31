@@ -86,8 +86,8 @@
         "DEFAULT": { "reorder_point_days": 7.0, "target_days_supply": 14.0 },
         "INGREDIENT": { "reorder_point_days": 7.0, "target_days_supply": 14.0 },
         "PACKAGING": { "reorder_point_days": 7.0, "target_days_supply": 14.0 },
-        "ACTIVE_CHEM": { "reorder_point_days": 30.0, "target_days_supply": 45.0 },
-        "SPOF": { "reorder_point_days": 30.0, "target_days_supply": 45.0 }
+        "ACTIVE_CHEM": { "reorder_point_days": 7.0, "target_days_supply": 14.0 },
+        "SPOF": { "reorder_point_days": 14.0, "target_days_supply": 21.0 }
       },
       "min_production_qty": 25000.0,
       "min_ingredient_moq": 100.0,

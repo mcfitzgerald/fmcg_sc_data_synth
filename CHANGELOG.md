@@ -5,6 +5,41 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.15.4] - 2025-12-31
+
+### Bullwhip Dampening & Service Level Stabilization
+
+This release eliminates the Day 2 bullwhip cascade (272M → 100K orders) and stabilizes service level over 90-day simulations.
+
+### Fixed
+- **Customer DC Bullwhip Cascade (Critical):** Customer DCs now use derived demand (allocation outflow) instead of POS demand, which was floored to 0.1. Added warm start from POSEngine equilibrium estimate and order staggering (5-day cycle) for customer DCs.
+- **MRP Ingredient Ordering Explosion:** Capped ingredient ordering at 2x expected demand to prevent bullwhip-driven explosions. Reduced ACTIVE_CHEM inventory policy from 30/45 days to 7/14 days ROP/target.
+- **Customer DC Inventory Priming:** Customer DCs now initialize with inventory scaled by downstream store count, preventing Day 1 mass-ordering.
+
+### Changed
+- **Replenisher:** Added `warm_start_demand` parameter, `record_outflow()` method for derived demand tracking, and order staggering for customer DCs.
+- **Orchestrator:** Passes warm start demand to replenisher and records allocation outflow.
+- **Config:** Reduced ACTIVE_CHEM policy to 7/14 days (was 30/45).
+
+### Results
+| Metric | v0.15.3 | v0.15.4 |
+|--------|---------|---------|
+| Day 2 Orders | 272M | 100K |
+| Service Level (90-day) | 80% | 83% |
+| Truck Fill Rate | 8% | 15% |
+| Manufacturing OEE | 92% | 81% |
+
+### Technical Details
+The bullwhip cascade occurred because:
+1. Customer DCs (RET-DC, DIST-DC, ECOM-FC) don't generate POS demand
+2. Their demand signal was floored to 0.1, creating tiny ROP/targets
+3. When stores ordered on Day 1, DC inventory dropped below the tiny ROP
+4. All DCs mass-ordered on Day 2 to refill
+
+The fix uses MRP theory's "derived demand" concept: customer DCs track orders they fulfill (allocation outflow) as their demand signal, not consumer POS.
+
+---
+
 ## [0.15.3] - 2025-12-31
 
 ### Mass Balance Audit Fix & Service Level Optimization
