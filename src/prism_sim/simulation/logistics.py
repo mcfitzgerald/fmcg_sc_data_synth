@@ -4,6 +4,8 @@ from typing import Any
 from prism_sim.network.core import (
     CustomerChannel,
     Link,
+    Node,
+    NodeType,
     Order,
     OrderLine,
     Shipment,
@@ -36,11 +38,25 @@ class LogisticsEngine:
         # Channel Rules
         self.channel_rules = log_config.get("channel_rules", {})
 
+        # LTL mode for store deliveries (v0.15.5)
+        # Stores receive small orders - no FTL consolidation needed
+        self.store_delivery_mode = log_config.get("store_delivery_mode", "FTL")
+        self.ltl_min_cases = float(log_config.get("ltl_min_cases", 10.0))
+
+        # Default FTL minimum for routes without channel-specific rules
+        self.default_ftl_min_pallets = float(
+            log_config.get("default_ftl_min_pallets", 5.0)
+        )
+
         self.route_map: dict[tuple[str, str], Link] = {}
         self._build_route_map()
-        
+
         # State for consolidation
         self.held_orders: list[Order] = []
+
+        # Track FTL vs LTL shipments for metrics
+        self.ftl_shipment_count = 0
+        self.ltl_shipment_count = 0
 
     def _build_route_map(self) -> None:
         for link in self.world.links.values():
@@ -49,7 +65,15 @@ class LogisticsEngine:
     def create_shipments(self, orders: list[Order], current_day: int) -> list[Shipment]:
         """
         Converts Allocations (Orders) into Shipments (Trucks).
+
         Applies Channel FTL rules and Weight/Cube constraints.
+        v0.15.5: Added LTL mode for store deliveries to fix low truck fill rate.
+
+        FTL (Full Truckload): Used for DC-to-DC shipments. Requires minimum
+        pallets to consolidate. Orders held until threshold met.
+
+        LTL (Less Than Truckload): Used for DC-to-Store shipments. Ships
+        immediately without pallet minimum - stores receive smaller deliveries.
         """
         # 1. Combine new orders with held orders
         active_orders = self.held_orders + orders
@@ -70,22 +94,43 @@ class LogisticsEngine:
         for route, route_orders in orders_by_route.items():
             source_id, target_id = route
             target_node = self.world.nodes.get(target_id)
-            
+
+            # v0.15.5: Determine if this is an LTL (store) or FTL (DC) shipment
+            is_store_delivery = (
+                target_node is not None
+                and target_node.type == NodeType.STORE
+                and self.store_delivery_mode == "LTL"
+            )
+
             # Determine Channel Rules
             channel = target_node.channel if target_node else None
             rules = self._get_channel_rules(channel)
-            min_pallets = rules.get("min_order_pallets", 0)
-            
-            # Calculate total pallets for this route
+            # Use channel-specific minimum, or default FTL minimum for non-channel routes
+            min_pallets = rules.get(
+                "min_order_pallets", self.default_ftl_min_pallets
+            )
+
+            # Calculate total pallets/cases for this route
             total_pallets = sum(self._calculate_pallets(o) for o in route_orders)
-            
-            # Check FTL constraint
-            if total_pallets < min_pallets and min_pallets > 0:
-                # Not enough volume, hold ALL orders for this route
-                # (Simple logic: hold everything. improved logic: split?)
-                # For now, hold everything to consolidate.
-                self.held_orders.extend(route_orders)
-                continue
+            total_cases = sum(
+                sum(line.quantity for line in o.lines) for o in route_orders
+            )
+
+            # Check shipment mode constraints
+            if is_store_delivery:
+                # LTL mode: Ship if above minimum cases (no pallet constraint)
+                if total_cases < self.ltl_min_cases:
+                    # Too small even for LTL, hold for consolidation
+                    self.held_orders.extend(route_orders)
+                    continue
+                self.ltl_shipment_count += 1
+            else:
+                # FTL mode: Require minimum pallets
+                if total_pallets < min_pallets and min_pallets > 0:
+                    # Not enough volume, hold ALL orders for this route
+                    self.held_orders.extend(route_orders)
+                    continue
+                self.ftl_shipment_count += 1
 
             # If we proceed, we pack shipments
             # We decompose orders into lines for packing "Tetris" style

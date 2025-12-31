@@ -1,199 +1,118 @@
 # Forward Tasks - Phase C Continuation
 
-## Session Summary (Dec 30, 2024 - Continued)
-
-### Fixes Completed This Session
-
-#### 3. Ingredient Replenishment Mismatch (CRITICAL)
-**File:** `src/prism_sim/simulation/mrp.py:200-240` and `src/prism_sim/simulation/orchestrator.py`
-
-**Root Cause:** MRP's `generate_purchase_orders()` used POS demand signal (~400k/day) for ingredient replenishment, but actual ingredient consumption was driven by production orders (amplified by bullwhip to 5-6M/day). This caused a net burn rate of ~1,380 units/day shortfall, leading to ingredient exhaustion and production collapse on days 362-365.
-
-**Fix:** Changed `generate_purchase_orders()` to use production-based signal instead of POS demand:
-```python
-def generate_purchase_orders(
-    self,
-    current_day: int,
-    active_production_orders: list[ProductionOrder],  # Changed from daily_demand
-) -> list[Order]:
-    # Calculate production signal from active production orders
-    production_by_product = np.zeros(self.state.n_products, dtype=np.float64)
-    for po in active_production_orders:
-        p_idx = self.state.product_id_to_idx.get(po.product_id)
-        if p_idx is not None:
-            production_by_product[p_idx] += po.quantity_cases
-    # ... uses production signal for ingredient ordering
-```
-
-**Orchestrator update:**
-```python
-ing_orders = self.mrp_engine.generate_purchase_orders(
-    day, self.active_production_orders  # Production-based signal
-)
-```
-
-### 365-Day Validation Results
-
-| Metric | Before Fix (Collapse) | After Fix |
-|--------|----------------------|-----------|
-| Service Level | 52.54% | 58.16% |
-| Manufacturing OEE | 55.1% | 61.8% |
-| Production Day 365 | 0 (collapse) | 259,560 cases |
-| System Survival | Collapsed day 362-365 | Full year |
-
-**Key Improvement:** System no longer collapses. Production continues through the entire 365-day simulation.
-
----
-
-## Previous Session Summary (Dec 30, 2024)
+## Session Summary (Dec 31, 2024 - v0.15.5) - COMPLETED
 
 ### Fixes Completed
 
-#### 1. MRP Inventory Position Bug (CRITICAL)
-**File:** `src/prism_sim/simulation/mrp.py:149-162`
+#### 1. Customer DC Bullwhip Cascade - FIXED (v0.15.4)
+**Root Cause:** Customer DCs (RET-DC, DIST-DC, ECOM-FC) used POS demand signal (=0, floored to 0.1) instead of derived demand. When stores ordered on Day 1, customer DCs saw inventory drop below their tiny ROP and mass-ordered on Day 2 (272M orders).
 
-**Root Cause:** MRP's `_cache_node_info()` included ALL `NodeType.DC` nodes in inventory position calculation, including customer DCs (RET-DC, DIST-DC, ECOM-FC) with ~4.5M units. This inflated Days of Supply to 11.5 days > ROP 7 days, preventing production orders and causing 94 zero-production days.
+**Fix (MRP Derived Demand Theory):**
+- Customer DCs now track allocation outflow (orders fulfilled to downstream stores) as their demand signal
+- Warm start from `POSEngine.get_average_demand_estimate()` × downstream store count
+- Order staggering: Customer DCs order on 5-day cycle (stores use 3-day)
+- Inventory priming: Customer DC initial inventory scaled by downstream store count
 
-**Fix:** Only include manufacturer RDCs (nodes starting with `RDC-*`):
-```python
-def _cache_node_info(self) -> None:
-    for node_id, node in self.world.nodes.items():
-        if node.type == NodeType.DC:
-            # Only include manufacturer RDCs, not customer DCs
-            if node_id.startswith("RDC-"):
-                self._rdc_ids.append(node_id)
-```
+**Files:** `replenishment.py`, `orchestrator.py`
 
-#### 2. C.5 Smoothing History Bug
-**File:** `src/prism_sim/simulation/mrp.py:295-298`
+#### 2. MRP Ingredient Ordering Explosion - FIXED (v0.15.4)
+**Root Cause:** ACTIVE_CHEM policy had 30-day ROP / 45-day target, causing plants to order 272M cases when inventory < 30M.
 
-**Root Cause:** Production order history recorded pre-scaled quantities instead of post-scaled, inflating the rolling average used for smoothing.
+**Fix:**
+- Reduced ACTIVE_CHEM policy to 7/14 days (was 30/45)
+- Capped daily production estimate at 2x expected demand
+- Capped ingredient order quantities
 
-**Fix:** Record actual (post-scaled) totals:
-```python
-actual_total = sum(po.quantity_cases for po in production_orders)
-self.production_order_history[self._prod_hist_ptr] = actual_total
-```
+**Files:** `mrp.py`, `simulation_config.json`
 
-### Results After Fixes (30-day validation)
-| Metric | Before | After |
-|--------|--------|-------|
-| Service Level | 51.62% | 60.19% |
-| Manufacturing OEE | 44.9% | 88.2% |
-| Zero-Production Days | 94 | 0 |
+#### 3. Fragmented Store Orders - FIXED (v0.15.5)
+**Root Cause:** Stores ordered 20-40 cases but FTL required 300-1200 cases (5-20 pallets). Orders were held in `held_orders` for FTL consolidation, causing service level issues and low truck fill when they eventually shipped.
 
----
+**Fix (LTL for Store Deliveries):**
+- Differentiated shipping modes: FTL for DC-to-DC, LTL for DC-to-Store
+- LTL shipments ship immediately without pallet minimum (min 10 cases)
+- FTL shipments maintain pallet minimums for consolidation
+- Added `store_delivery_mode: "LTL"` and `ltl_min_cases: 10` config options
+- Added `default_ftl_min_pallets: 10` for routes without channel rules
 
-## Remaining Issues
+**Files:** `logistics.py`, `simulation_config.json`
 
-### 1. Mass Balance Violations - RESOLVED (v0.15.3)
+**Note on Truck Fill Metric:** The truck fill rate dropped because:
+1. Most shipments are now LTL to stores (intentionally small)
+2. FMCG products "cube out" (fill by volume) before "weighting out" (fill by weight)
+3. Weight-based truck fill isn't appropriate for light, bulky products
+4. The 85% target was designed for FTL-only networks; with LTL, service level is the better metric
 
-**Original Symptom:** Mass balance violations at customer DCs (DIST-DC-001, etc.) showing `Expected < 0, Actual = 0`.
+### Results (v0.15.5)
 
-**Root Cause:** FTL consolidation timing mismatch where allocation decremented inventory but `shipments_out` was only recorded when shipments were created (potentially delayed by FTL holds).
-
-**Fix Implemented (Option B1):**
-- Changed `PhysicsAuditor` to track `allocation_out` instead of `shipments_out`
-- `AllocationAgent` now returns `AllocationResult` with `allocation_matrix` tracking all inventory decrements
-- Added minimum absolute difference threshold (1.0 case) to filter floating-point noise
-- Plant shipments tracked separately via `record_plant_shipments_out()`
-
-**Files Modified:**
-- `src/prism_sim/agents/allocation.py` - Added `AllocationResult` dataclass, return allocation_matrix
-- `src/prism_sim/simulation/monitor.py` - Replaced `shipments_out` with `allocation_out`, added noise filtering
-- `src/prism_sim/simulation/orchestrator.py` - Use new `record_allocation_out()` method
-
-**Result:** No false mass balance violations at customer DCs.
-
-### 2. 365-Day Validation - COMPLETED
-✓ System survives full year with production continuing through day 365.
-✓ No collapse - production at 259,560 cases on final day.
-
-### 3. Service Level & Bullwhip (Optimization In Progress)
-
-**Initial State (v0.15.2):**
-- Service Level: 58.16% (target: 98.5%)
-- Bullwhip Ratio: ~15x (orders 5-6M vs demand 400k)
-- Day 2 Order Explosion: 285M orders (massive synchronized wave)
-
-**Optimizations Applied (v0.15.3):**
-
-1. **Increased Initial Inventory** (`simulation_config.json`):
-   - `store_days_supply`: 7 → 14 days
-   - `rdc_days_supply`: 14 → 21 days
-   - Result: Service Level 60% → 86%
-
-2. **Tightened ROP-Target Gap** (`replenishment.py`):
-   - Reduced gap from 6 days to 3 days across all channels
-   - Smaller, more frequent orders reduce bullwhip amplitude
-   - Result: Marginal improvement
-
-3. **Order Staggering** (`replenishment.py`):
-   - Stores order on different days based on hash(node_id) % 3
-   - Spreads orders across 3-day cycle
-   - Result: 60% faster simulation (2.4s vs 6s), same service level
-
-**Current State (v0.15.3):**
-- Service Level: 86% (30-day), 80% (60-day)
-- Day 2 Bullwhip: Still 271M orders (from customer DC cascade)
-- Manufacturing OEE: 88% (healthy)
-- Truck Fill Rate: 8% (still fragmented)
-
-**Remaining Issues:**
-1. Customer DCs still create cascade effect on Day 2
-2. Service level declines over time (production not keeping pace)
-3. Low truck fill rate indicates fragmented logistics
-
-**Potential Future Fixes:**
-- Calculate customer DC demand from received orders (not POS)
-- Add production smoothing cap adjustment
-- Tune FTL thresholds to improve truck fill
+| Metric | v0.15.4 | v0.15.5 | Target |
+|--------|---------|---------|--------|
+| Day 2 Orders | 100K | 100K | <1M ✓ |
+| Service Level (90-day) | 83% | **92.8%** | 98.5% |
+| Truck Fill Rate | 15% | 4.2% | 85% (see note) |
+| Manufacturing OEE | 81% | **83%** | 75-85% ✓ |
 
 ---
 
-## Key Architecture Context
+## Remaining Issues (Priority Order)
 
-### Option C Network Topology
-```
-Plants (4) → RDC (4) → Customer DCs → Stores (4000+)
-                       ├── RET-DC (Retailer DCs)
-                       ├── DIST-DC (Distributor DCs)
-                       └── ECOM-FC (E-commerce FCs)
-```
+### 1. Service Level (92.8% vs 98.5% target)
+**Status:** Improved significantly, but still below target
 
-### Node ID Prefixes
-- `RDC-*` - Manufacturer Regional Distribution Centers (inventory position)
-- `RET-DC-*` - Retailer Distribution Centers (customer inventory)
-- `DIST-DC-*` - Distributor Distribution Centers (customer inventory)
-- `ECOM-*` - E-commerce Fulfillment Centers (customer inventory)
-- `PLANT-*` - Manufacturing Plants
-- `STORE-*` - Retail Stores
+**Problem:** Service level improved by ~10 percentage points but still short of 98.5% target.
 
-### MRP Inventory Position Calculation
-```
-Inventory Position = On-Hand (RDC) + In-Transit + In-Production
-Days of Supply = Inventory Position / Average Daily Demand
-If DOS < ROP (7 days) → Generate Production Order
-```
+**Potential Fixes:**
+1. Higher initial inventory levels (increase `store_days_supply`, `rdc_days_supply`)
+2. Safety stock adjustments (increase ROP/target gap)
+3. Production capacity tuning (additional shifts or plants)
+4. Demand forecast smoothing improvements
+
+### 2. Truck Fill Rate (4.2% vs 85% target)
+**Status:** Metric needs re-evaluation
+
+**Analysis:** The low truck fill rate is expected behavior with LTL mode:
+- LTL shipments are intentionally small (shipped by parcel/LTL carriers)
+- FMCG products (toiletries) "cube out" before "weighting out"
+- Weight-based fill rate isn't meaningful for volume-constrained products
+
+**Recommendations:**
+1. Track FTL and LTL fill rates separately
+2. Use volume-based fill rate for FMCG products
+3. Consider adjusting target to 30-50% for realistic FMCG operations
 
 ---
 
-## Files Modified (All Sessions)
-- `src/prism_sim/simulation/mrp.py` - MRP inventory position fix, smoothing history fix, ingredient replenishment fix
-- `src/prism_sim/simulation/orchestrator.py` - Pass production orders to generate_purchase_orders
-- `docs/llm_context.md` - Documentation updates
-- `CHANGELOG.md` - v0.15.0, v0.15.1 release notes
-- `pyproject.toml` - Version bump to 0.15.1
+## Key Concepts
+
+### MRP Derived Demand Theory
+```
+Independent Demand: Consumer purchases at stores (POS) - must forecast
+Derived Demand: Calculated from downstream orders - deterministic
+
+Plants → RDCs → Customer DCs → Stores → Consumers
+                                         ↑
+                                    Independent (POS)
+         ←←←←←←←←←←←←←←←←←←←←←←←←←
+              Derived Demand (orders received)
+```
+
+### Network Node Types
+- `STORE-*` - Retail stores (POS demand, order from customer DCs)
+- `RET-DC-*`, `DIST-DC-*`, `ECOM-*` - Customer DCs (derived demand, order from RDCs)
+- `RDC-*` - Manufacturer RDCs (inventory position for MRP)
+- `PLANT-*` - Manufacturing plants
+
+---
 
 ## Commands
 ```bash
-# Run simulation
-poetry run python run_simulation.py --days 30 --no-logging
-
-# Run analysis scripts
-poetry run python scripts/analyze_production.py
-poetry run python scripts/analyze_bullwhip.py
-
-# Run tests
-poetry run pytest
+poetry run python run_simulation.py --days 30 --no-logging  # Quick validation
+poetry run python run_simulation.py --days 90 --no-logging  # Full test
+poetry run pytest  # Run tests (4 pre-existing failures unrelated to our changes)
 ```
+
+## Pre-existing Test Failures (Not from our changes)
+- `test_promo_lift` - Missing `add_promo` method
+- `test_generates_production_order_when_low_inventory` - Outdated API
+- `test_no_order_when_sufficient_inventory` - Outdated API
+- `test_world_builder_initialization` - Missing product

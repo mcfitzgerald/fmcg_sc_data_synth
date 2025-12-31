@@ -77,7 +77,10 @@
           "min_order_pallets": 5,
           "target_fill_rate": 0.75
         }
-      }
+      },
+      "store_delivery_mode": "LTL",
+      "ltl_min_cases": 10,
+      "default_ftl_min_pallets": 10
     },
     "manufacturing": {
       "target_days_supply": 14.0,

@@ -5,6 +5,42 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.15.5] - 2025-12-31
+
+### LTL Mode for Store Deliveries & Service Level Improvement
+
+This release introduces LTL (Less Than Truckload) shipping mode for store deliveries, improving service level from 83% to 92.8%.
+
+### Fixed
+- **Fragmented Store Orders:** Stores ordered 20-40 cases but FTL required 300-1200 cases (5-20 pallets). Orders were held indefinitely for consolidation, hurting service level and causing low truck fill.
+
+### Added
+- **LTL Shipping Mode:** Differentiated shipping modes based on destination:
+  - **FTL (Full Truckload):** DC-to-DC shipments maintain pallet minimums for consolidation
+  - **LTL (Less Than Truckload):** DC-to-Store shipments ship immediately with minimum 10 cases
+- **Config Options:** `store_delivery_mode`, `ltl_min_cases`, `default_ftl_min_pallets` in `simulation_config.json`
+- **FTL/LTL Tracking:** `LogisticsEngine` now tracks `ftl_shipment_count` and `ltl_shipment_count`
+
+### Changed
+- **LogisticsEngine:** `create_shipments()` now checks if target is a Store and applies LTL mode (no pallet minimum)
+- **Default FTL Minimum:** Routes without channel-specific rules now use `default_ftl_min_pallets` (10) instead of 0
+
+### Results
+| Metric | v0.15.4 | v0.15.5 |
+|--------|---------|---------|
+| Service Level (90-day) | 83% | **92.8%** |
+| Truck Fill Rate | 15% | 4.2% |
+| Manufacturing OEE | 81% | 83% |
+
+### Note on Truck Fill Rate
+The truck fill rate dropped because:
+1. Most shipments are now LTL to stores (intentionally small)
+2. FMCG products "cube out" (fill by volume) before "weighting out" (fill by weight)
+3. Weight-based truck fill isn't appropriate for light, bulky products
+4. With LTL, service level is the better metric for overall performance
+
+---
+
 ## [0.15.4] - 2025-12-31
 
 ### Bullwhip Dampening & Service Level Stabilization

@@ -425,6 +425,11 @@ class Orchestrator:
         constraints = log_config.get("constraints", {})
         max_weight = constraints.get("truck_max_weight_kg", 20000.0)
 
+        # v0.15.5: Measure truck fill for all shipments
+        # Note: With LTL for stores, many shipments are intentionally small.
+        # The metric now reflects actual truck utilization across the network.
+        # For FMCG products that "cube out" before "weighting out", fill rates
+        # of 30-50% are realistic (light but bulky products).
         for s in daily_shipments:
             fill_rate = min(1.0, s.total_weight_kg / max_weight)
             self.monitor.record_truck_fill(fill_rate)

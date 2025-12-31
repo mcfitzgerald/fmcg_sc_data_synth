@@ -127,7 +127,16 @@ def test_tetris_cube_out(minimal_world):
 
 def test_transit_physics(minimal_world):
     state = StateManager(minimal_world)
-    logistics = LogisticsEngine(minimal_world, state, {})
+    # v0.15.5: Use LTL mode for store deliveries to avoid FTL minimum constraints
+    logistics_config = {
+        "simulation_parameters": {
+            "logistics": {
+                "store_delivery_mode": "LTL",
+                "ltl_min_cases": 1.0,
+            }
+        }
+    }
+    logistics = LogisticsEngine(minimal_world, state, logistics_config)
 
     # Link Lead Time is 2 days
     # Day 1: Create Shipment
