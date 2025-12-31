@@ -136,7 +136,7 @@ class AllocationAgent:
             current_inv = np.maximum(0, actual_inv)
             fill_ratios = self._calculate_fill_ratios(demand_vector, current_inv)
 
-            # Decrement inventory
+            # Decrement inventory (constrained by fill_ratios)
             for p_idx, ratio in enumerate(fill_ratios):
                 if ratio > 0:
                     allocated_qty = demand_vector[p_idx] * ratio

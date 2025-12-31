@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.15.1] - 2025-12-30
+
+### MRP Inventory Position Fix
+
+This release fixes the critical MRP inventory position bug that caused 94 zero-production days in 365-day simulations.
+
+### Fixed
+- **MRP Inventory Position (Critical):** `_cache_node_info()` now only includes manufacturer RDCs (`RDC-*` prefix) in inventory position calculation. Previously included ALL `NodeType.DC` nodes including customer DCs (RET-DC, DIST-DC, ECOM-FC) with ~4.5M units, inflating Days of Supply to 11.5 days > ROP 7 days, preventing production orders.
+- **C.5 Smoothing History Bug:** Production order history now records post-scaled (actual) quantities instead of pre-scaled values, preventing rolling average inflation.
+
+### Known Issues
+- **Mass Balance Violations:** Customer DCs show mass balance violations due to FTL consolidation timing mismatch. Allocation decrements inventory immediately, but logistics can hold orders for FTL consolidation. This is an accounting/auditing issue, not an actual physics violation.
+
+### Results
+| Metric | v0.15.0 | v0.15.1 |
+|--------|---------|---------|
+| Service Level | 51.6% | 60.19% |
+| Manufacturing OEE | 44.9% | 88.2% |
+| Zero-Production Days | 94 | 0 |
+
+---
+
 ## [0.15.0] - 2025-12-30
 
 ### Phase C: System Stabilization

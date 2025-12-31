@@ -147,10 +147,17 @@ class MRPEngine:
             self.expected_daily_demand[p_idx] = base_demand * n_stores
 
     def _cache_node_info(self) -> None:
-        """Cache RDC and Plant node IDs for efficient lookups."""
+        """Cache RDC and Plant node IDs for efficient lookups.
+
+        Note: Only manufacturer-controlled RDCs (RDC-*) are included,
+        not customer DCs (RET-DC-*, DIST-DC-*, ECOM-*, etc.) which
+        represent customer inventory, not manufacturer inventory position.
+        """
         for node_id, node in self.world.nodes.items():
             if node.type == NodeType.DC:
-                self._rdc_ids.append(node_id)
+                # Only include manufacturer RDCs, not customer DCs
+                if node_id.startswith("RDC-"):
+                    self._rdc_ids.append(node_id)
             elif node.type == NodeType.PLANT:
                 self._plant_ids.append(node_id)
 
@@ -285,8 +292,9 @@ class MRPEngine:
             for po in production_orders:
                 po.quantity_cases = po.quantity_cases * scale_factor
 
-        # Update production history
-        self.production_order_history[self._prod_hist_ptr] = total_orders_today
+        # Update production history with ACTUAL (post-scaled) total
+        actual_total = sum(po.quantity_cases for po in production_orders)
+        self.production_order_history[self._prod_hist_ptr] = actual_total
         self._prod_hist_ptr = (self._prod_hist_ptr + 1) % 7
 
         return production_orders

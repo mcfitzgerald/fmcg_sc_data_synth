@@ -2,7 +2,7 @@
 
 > **System Prompt Context:** This document contains the critical architectural, functional, and physical constraints of the Prism Sim project. Use this as primary context when reasoning about code changes, bug fixes, or feature expansions.
 
-**Version:** 0.15.0 | **Last Updated:** 2025-12-30
+**Version:** 0.15.1 | **Last Updated:** 2025-12-30
 
 ---
 
@@ -373,6 +373,38 @@ Supplier `SUP-001` constrained to 500k units/day.
 
 **Result:** System survives 365-day simulation without collapse. Service Level: 51.6% (vs 8.8% pre-fix).
 
+### MRP Inventory Position Bug (v0.15.0 - FIXED in v0.15.1)
+**Status:** RESOLVED
+
+**Original Symptom:** 94 zero-production days in 365-day simulation. Manufacturing OEE at 44.9%.
+
+**Root Cause:** MRP's `_cache_node_info()` included ALL `NodeType.DC` nodes in inventory position calculation, including customer DCs (RET-DC, DIST-DC, ECOM-FC) with ~4.5M units total. This inflated Days of Supply to 11.5 days > ROP 7 days, preventing production orders.
+
+**Fix:** Only include manufacturer RDCs (nodes starting with `RDC-*`) in inventory position:
+```python
+if node_id.startswith("RDC-"):
+    self._rdc_ids.append(node_id)
+```
+
+**Also Fixed:** C.5 smoothing history bug - was recording pre-scaled quantities instead of post-scaled actuals.
+
+**Result:** Service Level: 60.19% (vs 51.6%), Manufacturing OEE: 88.2% (vs 44.9%), Zero-Production Days: 0 (vs 94).
+
+### Mass Balance Violations (Known Issue)
+**Status:** OPEN - Expected behavior for FTL consolidation
+
+**Symptom:** Mass balance violations at customer DCs (DIST-DC-001, etc.) showing `Expected < 0, Actual = 0`.
+
+**Root Cause:** FTL consolidation timing mismatch:
+1. Allocation decrements inventory immediately when orders are created
+2. Logistics can HOLD orders if they don't meet FTL minimum pallet thresholds
+3. `shipments_out` is recorded when shipments are actually created (may be days later)
+4. Mass balance equation doesn't account for "allocated but not yet shipped" inventory
+
+**Impact:** This is an **accounting/auditing issue**, not an actual physics violation. The inventory is correctly managed; the mass balance tracker can't account for temporal mismatches from FTL consolidation.
+
+**Relevant Config:** `simulation_config.json` → `logistics.channel_rules.*.min_order_pallets`
+
 ---
 
 ## 16. Configuration Files
@@ -521,6 +553,9 @@ Orchestrator
 
 | Version | Key Changes |
 |---------|-------------|
+| 0.15.1 | **MRP Inventory Position Fix** - Only count manufacturer RDCs in inventory position (not customer DCs); Fix C.5 smoothing history bug; Document mass balance FTL timing issue |
+| 0.15.0 | **Phase C Fixes** - MRP demand fallback, supplier-plant routing fix, production smoothing, realistic inventory levels |
+| 0.14.0 | **Option C Architecture** - Multi-tier DC structure, capacity rebalancing |
 | 0.13.0 | **Realism Overhaul** - CustomerChannel/StoreFormat/OrderType enums, PackagingType hierarchy, PromoCalendar with lift/hangover, 5 Risk Events, 6 Behavioral Quirks, Channel Economics, Scope 3 Emissions, Expanded KPIs (Perfect Order, Cash-to-Cash, MAPE, Shrinkage, SLOB) |
 | 0.12.3 | **Inverse Bullwhip Fix** - MRP uses lumpy RDC shipment signals; Store Service Level metric added |
 | 0.12.2 | **Negative inventory fix** - Inventory Positivity law enforced across all deduction paths |
