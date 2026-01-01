@@ -114,6 +114,9 @@ class Orchestrator:
         self.active_production_orders: list[ProductionOrder] = []
         self.completed_batches: list[Batch] = []
 
+        # 8. Finished Goods Mask for Metrics (excludes ingredients from inventory turns)
+        self._fg_product_mask = self._build_finished_goods_mask()
+
     def _initialize_inventory(self) -> None:
         """Seed initial inventory across the network (Priming)."""
         # Get manufacturing config for plant initial inventory
@@ -181,6 +184,21 @@ class Orchestrator:
                             # 5M units covers ~20 days of production at 230k run rate
                             qty = initial_plant_inv.get(product.id, 5000000.0)
                             self.state.update_inventory(node_id, product.id, qty)
+
+    def _build_finished_goods_mask(self) -> np.ndarray:
+        """
+        Build a boolean mask for finished goods products (excludes ingredients).
+
+        Used to calculate inventory turns only on sellable products, not raw materials.
+        Returns shape [n_products] where True = finished good, False = ingredient.
+        """
+        mask = np.zeros(self.state.n_products, dtype=bool)
+        for p_id, product in self.world.products.items():
+            if product.category != ProductCategory.INGREDIENT:
+                p_idx = self.state.product_id_to_idx.get(p_id)
+                if p_idx is not None:
+                    mask[p_idx] = True
+        return mask
 
     def run(self, days: int = 30) -> None:
         print(f"Starting Simulation for {days} days...")
@@ -397,10 +415,12 @@ class Orchestrator:
             store_fill_rate = np.sum(actual_sales) / total_demand_qty
             self.monitor.record_store_service_level(store_fill_rate)
 
-        # Calculate Inventory Turns (Cash)
-        total_inv = np.sum(np.maximum(0, self.state.actual_inventory))
-        if total_inv > 0:
-            daily_turn_rate = total_demand_qty / total_inv  # Sales / Avg Inv
+        # Calculate Inventory Turns (Cash) - ONLY finished goods, not ingredients
+        # Inventory turns = Annual Sales / Average Inventory (finished goods only)
+        fg_inventory = self.state.actual_inventory[:, self._fg_product_mask]
+        total_fg_inv = np.sum(np.maximum(0, fg_inventory))
+        if total_fg_inv > 0:
+            daily_turn_rate = total_demand_qty / total_fg_inv  # Sales / Avg FG Inv
             annual_turns = daily_turn_rate * 365
             self.monitor.record_inventory_turns(annual_turns)
             
@@ -410,14 +430,14 @@ class Orchestrator:
             dio = 365.0 / annual_turns
             c2c = dio + 30.0 - 45.0
             self.monitor.record_cash_to_cash(c2c)
-            
-            # Shrinkage Rate
-            shrink_rate = shrinkage_qty / total_inv
+
+            # Shrinkage Rate (on FG inventory only - raw materials tracked separately)
+            shrink_rate = shrinkage_qty / total_fg_inv
             self.monitor.record_shrinkage_rate(shrink_rate)
-            
-            # SLOB % (Simplification: Inventory > 60 days of demand)
-            # Global check: Total Inv / Daily Demand
-            global_dos = total_inv / max(total_demand_qty, 1.0)
+
+            # SLOB % (Simplification: FG Inventory > 60 days of demand)
+            # Only finished goods can be "slow/obsolete" for this metric
+            global_dos = total_fg_inv / max(total_demand_qty, 1.0)
             is_slob = 1.0 if global_dos > 60.0 else 0.0
             self.monitor.record_slob(is_slob)
 

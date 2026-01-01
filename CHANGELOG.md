@@ -5,6 +5,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.15.7] - 2026-01-01
+
+### Fix Inventory Turns Calculation (Exclude Raw Materials)
+
+This release fixes a critical metrics bug where inventory turns were calculated using ALL inventory (including raw materials at plants) instead of only finished goods.
+
+### Fixed
+- **Inventory Turns Calculation (Critical):** Inventory turns now correctly uses only finished goods (SKU-*) inventory in the denominator, excluding raw materials/ingredients at plants. Previously, 523M units of ingredients inflated the denominator, causing turns to show 0.23x instead of the actual ~6x.
+
+### Added
+- **Finished Goods Mask:** New `_build_finished_goods_mask()` method in Orchestrator creates a boolean mask to identify finished goods products (non-INGREDIENT category).
+
+### Changed
+- **SLOB Calculation:** Now uses finished goods inventory only (raw materials can't be "slow/obsolete" in the consumer sense).
+- **Shrinkage Rate:** Now calculated against finished goods inventory for consistency.
+
+### Results (365-day simulation)
+| Metric | v0.15.6 | v0.15.7 |
+|--------|---------|---------|
+| Inventory Turns | 0.23x | **6.18x** ✓ |
+| SLOB | 100% | 60.3% |
+| Store Service Level | 73.34% | 75.32% |
+| OEE | 78.6% | 82.0% ✓ |
+
+### Technical Details
+The inventory turns formula is: `Annual Sales / Average Inventory`
+
+Previously, the denominator included all inventory across all nodes and products, including ~523M units of raw materials (chemicals, packaging) sitting at plants. This massively inflated the denominator, making turns appear artificially low (0.23x).
+
+The fix creates a mask for finished goods products (24 SKUs out of 68 total products) and only sums inventory for those products when calculating turns.
+
+---
+
 ## [0.15.6] - 2025-12-31
 
 ### MRP Demand Signal Stabilization & Production Floor

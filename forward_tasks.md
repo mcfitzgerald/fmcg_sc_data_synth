@@ -14,11 +14,18 @@ poetry run python run_simulation.py --days 365 --streaming --output-dir data/res
 
 ---
 
-## Session Summary (Dec 31, 2024 - v0.15.6) - COMPLETED
+## Session Summary (Jan 1, 2025 - v0.15.7) - COMPLETED
 
 ### Fixes Completed
 
-#### 1. MRP Demand Signal Dampening - FIXED (v0.15.6)
+#### 1. Inventory Turns Calculation - FIXED (v0.15.7)
+**Root Cause:** Inventory turns was calculated using ALL inventory including 523M units of raw materials at plants. This inflated the denominator and showed 0.23x turns instead of actual ~6x.
+
+**Fix:** Created finished goods mask to exclude INGREDIENT category products from inventory turns, SLOB, and shrinkage calculations.
+
+**Files:** `orchestrator.py`
+
+#### 2. MRP Demand Signal Dampening - FIXED (v0.15.6)
 **Root Cause:** In 365-day simulations, production collapsed to zero during days 252-279. When stores had sufficient inventory, they ordered less, reducing the MRP shipment signal. The previous 10% collapse threshold didn't catch the gradual decline (signal was at 40-50% of expected). MRP calculated high Days-of-Supply and stopped production. Eventually stores depleted, triggering massive bullwhip (35M orders on day 281).
 
 **Fix (Three-Pronged Approach):**
@@ -49,44 +56,42 @@ poetry run python run_simulation.py --days 365 --streaming --output-dir data/res
 
 **Files:** `logistics.py`, `simulation_config.json`
 
-### Results (v0.15.6 - 365-day simulation)
+### Results (v0.15.7 - 365-day simulation)
 
-| Metric | v0.15.5 | v0.15.6 | Target |
+| Metric | v0.15.6 | v0.15.7 | Target |
 |--------|---------|---------|--------|
-| Store Service Level | 69.95% | **73.34%** | 98.5% |
-| Manufacturing OEE | 62% | **78.6%** | 75-85% ✓ |
-| Production Days 252-279 | 0 (collapsed) | 227K-484K | >0 ✓ |
-| Inventory Turns | 0.23x | 0.23x | 6-14x |
+| Store Service Level | 73.34% | **75.32%** | 98.5% |
+| Manufacturing OEE | 78.6% | **82.0%** | 75-85% ✓ |
+| Inventory Turns | 0.23x | **6.18x** | 6-14x ✓ |
+| SLOB | 100% | 60.3% | <30% |
 
 ---
 
 ## Remaining Issues (Priority Order)
 
-### 1. Service Level (73.34% vs 98.5% target) - HIGH PRIORITY
-**Status:** Improved from 69.95%, but still 25pp below target
+### 1. Service Level (75.32% vs 98.5% target) - HIGH PRIORITY
+**Status:** Improved from 73.34%, but still ~23pp below target
+
+**Root Cause Identified (v0.15.7 investigation):**
+- Stores have only ~17 cases/SKU (2.4 days supply) vs 70 target (10 days)
+- Store inventory declining steadily over time
+- Stores ordered 95M cases but needed ~143M (66% coverage)
+- ECOM FCs holding 18M cases, RET-DCs holding 13M cases
+- Finished goods inventory stuck at intermediate DCs
 
 **Potential Fixes:**
-1. Higher initial inventory levels (increase `store_days_supply`, `rdc_days_supply`)
-2. Safety stock adjustments (increase ROP/target gap)
-3. Production capacity tuning (additional shifts or plants)
-4. Demand forecast smoothing improvements
-5. Reduce bullwhip amplitude further
-6. Investigate store-level stockouts - where is inventory getting stuck?
+1. Increase store replenishment policy (target_days: 10→14, ROP: 7→10)
+2. Higher initial store inventory (store_days_supply: 14→21)
+3. Reduce order staggering cycle (currently every 3 days)
+4. Improve DC→Store flow
 
-### 2. Inventory Turns (0.23x vs 6-14x target) - HIGH PRIORITY
-**Status:** Critical - indicates massive inventory buildup (~600M cases)
+### 2. SLOB Inventory (60.3% vs <30% target) - MEDIUM PRIORITY
+**Status:** Improved from 100%, but still above target
 
-**Analysis:** System is accumulating inventory instead of flowing it through. Suggests:
-- Production exceeding consumption
-- Inventory stuck at intermediate nodes (RDCs, Customer DCs)
-- Possible demand/capacity mismatch
-- Need to analyze WHERE inventory is accumulating
-
-**Investigation needed:**
-```bash
-# Analyze inventory distribution by node type
-awk -F',' '$1==365 {print $2, $5}' data/results/validation/inventory.csv | sort | head -50
-```
+**Analysis:** Finished goods inventory is accumulating at:
+- ECOM FCs: 18.3M cases (no downstream stores - B2C only)
+- RET-DCs: 13.2M cases
+- Customer DCs not pushing inventory to stores fast enough
 
 ### 3. Truck Fill Rate (3.6% vs 85% target) - LOW PRIORITY
 **Status:** Metric needs re-evaluation for LTL mode
