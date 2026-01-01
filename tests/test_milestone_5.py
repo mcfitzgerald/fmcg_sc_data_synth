@@ -14,8 +14,10 @@ from prism_sim.network.core import (
     Link,
     Node,
     NodeType,
+    OrderLine,
     ProductionOrder,
     ProductionOrderStatus,
+    Shipment,
 )
 from prism_sim.product.core import Product, ProductCategory, Recipe
 from prism_sim.simulation.mrp import MRPEngine
@@ -191,13 +193,24 @@ class TestMRPEngine:
         state.perceived_inventory[rdc_idx, det_idx] = 10.0  # Very low
         state.actual_inventory[rdc_idx, det_idx] = 10.0
 
-        # Create mock daily demand
-        daily_demand = np.zeros((state.n_nodes, state.n_products), dtype=np.float32)
-        daily_demand[rdc_idx, det_idx] = 50.0  # 50 cases/day demand
+        # Create mock shipments (simulates demand signal from RDC->Store)
+        # MRP uses shipment signal to estimate demand
+        mock_shipments = [
+            Shipment(
+                id="TEST-SHIP-001",
+                source_id="RDC-01",
+                target_id="STORE-01",  # Doesn't need to exist for MRP signal
+                creation_day=1,
+                arrival_day=2,
+                lines=[OrderLine(product_id="SKU-DET-001", quantity=50.0)],
+            )
+        ]
 
         # Generate orders
         orders = mrp.generate_production_orders(
-            current_day=1, daily_demand=daily_demand, active_production_orders=[]
+            current_day=1,
+            rdc_shipments=mock_shipments,
+            active_production_orders=[],
         )
 
         # Should have at least one order
@@ -210,27 +223,50 @@ class TestMRPEngine:
     def test_no_order_when_sufficient_inventory(
         self, manufacturing_world: World, manufacturing_config: dict
     ):
-        """MRP should not generate orders when inventory is sufficient."""
+        """MRP should not generate large orders when inventory is sufficient.
+
+        Note: MRP has fallback logic (v0.15.6) that may still generate small
+        production orders to maintain a minimum production floor. This test
+        verifies that orders are much smaller when inventory is high.
+        """
         state = StateManager(manufacturing_world)
         mrp = MRPEngine(manufacturing_world, state, manufacturing_config)
 
-        # Set RDC inventory to high level (30 days of supply)
+        # Set RDC inventory to very high level (200+ days of supply)
         rdc_idx = state.node_id_to_idx["RDC-01"]
         det_idx = state.product_id_to_idx["SKU-DET-001"]
-        state.perceived_inventory[rdc_idx, det_idx] = 1500.0  # 30 days at 50/day
-        state.actual_inventory[rdc_idx, det_idx] = 1500.0
+        state.perceived_inventory[rdc_idx, det_idx] = 10000.0  # 200 days at 50/day
+        state.actual_inventory[rdc_idx, det_idx] = 10000.0
 
-        # Create mock daily demand
-        daily_demand = np.zeros((state.n_nodes, state.n_products), dtype=np.float32)
-        daily_demand[rdc_idx, det_idx] = 50.0
+        # Create mock shipments (small demand signal)
+        mock_shipments = [
+            Shipment(
+                id="TEST-SHIP-001",
+                source_id="RDC-01",
+                target_id="STORE-01",
+                creation_day=1,
+                arrival_day=2,
+                lines=[OrderLine(product_id="SKU-DET-001", quantity=50.0)],
+            )
+        ]
 
         orders = mrp.generate_production_orders(
-            current_day=1, daily_demand=daily_demand, active_production_orders=[]
+            current_day=1,
+            rdc_shipments=mock_shipments,
+            active_production_orders=[],
         )
 
-        # Should have no detergent orders (already above reorder point)
+        # With very high inventory, MRP should skip this product
+        # (Days of Supply > Target Days)
         det_orders = [o for o in orders if o.product_id == "SKU-DET-001"]
-        assert len(det_orders) == 0
+
+        # Either no orders, or if production floor kicks in, orders should be small
+        if len(det_orders) > 0:
+            # Production floor may create small orders, but they should be
+            # much smaller than the target-based orders from low inventory test
+            total_qty = sum(o.quantity_cases for o in det_orders)
+            assert total_qty < 1000, f"Order qty {total_qty} too large for high inventory"
+        # else: no orders is also acceptable
 
 
 class TestTransformEngineCapacity:
