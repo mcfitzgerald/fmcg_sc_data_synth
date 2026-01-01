@@ -16,8 +16,8 @@
     },
     "agents": {
     "replenishment": {
-      "target_days_supply": 10.0,
-      "reorder_point_days": 7.0,
+      "target_days_supply": 14.0,
+      "reorder_point_days": 10.0,
       "min_order_qty": 50.0,
       "batch_size_cases": 100.0,
       "backlog_penalty_factor": 2.0
@@ -43,9 +43,10 @@
     "inventory": {
       "initial_fg_level": 5.0,
       "initialization": {
-        "store_days_supply": 14.0,
-        "rdc_days_supply": 21.0,
-        "rdc_store_multiplier": 50.0
+        "store_days_supply": 21.0,
+        "rdc_days_supply": 28.0,
+        "rdc_store_multiplier": 500.0,
+        "customer_dc_days_supply": 21.0
       }
     },
     "logistics": {

@@ -5,6 +5,45 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.15.8] - 2026-01-01
+
+### Service Level Improvement Phase 1 (75% → 80.5%)
+
+This release improves store service level from 75.32% to 80.50% through policy tuning and demand signal fixes. Part of ongoing effort to reach 98.5% target.
+
+### Fixed
+- **ECOM FC Demand Signal (Critical):** ECOM FCs were classified as customer DCs, causing them to use outflow-based demand (which was 0 since they have no downstream stores). Now excluded from `customer_dc_indices` so they use POS demand correctly.
+
+### Changed
+- **Replenishment Policy (Increased Buffers):**
+  - All channels: Target and ROP increased (~40-100% higher)
+  - B2M_LARGE: 7/5 → 14/10 days (target/ROP)
+  - B2M_CLUB: 10/7 → 14/10 days
+  - ECOMMERCE: 5/3 → 7/5 days
+  - Default: 10/7 → 14/10 days
+- **Order Frequency:** Store order cycle reduced from 3 days to 1 day (daily ordering)
+- **Initial Inventory Priming:**
+  - Store days supply: 14 → 21 days
+  - RDC days supply: 21 → 28 days
+  - RDC-store multiplier: 50 → 500 (RDCs hold 500× store inventory)
+  - Customer DC days supply: Added explicit config (21 days)
+
+### Results (365-day simulation)
+| Metric | v0.15.7 | v0.15.8 |
+|--------|---------|---------|
+| Store Service Level | 75.32% | **80.50%** |
+| Inventory Turns | 6.18x | 5.11x |
+| Manufacturing OEE | 82.0% | 81.9% |
+
+### Known Issues
+- **Service Level Gap:** Still 18pp below 98.5% target. Root cause identified as demand signal attenuation at customer DCs (orders based on outflow, not inflow).
+- **SLOB Metric:** Shows 94.8% due to broken threshold logic (system-wide inventory > 60 days). Not a real problem.
+
+### Next Steps
+The plan to reach 98.5% service level involves changing customer DC demand signal from outflow-based (what was shipped) to inflow-based (what was ordered). This prevents demand attenuation as signals propagate upstream.
+
+---
+
 ## [0.15.7] - 2026-01-01
 
 ### Fix Inventory Turns Calculation (Exclude Raw Materials)

@@ -2,7 +2,7 @@
 
 > **System Prompt Context:** This document contains the critical architectural, functional, and physical constraints of the Prism Sim project. Use this as primary context when reasoning about code changes, bug fixes, or feature expansions.
 
-**Version:** 0.15.3 | **Last Updated:** 2025-12-31
+**Version:** 0.15.8 | **Last Updated:** 2026-01-01
 
 ---
 
@@ -339,6 +339,27 @@ Every decision impacts the balance between:
 
 ## 15. Known Issues & Current State
 
+### Service Level Gap (v0.15.8 - IN PROGRESS)
+**Status:** ACTIVE INVESTIGATION
+
+**Current State:** Store service level at 80.5%, target is 98.5% (~18pp gap).
+
+**Root Cause Identified:** Demand signal attenuation at customer DCs. Each echelon uses "outflow" (what was shipped) as demand signal, but outflow is constrained by available inventory. This causes demand to compress 50-75% at each level:
+- Consumer demand: 100 units
+- Store orders: 100 units (correct - uses POS)
+- DC outflow signal: 50 units (DC only had 50 to ship)
+- DC orders to RDC: 50 units
+- RDC outflow: 25 units
+- MRP signal: 25 units (when 100 needed!)
+
+**Planned Fix:** Change customer DC demand signal from outflow-based to inflow-based (track orders received, not orders shipped). This preserves the true demand signal as it propagates upstream.
+
+**Key Metrics (v0.15.8):**
+- Store Service Level: 80.5%
+- Inventory Turns: 5.11x (slightly below 6-14x target)
+- OEE: 81.9%
+- SLOB: 94.8% (metric broken - threshold logic issue)
+
 ### The Bullwhip Crisis (v0.12.1 - FIXED in v0.12.3)
 **Status:** RESOLVED
 
@@ -580,6 +601,11 @@ Orchestrator
 
 | Version | Key Changes |
 |---------|-------------|
+| 0.15.8 | **Service Level Phase 1** - ECOM FC demand signal fix; Increased replenishment targets (14/10 days); Daily store ordering; Higher initial inventory priming; Service level 75% → 80.5% |
+| 0.15.7 | **Inventory Turns Fix** - Exclude raw materials from turns calculation; FG mask for metrics |
+| 0.15.6 | **MRP Signal Stabilization** - Prevent 365-day production collapse with velocity tracking and production floor |
+| 0.15.5 | **LTL Shipping** - Store deliveries use LTL mode; Service level 83% → 92.8% |
+| 0.15.4 | **Bullwhip Dampening** - Customer DCs use derived demand (outflow) instead of POS; Warm start; Order staggering |
 | 0.15.3 | **Mass Balance Audit Fix** - Replace shipments_out with allocation_out tracking to fix FTL timing mismatch; Add floating-point noise filtering |
 | 0.15.2 | **Ingredient Replenishment Fix** - Use production-based signal for ingredient ordering instead of POS demand; System survives full 365-day simulation without collapse |
 | 0.15.1 | **MRP Inventory Position Fix** - Only count manufacturer RDCs in inventory position (not customer DCs); Fix C.5 smoothing history bug; Document mass balance FTL timing issue |

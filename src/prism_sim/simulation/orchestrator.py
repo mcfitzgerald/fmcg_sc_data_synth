@@ -132,6 +132,7 @@ class Orchestrator:
         store_days = init_config.get("store_days_supply", 14.0)
         rdc_days = init_config.get("rdc_days_supply", 21.0)
         rdc_multiplier = init_config.get("rdc_store_multiplier", 1500.0)
+        customer_dc_days = init_config.get("customer_dc_days_supply", 21.0)
 
         # Base demand proxy (calculated from POSEngine)
         base_demand = self.pos_engine.get_average_demand_estimate()
@@ -167,8 +168,8 @@ class Orchestrator:
                             == NodeType.STORE
                         )
                         # Customer DC level = base_demand × store_count × target_days
-                        # Use higher target (14 days) for customer DCs to buffer bullwhip
-                        dc_level = base_demand * max(downstream_stores, 1) * 14.0
+                        # v0.15.8: Use config value for customer DC days supply
+                        dc_level = base_demand * max(downstream_stores, 1) * customer_dc_days
 
                     self.state.perceived_inventory[node_idx, :] = dc_level
                     self.state.actual_inventory[node_idx, :] = dc_level

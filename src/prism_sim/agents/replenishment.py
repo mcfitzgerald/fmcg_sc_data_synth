@@ -2,40 +2,41 @@ from typing import Any
 
 import numpy as np
 
-from prism_sim.network.core import Node, NodeType, Order, OrderLine, OrderType, CustomerChannel
+from prism_sim.network.core import Node, NodeType, Order, OrderLine, OrderType, CustomerChannel, StoreFormat
 from prism_sim.simulation.state import StateManager
 from prism_sim.simulation.world import World
 
 
 CHANNEL_POLICIES = {
-    # Tightened target-ROP gap to reduce bullwhip (smaller, more frequent orders)
+    # v0.15.8: Increased target and ROP to improve service level (75% → 98.5% target)
+    # Higher inventory buffers ensure stores don't run out between order cycles
     "B2M_LARGE": {
-        "target_days": 7.0,
-        "reorder_point_days": 5.0,  # Was 3.0 - tightened
+        "target_days": 14.0,  # Was 7.0 - increased for service level
+        "reorder_point_days": 10.0,  # Was 5.0 - increased for service level
         "batch_size": 500.0,
         "smoothing_factor": 0.3,
     },
     "B2M_CLUB": {
-        "target_days": 10.0,
-        "reorder_point_days": 7.0,  # Was 4.0 - tightened
+        "target_days": 14.0,  # Was 10.0 - increased for service level
+        "reorder_point_days": 10.0,  # Was 7.0 - increased for service level
         "batch_size": 200.0,
         "smoothing_factor": 0.2,
     },
     "B2M_DISTRIBUTOR": {
         "target_days": 14.0,
-        "reorder_point_days": 10.0,  # Was 5.0 - tightened
+        "reorder_point_days": 10.0,
         "batch_size": 100.0,
         "smoothing_factor": 0.1,
     },
     "ECOMMERCE": {
-        "target_days": 5.0,
-        "reorder_point_days": 3.0,  # Was 2.0 - tightened
+        "target_days": 7.0,   # Was 5.0 - increased for service level
+        "reorder_point_days": 5.0,  # Was 3.0 - increased for service level
         "batch_size": 50.0,
         "smoothing_factor": 0.4,
     },
     "default": {
-        "target_days": 10.0,
-        "reorder_point_days": 7.0,  # Was 4.0 - tightened
+        "target_days": 14.0,  # Was 10.0 - increased for service level
+        "reorder_point_days": 10.0,  # Was 7.0 - increased for service level
         "batch_size": 100.0,
         "smoothing_factor": 0.2,
     },
@@ -158,7 +159,10 @@ class MinMaxReplenisher:
                 continue
 
             # Customer DCs: DC type but NOT manufacturer RDCs
-            if node.type == NodeType.DC and not n_id.startswith("RDC-"):
+            # EXCLUDE ECOM_FC - they're B2C nodes that should use POS demand, not outflow
+            # ECOM FCs sell directly to consumers, they don't have downstream stores
+            is_ecom_fc = node.store_format == StoreFormat.ECOM_FC
+            if node.type == NodeType.DC and not n_id.startswith("RDC-") and not is_ecom_fc:
                 self._customer_dc_indices.add(idx)
 
                 # Count downstream stores for this DC
@@ -249,9 +253,10 @@ class MinMaxReplenisher:
         orders = []
         week = (day // 7) + 1
 
-        # Order staggering: Stores only order on certain days to reduce bullwhip
-        # Use hash of node ID to determine ordering day (spreads across 3-day cycle)
-        order_cycle_days = 3  # Stores order every 3 days on average
+        # Order staggering: Stores order daily to improve service level
+        # v0.15.8: Reduced from 3-day to 1-day cycle for better service level
+        # With higher target/ROP (14/10 days), daily ordering is sustainable
+        order_cycle_days = 1  # Stores order daily
 
         # Identify active promos for this week
         active_promos = []
