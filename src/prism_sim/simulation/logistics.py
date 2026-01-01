@@ -48,6 +48,11 @@ class LogisticsEngine:
             log_config.get("default_ftl_min_pallets", 5.0)
         )
 
+        # CO2 emission factor (kg CO2 per ton-km)
+        self.co2_emission_factor = float(
+            log_config.get("co2_emission_factor_kg_per_ton_km", 0.1)
+        )
+
         self.route_map: dict[tuple[str, str], Link] = {}
         self._build_route_map()
 
@@ -227,10 +232,10 @@ class LogisticsEngine:
     def _calculate_emissions(self, shipment: Shipment, distance_km: float) -> float:
         """
         Calculate Scope 3 emissions for a shipment.
-        Factor: 0.1 kg CO2 per ton-km.
+        Factor: co2_emission_factor kg CO2 per ton-km (from config).
         """
         weight_tons = shipment.total_weight_kg / 1000.0
-        base_emissions = weight_tons * distance_km * 0.1
+        base_emissions = weight_tons * distance_km * self.co2_emission_factor
         
         # Emissions can be affected by risk events (carbon tax spike)
         # Note: We don't have direct access to risks here easily without passing it, 

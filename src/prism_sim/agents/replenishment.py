@@ -12,36 +12,35 @@ from prism_sim.network.core import (
 from prism_sim.simulation.state import StateManager
 from prism_sim.simulation.world import World
 
-CHANNEL_POLICIES = {
-    # v0.15.9: Customer DC channels get higher buffers (21/14 days) to absorb
-    # store demand variability. Stores use default policy (14/10 days).
+# Default channel policies - overridden by config if present
+DEFAULT_CHANNEL_POLICIES: dict[str, dict[str, float]] = {
     "B2M_LARGE": {
-        "target_days": 21.0,  # Was 14.0 - increased for DC buffer
-        "reorder_point_days": 14.0,  # Was 10.0 - increased for DC buffer
+        "target_days": 21.0,
+        "reorder_point_days": 14.0,
         "batch_size": 500.0,
         "smoothing_factor": 0.3,
     },
     "B2M_CLUB": {
-        "target_days": 21.0,  # Was 14.0 - increased for DC buffer
-        "reorder_point_days": 14.0,  # Was 10.0 - increased for DC buffer
+        "target_days": 21.0,
+        "reorder_point_days": 14.0,
         "batch_size": 200.0,
         "smoothing_factor": 0.2,
     },
     "B2M_DISTRIBUTOR": {
-        "target_days": 21.0,  # Was 14.0 - increased for DC buffer
-        "reorder_point_days": 14.0,  # Was 10.0 - increased for DC buffer
+        "target_days": 21.0,
+        "reorder_point_days": 14.0,
         "batch_size": 100.0,
         "smoothing_factor": 0.1,
     },
     "ECOMMERCE": {
-        "target_days": 10.0,  # Was 7.0 - slightly increased
-        "reorder_point_days": 7.0,  # Was 5.0 - slightly increased
+        "target_days": 10.0,
+        "reorder_point_days": 7.0,
         "batch_size": 50.0,
         "smoothing_factor": 0.4,
     },
     "default": {
-        "target_days": 14.0,  # Store default - unchanged
-        "reorder_point_days": 10.0,  # Store default - unchanged
+        "target_days": 14.0,
+        "reorder_point_days": 10.0,
         "batch_size": 100.0,
         "smoothing_factor": 0.2,
     },
@@ -81,6 +80,29 @@ class MinMaxReplenisher:
         self.base_reorder_point_days = float(params.get("reorder_point_days", 4.0))
         self.base_min_order_qty = float(params.get("min_order_qty", 50.0))
         self.base_batch_size = float(params.get("batch_size_cases", 100.0))
+
+        # Load channel policies from config (with defaults fallback)
+        config_policies = params.get("channel_profiles", {})
+        self.channel_policies: dict[str, dict[str, float]] = {}
+        for key, default_policy in DEFAULT_CHANNEL_POLICIES.items():
+            self.channel_policies[key] = {
+                "target_days": config_policies.get(key, {}).get(
+                    "target_days", default_policy["target_days"]
+                ),
+                "reorder_point_days": config_policies.get(key, {}).get(
+                    "reorder_point_days", default_policy["reorder_point_days"]
+                ),
+                "batch_size": config_policies.get(key, {}).get(
+                    "batch_size", default_policy["batch_size"]
+                ),
+                "smoothing_factor": config_policies.get(key, {}).get(
+                    "smoothing_factor", default_policy["smoothing_factor"]
+                ),
+            }
+
+        # Config-driven thresholds (previously hardcoded)
+        self.min_demand_floor = float(params.get("min_demand_floor", 0.1))
+        self.default_min_qty = float(params.get("default_min_qty", 10.0))
 
         # Optimization: Cache Store->Supplier map
         self.store_supplier_map = self._build_supplier_map()
@@ -133,10 +155,10 @@ class MinMaxReplenisher:
             policy_key = "default"
             if node.channel:
                 key = node.channel.name if hasattr(node.channel, "name") else str(node.channel)
-                if key.upper() in CHANNEL_POLICIES:
+                if key.upper() in self.channel_policies:
                     policy_key = key.upper()
 
-            p = CHANNEL_POLICIES.get(policy_key, CHANNEL_POLICIES["default"])
+            p = self.channel_policies.get(policy_key, self.channel_policies["default"])
 
             self.target_days_vec[idx] = p["target_days"]
             self.rop_vec[idx] = p["reorder_point_days"]
@@ -146,7 +168,7 @@ class MinMaxReplenisher:
             # OVERRIDE: Stores order cases, not pallets
             if node.type == NodeType.STORE:
                 self.batch_vec[idx] = 20.0  # Reduced from 500/200/100 to 20
-                self.min_qty_vec[idx] = 10.0
+                self.min_qty_vec[idx] = self.default_min_qty
 
     def _cache_customer_dcs(self) -> None:
         """
@@ -410,7 +432,7 @@ class MinMaxReplenisher:
                 avg_demand[i, :] = self.smoothed_demand[t_idx, :]
 
         # Avoid division by zero or negative targets
-        avg_demand = np.maximum(avg_demand, 0.1)
+        avg_demand = np.maximum(avg_demand, self.min_demand_floor)
 
         # 4. Calculate Targets (Vectorized)
         t_days = self.target_days_vec[target_idx_arr]

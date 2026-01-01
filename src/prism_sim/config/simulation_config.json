@@ -15,13 +15,47 @@
       "weeks_per_year": 52
     },
     "agents": {
-    "replenishment": {
-      "target_days_supply": 14.0,
-      "reorder_point_days": 10.0,
-      "min_order_qty": 50.0,
-      "batch_size_cases": 100.0,
-      "backlog_penalty_factor": 2.0
-    }
+      "replenishment": {
+        "target_days_supply": 14.0,
+        "reorder_point_days": 10.0,
+        "min_order_qty": 50.0,
+        "batch_size_cases": 100.0,
+        "backlog_penalty_factor": 2.0,
+        "min_demand_floor": 0.1,
+        "default_min_qty": 10.0,
+        "channel_profiles": {
+          "B2M_LARGE": {
+            "target_days": 21.0,
+            "reorder_point_days": 14.0,
+            "batch_size": 500.0,
+            "smoothing_factor": 0.3
+          },
+          "B2M_CLUB": {
+            "target_days": 21.0,
+            "reorder_point_days": 14.0,
+            "batch_size": 200.0,
+            "smoothing_factor": 0.2
+          },
+          "B2M_DISTRIBUTOR": {
+            "target_days": 21.0,
+            "reorder_point_days": 14.0,
+            "batch_size": 100.0,
+            "smoothing_factor": 0.1
+          },
+          "ECOMMERCE": {
+            "target_days": 10.0,
+            "reorder_point_days": 7.0,
+            "batch_size": 50.0,
+            "smoothing_factor": 0.4
+          },
+          "default": {
+            "target_days": 14.0,
+            "reorder_point_days": 10.0,
+            "batch_size": 100.0,
+            "smoothing_factor": 0.2
+          }
+        }
+      }
     },
     "demand": {
       "seasonality": {
@@ -38,6 +72,32 @@
         "PERSONAL_WASH": { "base_daily_demand": 7.0 },
         "HOME_CARE": { "base_daily_demand": 7.0 },
         "INGREDIENT": { "base_daily_demand": 0.0 }
+      },
+      "channel_value_segment_mix": {
+        "B2M_CLUB": {
+          "VALUE": 0.7,
+          "MAINSTREAM": 0.25,
+          "PREMIUM": 0.05,
+          "TRIAL": 0.0
+        },
+        "B2M_LARGE": {
+          "VALUE": 0.3,
+          "MAINSTREAM": 0.5,
+          "PREMIUM": 0.15,
+          "TRIAL": 0.05
+        },
+        "ECOMMERCE": {
+          "MAINSTREAM": 0.4,
+          "PREMIUM": 0.3,
+          "VALUE": 0.2,
+          "TRIAL": 0.1
+        },
+        "default": {
+          "VALUE": 0.3,
+          "MAINSTREAM": 0.5,
+          "PREMIUM": 0.15,
+          "TRIAL": 0.05
+        }
       }
     },
     "inventory": {
@@ -81,11 +141,18 @@
       },
       "store_delivery_mode": "LTL",
       "ltl_min_cases": 10,
-      "default_ftl_min_pallets": 10
+      "default_ftl_min_pallets": 10,
+      "co2_emission_factor_kg_per_ton_km": 0.1
     },
     "manufacturing": {
       "target_days_supply": 14.0,
       "reorder_point_days": 7.0,
+      "mrp_thresholds": {
+        "demand_signal_collapse_pct": 0.4,
+        "velocity_trend_threshold_pct": 0.6,
+        "production_floor_pct": 0.3,
+        "min_production_cap_pct": 0.5
+      },
       "inventory_policies": {
         "DEFAULT": { "reorder_point_days": 7.0, "target_days_supply": 14.0 },
         "INGREDIENT": { "reorder_point_days": 7.0, "target_days_supply": 14.0 },
@@ -150,9 +217,14 @@
       "oee_range": [0.65, 0.85],
       "truck_fill_target": 0.85,
       "slob_max_pct": 0.30,
+      "slob_days_threshold": 60.0,
       "inventory_turns_range": [6.0, 14.0],
       "cost_per_case_range": [1.00, 3.00],
-      "mass_balance_drift_max": 0.02
+      "mass_balance_drift_max": 0.02,
+      "min_samples_for_variance": 2,
+      "perfect_order_threshold": 0.90,
+      "mape_base": 0.30,
+      "mape_quirks_penalty": 0.15
     },
     "quirks": {
       "port_congestion": {

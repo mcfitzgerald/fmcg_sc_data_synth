@@ -169,7 +169,8 @@ class PromoCalendar:
 class POSEngine:
     """Point-of-Sale Engine. Generates daily consumer demand."""
 
-    CHANNEL_SEGMENT_WEIGHTS = {
+    # Default segment weights - overridden by config if present
+    DEFAULT_CHANNEL_SEGMENT_WEIGHTS: dict[str, dict[ValueSegment, float]] = {
         "B2M_LARGE": {ValueSegment.MAINSTREAM: 0.6, ValueSegment.VALUE: 0.3, ValueSegment.TRIAL: 0.05, ValueSegment.PREMIUM: 0.05},
         "B2M_CLUB": {ValueSegment.VALUE: 0.7, ValueSegment.MAINSTREAM: 0.25, ValueSegment.PREMIUM: 0.05, ValueSegment.TRIAL: 0.0},
         "B2M_DISTRIBUTOR": {ValueSegment.MAINSTREAM: 0.6, ValueSegment.VALUE: 0.3, ValueSegment.TRIAL: 0.05, ValueSegment.PREMIUM: 0.05},
@@ -184,10 +185,23 @@ class POSEngine:
         self.state = state
         self.config = config
 
+        # Load channel value segment mix from config (with defaults fallback)
+        demand_config = config.get("simulation_parameters", {}).get("demand", {})
+        config_mix = demand_config.get("channel_value_segment_mix", {})
+        self.channel_segment_weights: dict[str, dict[ValueSegment, float]] = {}
+        for channel, default_weights in self.DEFAULT_CHANNEL_SEGMENT_WEIGHTS.items():
+            if channel in config_mix:
+                # Convert string keys to ValueSegment enum
+                self.channel_segment_weights[channel] = {
+                    ValueSegment[k]: v for k, v in config_mix[channel].items()
+                }
+            else:
+                self.channel_segment_weights[channel] = default_weights
+
         # Get calendar config
         calendar_config = config.get("simulation_parameters", {}).get("calendar", {})
         weeks_per_year = calendar_config.get("weeks_per_year", 52)
-        
+
         # Pass world_definition (stored in world? no, usually separately passed, but here we assume config has it)
         # Orchestrator passes self.config which is simulation_config.
         # Promo data is in world_definition.
@@ -270,7 +284,7 @@ class POSEngine:
                 base_cat_demand = float(profile.get("base_daily_demand", 1.0))
 
                 # Segment Weight
-                segment_weights = self.CHANNEL_SEGMENT_WEIGHTS.get(channel_name, {})
+                segment_weights = self.channel_segment_weights.get(channel_name, {})
                 seg_weight = 0.5 # Default
                 if product.value_segment:
                      seg_weight = segment_weights.get(product.value_segment, 0.0)

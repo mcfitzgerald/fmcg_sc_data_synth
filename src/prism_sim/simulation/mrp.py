@@ -46,7 +46,18 @@ class MRPEngine:
         self.min_production_qty = mrp_config.get("min_production_qty", 100.0)
         self.min_ingredient_moq = mrp_config.get("min_ingredient_moq", 100.0)
         self.production_lead_time = mrp_config.get("production_lead_time_days", 3)
-        
+
+        # MRP threshold parameters (previously hardcoded)
+        mrp_thresholds = mrp_config.get("mrp_thresholds", {})
+        self.demand_signal_collapse_pct = mrp_thresholds.get(
+            "demand_signal_collapse_pct", 0.4
+        )
+        self.velocity_trend_threshold_pct = mrp_thresholds.get(
+            "velocity_trend_threshold_pct", 0.6
+        )
+        self.production_floor_pct = mrp_thresholds.get("production_floor_pct", 0.3)
+        self.min_production_cap_pct = mrp_thresholds.get("min_production_cap_pct", 0.5)
+
         # Pre-calculate Policy Vectors
         self._build_policy_vectors(mrp_config)
 
@@ -224,11 +235,15 @@ class MRPEngine:
 
         use_fallback = False
         if expected_total > 0:
-            # Condition 1: Signal below 40% of expected (raised from 10%)
-            if total_signal < expected_total * 0.4:
+            # Condition 1: Signal below threshold of expected
+            if total_signal < expected_total * self.demand_signal_collapse_pct:
                 use_fallback = True
-            # Condition 2: Velocity declining - week1 < 60% of week2 (rapid decline)
-            elif self._week2_demand_sum > 0 and self._week1_demand_sum < self._week2_demand_sum * 0.6:
+            # Condition 2: Velocity declining - week1 < threshold of week2 (rapid decline)
+            elif (
+                self._week2_demand_sum > 0
+                and self._week1_demand_sum
+                < self._week2_demand_sum * self.velocity_trend_threshold_pct
+            ):
                 use_fallback = True
 
         if use_fallback:
@@ -305,11 +320,11 @@ class MRPEngine:
 
                     production_orders.append(po)
 
-        # v0.15.6: Minimum production floor - never drop below 30% of expected
+        # v0.15.6: Minimum production floor - never drop below configured % of expected
         # This prevents complete production shutdown when demand signal dampens
         total_orders_today = sum(po.quantity_cases for po in production_orders)
         expected_production = np.sum(self.expected_daily_demand)
-        min_production_floor = expected_production * 0.3
+        min_production_floor = expected_production * self.production_floor_pct
 
         if total_orders_today < min_production_floor and expected_production > 0:
             # Production is too low - boost up to minimum floor
@@ -457,7 +472,9 @@ class MRPEngine:
             daily_production = self.expected_daily_demand.copy()
 
         # Ensure minimum floor to prevent zero-ordering
-        daily_production = np.maximum(daily_production, self.expected_daily_demand * 0.5)
+        daily_production = np.maximum(
+            daily_production, self.expected_daily_demand * self.min_production_cap_pct
+        )
 
         # v0.15.4: Cap daily production estimate to prevent bullwhip-driven explosion
         # Max ingredient ordering = 2x expected demand (reasonable buffer)

@@ -7,7 +7,12 @@ from prism_sim.network.core import Batch, NodeType, Shipment, ShipmentStatus
 from prism_sim.simulation.state import StateManager
 from prism_sim.simulation.world import World
 
-MIN_SAMPLES_FOR_VARIANCE = 2
+# Default minimum samples for variance calculation
+# Can be overridden via config: validation.min_samples_for_variance
+DEFAULT_MIN_SAMPLES_FOR_VARIANCE = 2
+
+# Module-level variable that gets updated from config
+_min_samples_for_variance = DEFAULT_MIN_SAMPLES_FOR_VARIANCE
 
 
 @dataclass
@@ -31,7 +36,7 @@ class WelfordAccumulator:
 
     @property
     def variance(self) -> float:
-        if self.count < MIN_SAMPLES_FOR_VARIANCE:
+        if self.count < _min_samples_for_variance:
             return 0.0
         return self.m2 / (self.count - 1)
 
@@ -47,7 +52,13 @@ class RealismMonitor:
     """
 
     def __init__(self, config: dict[str, Any]):
+        global _min_samples_for_variance
         self.config = config.get("validation", {})
+
+        # Update module-level variance threshold from config
+        _min_samples_for_variance = self.config.get(
+            "min_samples_for_variance", DEFAULT_MIN_SAMPLES_FOR_VARIANCE
+        )
 
         # Accumulators for metrics
         self.oee_tracker = WelfordAccumulator()
@@ -57,7 +68,7 @@ class RealismMonitor:
         self.inventory_turns_tracker = WelfordAccumulator()
         self.service_level_tracker = WelfordAccumulator()  # Aggregate Fill Rate
         self.store_service_level_tracker = WelfordAccumulator()  # Consumer Service Level
-        
+
         # New KPIs (Fix 8)
         self.perfect_order_tracker = WelfordAccumulator()
         self.cash_to_cash_tracker = WelfordAccumulator()
@@ -71,6 +82,7 @@ class RealismMonitor:
         self.slob_max_pct = self.config.get("slob_max_pct", 0.30)
         self.cost_range = self.config.get("cost_per_case_range", [1.00, 3.00])
         self.turns_range = self.config.get("inventory_turns_range", [6.0, 14.0])
+        self.perfect_order_threshold = self.config.get("perfect_order_threshold", 0.90)
 
     def record_oee(self, oee_value: float) -> None:
         self.oee_tracker.update(oee_value)
@@ -170,7 +182,7 @@ class RealismMonitor:
             },
             "perfect_order_rate": {
                 "mean": self.perfect_order_tracker.mean,
-                "status": "OK" if self.perfect_order_tracker.mean >= 0.90 else "LOW"
+                "status": "OK" if self.perfect_order_tracker.mean >= self.perfect_order_threshold else "LOW"
             },
             "cash_to_cash_days": {
                 "mean": self.cash_to_cash_tracker.mean,

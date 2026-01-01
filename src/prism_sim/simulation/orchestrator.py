@@ -86,6 +86,12 @@ class Orchestrator:
         self.quirks = QuirkManager(config=self.config)
         self.risks = RiskEventManager(sim_params)
 
+        # Validation config (previously hardcoded thresholds)
+        validation_config = sim_params.get("validation", {})
+        self.slob_days_threshold = validation_config.get("slob_days_threshold", 60.0)
+        self.mape_base = validation_config.get("mape_base", 0.30)
+        self.mape_quirks_penalty = validation_config.get("mape_quirks_penalty", 0.15)
+
         # 6. Initialize Data Writer (Milestone 7)
         # Load writer config from simulation_config.json, allow CLI overrides
         writer_config = sim_params.get("writer", {})
@@ -448,10 +454,10 @@ class Orchestrator:
             shrink_rate = shrinkage_qty / total_fg_inv
             self.monitor.record_shrinkage_rate(shrink_rate)
 
-            # SLOB % (Simplification: FG Inventory > 60 days of demand)
+            # SLOB % (Simplification: FG Inventory > threshold days of demand)
             # Only finished goods can be "slow/obsolete" for this metric
             global_dos = total_fg_inv / max(total_demand_qty, 1.0)
-            is_slob = 1.0 if global_dos > 60.0 else 0.0
+            is_slob = 1.0 if global_dos > self.slob_days_threshold else 0.0
             self.monitor.record_slob(is_slob)
 
         log_config = self.config.get("simulation_parameters", {}).get("logistics", {})
@@ -482,10 +488,10 @@ class Orchestrator:
         self.monitor.record_scope_3(0.25)
 
         # MAPE
-        # 30% baseline error + Optimism Bias if active
-        mape = 0.30
+        # Baseline error + Optimism Bias penalty if active
+        mape = self.mape_base
         if self.quirks.is_enabled("optimism_bias"):
-             mape += 0.15
+            mape += self.mape_quirks_penalty
         self.monitor.record_mape(mape)
 
     def _log_daily_data(
