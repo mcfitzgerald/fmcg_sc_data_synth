@@ -5,6 +5,58 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.15.9] - 2026-01-01
+
+### Service Level Improvement Phase 2: Demand Signal Fix
+
+This release implements the core fix for demand signal attenuation identified in v0.15.8. Customer DCs now use **inflow-based demand** (orders received) instead of **outflow-based demand** (orders shipped), preventing the demand signal from being attenuated when DCs are short on inventory.
+
+### Added
+- **Inflow Tracking (`replenishment.py`):** New `inflow_history` array and methods to track orders received by each node:
+  - `record_inflow(orders)`: Records orders received (pre-allocation)
+  - `get_inflow_demand()`: Returns 7-day rolling average of inflow
+  - Warm-start initialization to prevent cold-start issues
+- **MRP Order Demand (`mrp.py`):** New `record_order_demand(orders)` method captures pre-allocation order quantities for production planning, preventing MRP from under-planning when supply chain is constrained.
+
+### Changed
+- **Customer DC Demand Signal (Critical Fix):**
+  - Changed from outflow (what was shipped) to inflow (what was ordered)
+  - This prevents demand attenuation cascade: when a DC is short on inventory, it now still sees the true demand from downstream stores
+- **Customer DC Order Frequency:**
+  - Reduced from 5-day cycle to 1-day cycle (daily ordering)
+  - Creates smoother, more responsive demand signals upstream
+- **Customer DC Replenishment Policy (Increased Buffers):**
+  - B2M_LARGE: 14/10 → 21/14 days (target/ROP)
+  - B2M_CLUB: 14/10 → 21/14 days
+  - B2M_DISTRIBUTOR: 14/10 → 21/14 days
+  - ECOMMERCE: 7/5 → 10/7 days
+- **MRP Demand Signal:**
+  - Now receives order quantities (pre-allocation) in addition to shipments
+  - Uses `max(orders, shipments)` to capture true demand
+
+### Technical Details
+
+**The Demand Attenuation Problem (Fixed):**
+```
+Before (v0.15.8):
+  Store requests 100 → DC ships 50 (low inv) → DC sees demand=50 → DC orders 50
+  Result: 50% demand attenuation at each stage
+
+After (v0.15.9):
+  Store requests 100 → DC ships 50 (low inv) → DC sees demand=100 → DC orders 100
+  Result: True demand propagates upstream
+```
+
+### Files Modified
+- `src/prism_sim/agents/replenishment.py`: Inflow tracking, policy updates, daily DC ordering
+- `src/prism_sim/simulation/orchestrator.py`: Record inflow, pass orders to MRP
+- `src/prism_sim/simulation/mrp.py`: Order-based demand recording
+
+### Validation
+Requires 365-day simulation to validate service level improvement. Target: ≥95% (from 80.5%).
+
+---
+
 ## [0.15.8] - 2026-01-01
 
 ### Service Level Improvement Phase 1 (75% → 80.5%)

@@ -375,6 +375,35 @@ class MRPEngine:
         # v0.15.6: Extended history from 7 to 14 days
         self._history_ptr = (self._history_ptr + 1) % 14
 
+    def record_order_demand(self, orders: list[Order]) -> None:
+        """
+        v0.15.9: Record order-based demand signal (pre-allocation).
+
+        This captures the TRUE demand signal - what customer DCs requested from
+        RDCs, before allocation constrains it. Used to prevent demand signal
+        attenuation when DCs are short on inventory.
+
+        Unlike shipment-based demand (what was shipped), order-based demand
+        reflects what was actually needed. This creates a stronger, more accurate
+        signal for production planning.
+
+        Args:
+            orders: Orders to RDCs (source_id is RDC, target_id is customer DC)
+        """
+        daily_vol = np.zeros(self.state.n_products)
+        for order in orders:
+            for line in order.lines:
+                p_idx = self.state.product_id_to_idx.get(line.product_id)
+                if p_idx is not None:
+                    daily_vol[p_idx] += line.quantity
+
+        # Blend with existing history - use max to not lose shipment signal
+        # This ensures we capture the higher of (orders, shipments) as demand
+        current_slot = (self._history_ptr - 1) % 14
+        self.demand_history[current_slot] = np.maximum(
+            self.demand_history[current_slot], daily_vol
+        )
+
     def _estimate_demand(self, product_idx: int, daily_demand: np.ndarray) -> float:
         """
         Estimate average daily demand for a product.

@@ -2,41 +2,46 @@ from typing import Any
 
 import numpy as np
 
-from prism_sim.network.core import Node, NodeType, Order, OrderLine, OrderType, CustomerChannel, StoreFormat
+from prism_sim.network.core import (
+    NodeType,
+    Order,
+    OrderLine,
+    OrderType,
+    StoreFormat,
+)
 from prism_sim.simulation.state import StateManager
 from prism_sim.simulation.world import World
 
-
 CHANNEL_POLICIES = {
-    # v0.15.8: Increased target and ROP to improve service level (75% → 98.5% target)
-    # Higher inventory buffers ensure stores don't run out between order cycles
+    # v0.15.9: Customer DC channels get higher buffers (21/14 days) to absorb
+    # store demand variability. Stores use default policy (14/10 days).
     "B2M_LARGE": {
-        "target_days": 14.0,  # Was 7.0 - increased for service level
-        "reorder_point_days": 10.0,  # Was 5.0 - increased for service level
+        "target_days": 21.0,  # Was 14.0 - increased for DC buffer
+        "reorder_point_days": 14.0,  # Was 10.0 - increased for DC buffer
         "batch_size": 500.0,
         "smoothing_factor": 0.3,
     },
     "B2M_CLUB": {
-        "target_days": 14.0,  # Was 10.0 - increased for service level
-        "reorder_point_days": 10.0,  # Was 7.0 - increased for service level
+        "target_days": 21.0,  # Was 14.0 - increased for DC buffer
+        "reorder_point_days": 14.0,  # Was 10.0 - increased for DC buffer
         "batch_size": 200.0,
         "smoothing_factor": 0.2,
     },
     "B2M_DISTRIBUTOR": {
-        "target_days": 14.0,
-        "reorder_point_days": 10.0,
+        "target_days": 21.0,  # Was 14.0 - increased for DC buffer
+        "reorder_point_days": 14.0,  # Was 10.0 - increased for DC buffer
         "batch_size": 100.0,
         "smoothing_factor": 0.1,
     },
     "ECOMMERCE": {
-        "target_days": 7.0,   # Was 5.0 - increased for service level
-        "reorder_point_days": 5.0,  # Was 3.0 - increased for service level
+        "target_days": 10.0,  # Was 7.0 - slightly increased
+        "reorder_point_days": 7.0,  # Was 5.0 - slightly increased
         "batch_size": 50.0,
         "smoothing_factor": 0.4,
     },
     "default": {
-        "target_days": 14.0,  # Was 10.0 - increased for service level
-        "reorder_point_days": 10.0,  # Was 7.0 - increased for service level
+        "target_days": 14.0,  # Store default - unchanged
+        "reorder_point_days": 10.0,  # Store default - unchanged
         "batch_size": 100.0,
         "smoothing_factor": 0.2,
     },
@@ -89,6 +94,13 @@ class MinMaxReplenisher:
         self.outflow_history: np.ndarray | None = None
         self._outflow_ptr = 0
 
+        # v0.15.9: Inflow tracking - orders RECEIVED by each node
+        # This is the true demand signal (what downstream nodes requested)
+        # vs outflow which is constrained by available inventory
+        # Shape: [7, n_nodes, n_products]
+        self.inflow_history: np.ndarray | None = None
+        self._inflow_ptr = 0
+
         # Cache which nodes are customer DCs (use derived demand, not POS)
         self._customer_dc_indices: set[int] = set()
         self._downstream_store_count: dict[int, int] = {}  # dc_idx -> store count
@@ -104,7 +116,7 @@ class MinMaxReplenisher:
     def _init_policy_vectors(self) -> None:
         """Pre-calculate policy vectors based on node channels."""
         n_nodes = self.state.n_nodes
-        
+
         # Initialize with config defaults
         self.target_days_vec = np.full((n_nodes, 1), self.base_target_days)
         self.rop_vec = np.full((n_nodes, 1), self.base_reorder_point_days)
@@ -123,14 +135,14 @@ class MinMaxReplenisher:
                 key = node.channel.name if hasattr(node.channel, "name") else str(node.channel)
                 if key.upper() in CHANNEL_POLICIES:
                     policy_key = key.upper()
-            
+
             p = CHANNEL_POLICIES.get(policy_key, CHANNEL_POLICIES["default"])
-            
+
             self.target_days_vec[idx] = p["target_days"]
             self.rop_vec[idx] = p["reorder_point_days"]
             self.batch_vec[idx] = p["batch_size"]
             self.alpha_vec[idx] = p["smoothing_factor"]
-            
+
             # OVERRIDE: Stores order cases, not pallets
             if node.type == NodeType.STORE:
                 self.batch_vec[idx] = 20.0  # Reduced from 500/200/100 to 20
@@ -177,13 +189,15 @@ class MinMaxReplenisher:
 
     def _initialize_warm_start(self, warm_start_demand: float) -> None:
         """
-        Initialize outflow history with equilibrium demand estimate.
+        Initialize outflow and inflow history with equilibrium demand estimate.
 
         This prevents the Day 1-2 bullwhip cascade caused by cold start where
         customer DCs have no demand history and use a 0.1 floor.
 
         For customer DCs, warm start = base_demand × downstream_store_count
-        This represents the expected daily outflow in steady state.
+        This represents the expected daily flow in steady state.
+
+        v0.15.9: Now also initializes inflow history for true demand tracking.
         """
         if warm_start_demand <= 0:
             return
@@ -193,14 +207,21 @@ class MinMaxReplenisher:
             (7, self.state.n_nodes, self.state.n_products), dtype=np.float64
         )
 
+        # v0.15.9: Also initialize inflow history (orders received)
+        # In steady state, inflow ≈ outflow (demand matches fulfillment)
+        self.inflow_history = np.zeros(
+            (7, self.state.n_nodes, self.state.n_products), dtype=np.float64
+        )
+
         for dc_idx in self._customer_dc_indices:
-            # Scale by downstream store count (more stores = more outflow)
+            # Scale by downstream store count (more stores = more flow)
             store_count = self._downstream_store_count.get(dc_idx, 1)
-            expected_outflow = warm_start_demand * store_count
+            expected_flow = warm_start_demand * store_count
 
             # Set warm start for all products at this DC
             for i in range(7):
-                self.outflow_history[i, dc_idx, :] = expected_outflow
+                self.outflow_history[i, dc_idx, :] = expected_flow
+                self.inflow_history[i, dc_idx, :] = expected_flow
 
     def record_outflow(self, allocation_matrix: np.ndarray) -> None:
         """
@@ -236,6 +257,60 @@ class MinMaxReplenisher:
         if self.outflow_history is None:
             return np.zeros((self.state.n_nodes, self.state.n_products))
         return np.mean(self.outflow_history, axis=0)
+
+    def record_inflow(self, orders: list[Order]) -> None:
+        """
+        Record orders received BY each node (demand signal from downstream).
+
+        This captures the TRUE demand signal - what downstream nodes requested,
+        regardless of whether inventory was available to fulfill. Use this
+        instead of outflow to prevent demand signal attenuation.
+
+        v0.15.9: Added to fix demand signal attenuation problem.
+        Customer DCs should use inflow (what was requested) not outflow
+        (what was shipped) to avoid under-ordering when inventory is low.
+
+        Args:
+            orders: List of orders generated by generate_orders()
+        """
+        if self.inflow_history is None:
+            # Initialize inflow history
+            self.inflow_history = np.zeros(
+                (7, self.state.n_nodes, self.state.n_products), dtype=np.float64
+            )
+
+        # Reset current day's slot before accumulating
+        self.inflow_history[self._inflow_ptr] = 0
+
+        # Aggregate orders by source (the node receiving the order)
+        for order in orders:
+            source_idx = self.state.node_id_to_idx.get(order.source_id)
+            if source_idx is None:
+                continue
+
+            for line in order.lines:
+                p_idx = self.state.product_id_to_idx.get(line.product_id)
+                if p_idx is not None:
+                    self.inflow_history[self._inflow_ptr, source_idx, p_idx] += (
+                        line.quantity
+                    )
+
+        # Advance pointer for circular buffer
+        self._inflow_ptr = (self._inflow_ptr + 1) % 7
+
+    def get_inflow_demand(self) -> np.ndarray:
+        """
+        Get smoothed inflow-based demand signal for all nodes.
+
+        This represents the TRUE demand (orders received) rather than
+        constrained demand (orders fulfilled/shipped).
+
+        Returns:
+            Shape [n_nodes, n_products] - rolling 7-day average of inflow
+        """
+        if self.inflow_history is None:
+            return np.zeros((self.state.n_nodes, self.state.n_products))
+        return np.mean(self.inflow_history, axis=0)
 
     def _build_supplier_map(self) -> dict[str, str]:
         """Builds a lookup map for Store -> Source ID."""
@@ -289,9 +364,10 @@ class MinMaxReplenisher:
                     if day % order_cycle_days != order_day:
                         continue  # Skip this store today
                 elif idx in self._customer_dc_indices:
-                    # Customer DCs also stagger, but on a different offset
-                    # Use 5-day cycle for DCs (less frequent, larger orders)
-                    dc_cycle_days = 5
+                    # v0.15.9: Customer DCs now order daily (was 5-day cycle)
+                    # Daily ordering creates smoother demand signals upstream
+                    # and faster response to inventory shortages
+                    dc_cycle_days = 1
                     order_day = hash(n_id) % dc_cycle_days
                     if day % dc_cycle_days != order_day:
                         continue  # Skip this DC today
@@ -317,16 +393,18 @@ class MinMaxReplenisher:
         # 3. Get Inventory & Demand for Targets
         current_inv = self.state.inventory[target_idx_arr, :]
 
-        # v0.15.4: Use outflow-based demand for customer DCs
-        # This prevents the bullwhip cascade where DCs with POS=0
-        # under-order and then mass-order when inventory depletes
-        outflow_demand = self.get_outflow_demand()
+        # v0.15.9: Use inflow-based demand for customer DCs (orders received)
+        # This prevents demand signal attenuation when DCs are short on inventory.
+        # Previously used outflow (what was shipped), but that's constrained by
+        # inventory - causing under-ordering when DCs are low.
+        inflow_demand = self.get_inflow_demand()
         avg_demand = np.zeros((len(target_indices), self.state.n_products))
 
         for i, t_idx in enumerate(target_indices):
             if t_idx in self._customer_dc_indices:
-                # Customer DC: use outflow-based demand (orders fulfilled)
-                avg_demand[i, :] = outflow_demand[t_idx, :]
+                # Customer DC: use inflow-based demand (orders received)
+                # This is the TRUE demand signal - what downstream nodes requested
+                avg_demand[i, :] = inflow_demand[t_idx, :]
             else:
                 # Store: use POS-based demand (consumer sales)
                 avg_demand[i, :] = self.smoothed_demand[t_idx, :]
@@ -346,7 +424,7 @@ class MinMaxReplenisher:
         # 5. Determine Order Quantities
         needs_order = current_inv < reorder_point
         raw_qty = target_stock - current_inv
-        
+
         # Use vectorized min_qty
         order_qty = np.where(needs_order, np.maximum(raw_qty, min_qty), 0.0)
 
@@ -355,7 +433,7 @@ class MinMaxReplenisher:
 
         # 7. Create Orders
         rows, cols = np.nonzero(batched_qty)
-        
+
         # Prepare Order Data
         orders_by_target: dict[int, dict] = {} # target_idx -> {lines: [], type: ...}
 
@@ -365,23 +443,22 @@ class MinMaxReplenisher:
 
             t_idx = int(target_indices[r])
             p_idx = int(c)
-            
+
             if t_idx not in orders_by_target:
                 orders_by_target[t_idx] = {
-                    "lines": [], 
+                    "lines": [],
                     "days_supply_min": 999.0,
                     "promo_id": None
                 }
-            
+
             p_id = self.state.product_idx_to_id[p_idx]
             orders_by_target[t_idx]["lines"].append(OrderLine(p_id, qty))
-            
+
             # Check days supply for Rush classification
             # Note: avg_demand here is the subset for this target row r
             d_supply = current_inv[r, c] / avg_demand[r, c]
-            if d_supply < orders_by_target[t_idx]["days_supply_min"]:
-                orders_by_target[t_idx]["days_supply_min"] = d_supply
-            
+            orders_by_target[t_idx]["days_supply_min"] = min(orders_by_target[t_idx]["days_supply_min"], d_supply)
+
             # Check Promo
             target_node = self.world.nodes.get(target_ids[r])
             if target_node and not orders_by_target[t_idx]["promo_id"]:
@@ -390,7 +467,7 @@ class MinMaxReplenisher:
                                   self.world.products[p_id].category.name in promo.get("affected_categories", [])
                       chan_match = not promo.get("affected_channels") or \
                                    (target_node.channel and target_node.channel.name in promo.get("affected_channels"))
-                      
+
                       if cat_match and chan_match:
                           orders_by_target[t_idx]["promo_id"] = promo["code"]
                           break
@@ -401,18 +478,18 @@ class MinMaxReplenisher:
             target_id = self.state.node_idx_to_id[t_idx]
             source_id = self.store_supplier_map.get(target_id)
             if not source_id: continue
-            
+
             # Determine Order Type
             o_type = OrderType.STANDARD
             priority = 5
-            
+
             if data["promo_id"]:
                 o_type = OrderType.PROMOTIONAL
                 priority = 2
             elif data["days_supply_min"] < 2.0: # Critical low stock
                 o_type = OrderType.RUSH
                 priority = 1
-            
+
             order_count += 1
             orders.append(Order(
                 id=f"ORD-{day}-{target_id}-{order_count}",

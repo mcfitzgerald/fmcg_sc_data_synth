@@ -46,11 +46,11 @@ class Orchestrator:
         # 1. Initialize World
         manifest = load_manifest()
         self.config = load_simulation_config()
-        
+
         # Merge static world definitions into config for Engines that need them (e.g. POSEngine)
         self.config["promotions"] = manifest.get("promotions", [])
         self.config["packaging_types"] = manifest.get("packaging_types", [])
-        
+
         self.builder = WorldBuilder(manifest)
         self.world = self.builder.build()
 
@@ -234,6 +234,18 @@ class Orchestrator:
         # 3. Replenishment Decision (The "Pull" Signal)
         raw_orders = self.replenisher.generate_orders(day, daily_demand)
 
+        # v0.15.9: Record inflow (orders received) for true demand signal
+        # This captures what was REQUESTED before allocation constrains it
+        # Used by customer DCs to prevent demand signal attenuation
+        self.replenisher.record_inflow(raw_orders)
+
+        # v0.15.9: Pass order demand to MRP (pre-allocation, true demand)
+        # Filter for orders TO RDCs (from customer DCs) - these drive production
+        rdc_orders = [
+            o for o in raw_orders if o.source_id.startswith("RDC-")
+        ]
+        self.mrp_engine.record_order_demand(rdc_orders)
+
         # Generate Purchase Orders for Ingredients at Plants (Milestone 5.1 extension)
         # Uses production-based signal (active orders) instead of POS demand
         # to ensure ingredient replenishment matches actual consumption
@@ -279,7 +291,7 @@ class Orchestrator:
             if self.world.nodes[s.source_id].type == NodeType.DC
             and self.world.nodes[s.target_id].type == NodeType.STORE
         ]
-        
+
         new_production_orders = self.mrp_engine.generate_production_orders(
             day, rdc_store_shipments, self.active_production_orders
         )
@@ -319,10 +331,10 @@ class Orchestrator:
         # 12. Monitors & Data Logging
         total_demand = np.sum(daily_demand)
         daily_shipments = new_shipments + plant_shipments
-        
+
         total_shipped_qty = sum(line.quantity for s in daily_shipments for line in s.lines)
         shrinkage_qty = sum(e.quantity_lost for e in shrinkage_events)
-        
+
         self._record_daily_metrics(
             daily_demand, daily_shipments, arrived, plant_oee, day,
             ordered_qty=unconstrained_demand_qty,
@@ -424,7 +436,7 @@ class Orchestrator:
             daily_turn_rate = total_demand_qty / total_fg_inv  # Sales / Avg FG Inv
             annual_turns = daily_turn_rate * 365
             self.monitor.record_inventory_turns(annual_turns)
-            
+
             # Cash-to-Cash (Est: DIO + DSO - DPO)
             # DIO = 365 / Turns
             # DSO ~ 30, DPO ~ 45
@@ -459,13 +471,13 @@ class Orchestrator:
         if plant_oee:
             avg_oee = sum(plant_oee.values()) / len(plant_oee)
             self.monitor.record_oee(avg_oee)
-            
+
         # Perfect Order Rate
         # Check active risk delays
         delay_mult = self.risks.get_logistics_delay_multiplier()
         is_perfect = 1.0 if delay_mult == 1.0 else 0.5
         self.monitor.record_perfect_order(is_perfect)
-        
+
         # Scope 3 Emissions (0.25 kg CO2 per case placeholder)
         self.monitor.record_scope_3(0.25)
 
@@ -559,7 +571,7 @@ class Orchestrator:
         # as it represents the actual "Service" delivered to customers.
         service_index = report.get("store_service_level", {}).get("mean", 0.0) * 100.0
         inv_turns = report.get("inventory_turns", {}).get("mean", 0)
-        
+
         perfect_order = report.get("perfect_order_rate", {}).get("mean", 0) * 100.0
         c2c = report.get("cash_to_cash_days", {}).get("mean", 0)
         scope3 = report.get("scope_3_emissions", {}).get("mean", 0)

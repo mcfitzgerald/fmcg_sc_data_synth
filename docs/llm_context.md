@@ -2,7 +2,7 @@
 
 > **System Prompt Context:** This document contains the critical architectural, functional, and physical constraints of the Prism Sim project. Use this as primary context when reasoning about code changes, bug fixes, or feature expansions.
 
-**Version:** 0.15.8 | **Last Updated:** 2026-01-01
+**Version:** 0.15.9 | **Last Updated:** 2026-01-01
 
 ---
 
@@ -339,22 +339,22 @@ Every decision impacts the balance between:
 
 ## 15. Known Issues & Current State
 
-### Service Level Gap (v0.15.8 - IN PROGRESS)
-**Status:** ACTIVE INVESTIGATION
+### Service Level Gap (v0.15.8 - FIXED in v0.15.9)
+**Status:** FIX IMPLEMENTED - AWAITING VALIDATION
 
-**Current State:** Store service level at 80.5%, target is 98.5% (~18pp gap).
+**Previous State (v0.15.8):** Store service level at 80.5%, target is 98.5% (~18pp gap).
 
-**Root Cause Identified:** Demand signal attenuation at customer DCs. Each echelon uses "outflow" (what was shipped) as demand signal, but outflow is constrained by available inventory. This causes demand to compress 50-75% at each level:
-- Consumer demand: 100 units
-- Store orders: 100 units (correct - uses POS)
-- DC outflow signal: 50 units (DC only had 50 to ship)
-- DC orders to RDC: 50 units
-- RDC outflow: 25 units
-- MRP signal: 25 units (when 100 needed!)
+**Root Cause Identified:** Demand signal attenuation at customer DCs. Each echelon used "outflow" (what was shipped) as demand signal, but outflow is constrained by available inventory. This caused demand to compress 50-75% at each level.
 
-**Planned Fix:** Change customer DC demand signal from outflow-based to inflow-based (track orders received, not orders shipped). This preserves the true demand signal as it propagates upstream.
+**Fix Implemented (v0.15.9):**
+1. **Inflow Tracking:** Customer DCs now use inflow-based demand (orders received) instead of outflow-based demand (orders shipped). This preserves the true demand signal as it propagates upstream.
+2. **Daily DC Ordering:** Customer DC order cycle reduced from 5 days to 1 day for smoother signals.
+3. **Higher DC Buffers:** Customer DC target/ROP increased from 14/10 to 21/14 days.
+4. **MRP Order Signal:** MRP now receives order quantities (pre-allocation) in addition to shipments.
 
-**Key Metrics (v0.15.8):**
+**Validation:** Requires 365-day simulation to confirm service level improvement. Target: ≥95%.
+
+**Key Metrics (v0.15.8 baseline):**
 - Store Service Level: 80.5%
 - Inventory Turns: 5.11x (slightly below 6-14x target)
 - OEE: 81.9%
@@ -601,6 +601,7 @@ Orchestrator
 
 | Version | Key Changes |
 |---------|-------------|
+| 0.15.9 | **Service Level Phase 2 (Demand Signal Fix)** - Inflow-based demand for customer DCs (orders received vs shipped); Daily DC ordering (5d→1d); Higher DC buffers (21/14 days); MRP order signal; Awaiting 365-day validation |
 | 0.15.8 | **Service Level Phase 1** - ECOM FC demand signal fix; Increased replenishment targets (14/10 days); Daily store ordering; Higher initial inventory priming; Service level 75% → 80.5% |
 | 0.15.7 | **Inventory Turns Fix** - Exclude raw materials from turns calculation; FG mask for metrics |
 | 0.15.6 | **MRP Signal Stabilization** - Prevent 365-day production collapse with velocity tracking and production floor |
