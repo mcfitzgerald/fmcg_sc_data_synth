@@ -67,6 +67,9 @@ Upstream nodes (Plants, RDCs) need higher inventory targets because end-to-end s
 ### Validation
 Service level stabilized at 76.20% in 365-day run with Zipfian demand enabled (System survives full year without collapse). Inventory turns at 4.73x. Further tuning of Z-scores required to reach >90% target.
 
+### Future
+- **Physics Overhaul (v0.17.0+):** Created `physics_overhaul.md` outlining a first-principles approach to fix the Service/Inventory paradox by instrumenting Effective Lead Time, implementing the full Safety Stock formula ($\sigma_L$), and adding dynamic ABC segmentation.
+
 ---
 
 ## [0.15.9] - 2026-01-01
