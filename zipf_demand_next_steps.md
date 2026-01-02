@@ -109,31 +109,135 @@ With **Zipfian demand**:
 
 ---
 
-## Next Steps to Try
+## Recommended Fix: Variance-Aware Safety Stock
 
-### Option A: Increase Safety Stock (Quick Test)
-Increase target_days across channels to see if more buffer helps:
+The current uniform (s,S) parameters are **physically incorrect**. Real FMCG companies use variance-based safety stock. This is the textbook solution (Zipkin, Silver-Pyke-Peterson).
+
+### The Correct Formula
+
+```
+Reorder Point = (avg_demand × lead_time) + safety_stock
+Safety Stock  = z × σ × √(lead_time)
+```
+
+Where:
+- `z` = service level factor (1.65 for 95%, 2.33 for 99%)
+- `σ` = demand standard deviation per SKU
+- `lead_time` = replenishment lead time in days
+
+### Why This Works with Zipfian Demand
+
+| SKU Type | Demand | CV (σ/μ) | Safety Stock |
+|----------|--------|----------|--------------|
+| Popular (A-item) | High, stable | Low (~0.3) | Moderate absolute, low relative |
+| Niche (C-item) | Low, erratic | High (~1.0+) | Higher relative to demand |
+
+The formula **automatically adapts** to demand patterns - no manual ABC classification needed.
+
+### Implementation Plan
+
+#### Step 1: Track Demand Variance per SKU
+
+Add to `MinMaxReplenisher.__init__()` in `replenishment.py`:
+
+```python
+# Demand history for variance calculation (rolling window)
+self.variance_lookback = config.get("variance_lookback_days", 28)
+self.demand_history_buffer = np.zeros(
+    (self.variance_lookback, state.n_nodes, state.n_products)
+)
+self.history_idx = 0  # Circular buffer index
+```
+
+Add method to update stats each day:
+
+```python
+def record_demand(self, daily_demand: np.ndarray) -> None:
+    """Record daily demand for variance calculation."""
+    self.demand_history_buffer[self.history_idx % self.variance_lookback] = daily_demand
+    self.history_idx += 1
+
+def get_demand_std(self) -> np.ndarray:
+    """Calculate demand standard deviation per node-product."""
+    if self.history_idx < 7:  # Need minimum history
+        return np.ones((self.state.n_nodes, self.state.n_products)) * 0.5
+    n_samples = min(self.history_idx, self.variance_lookback)
+    return np.std(self.demand_history_buffer[:n_samples], axis=0)
+```
+
+#### Step 2: Modify ROP Calculation in `generate_orders()`
+
+Replace current ROP logic (~line 450):
+
+```python
+# Current (INCORRECT - uniform days):
+# reorder_point = avg_demand * rop_days
+
+# Correct (variance-aware):
+lead_time = self.config.get("lead_time_days", 3.0)
+z_factor = self.config.get("service_level_z", 1.65)  # 95% SL
+sigma = self.get_demand_std()[target_idx_arr, :]
+
+# Cycle stock + Safety stock
+cycle_stock = avg_demand * lead_time
+safety_stock = z_factor * sigma * np.sqrt(lead_time)
+
+# Floor safety stock to minimum days
+min_ss_days = self.config.get("min_safety_stock_days", 3.0)
+safety_stock = np.maximum(safety_stock, avg_demand * min_ss_days)
+
+reorder_point = cycle_stock + safety_stock
+target_stock = reorder_point + avg_demand * order_cycle_days  # Order-up-to
+```
+
+#### Step 3: Wire Up in Orchestrator
+
+In `orchestrator.py` `_step()`, pass demand to replenisher:
+
+```python
+# After demand generation
+demand_tensor = self.pos_engine.generate_demand(day)
+self.replenisher.record_demand(demand_tensor)
+```
+
+#### Step 4: Config Parameters
+
+Add to `simulation_config.json`:
+
 ```json
-"channel_profiles": {
-  "B2M_LARGE": { "target_days": 28.0, "reorder_point_days": 21.0 },  // was 21/14
+"replenishment": {
+  "lead_time_days": 3.0,
+  "service_level_z": 1.65,
+  "min_safety_stock_days": 3.0,
+  "variance_lookback_days": 28,
   ...
 }
 ```
 
-### Option B: Velocity-Based (s,S) Parameters
-Modify `replenishment.py` to scale target/ROP by SKU velocity:
-```python
-# For high-velocity SKUs, use higher target
-velocity_factor = sku_demand / avg_demand  # >1 for popular, <1 for niche
-adjusted_target_days = base_target_days * max(1.0, velocity_factor ** 0.5)
-```
+### Files to Modify
 
-### Option C: Reduce Zipf Concentration
-Try alpha=0.3 or 0.2 for a gentler distribution while still having differentiation.
+| File | Change |
+|------|--------|
+| `src/prism_sim/agents/replenishment.py` | Add variance tracking, update ROP formula |
+| `src/prism_sim/simulation/orchestrator.py` | Pass daily demand to replenisher |
+| `src/prism_sim/config/simulation_config.json` | Add safety stock parameters |
 
-### Option D: Variance-Aware Safety Stock
-Implement formal safety stock: `ROP = demand × LT + z × σ × √LT`
-This requires tracking demand variance per SKU.
+### Expected Outcome
+
+- Service level should recover to ≥80% with Zipfian demand enabled
+- Popular SKUs get appropriate (not excessive) safety stock
+- Niche SKUs get proportionally higher safety stock to cover variability
+- System behaves like real FMCG supply chain
+
+---
+
+## Alternative Quick Tests (Lower Priority)
+
+### Option A: Increase Safety Stock (Blunt Instrument)
+Increase target_days across channels - works but wastes inventory on niche SKUs.
+
+### Option B: Reduce Zipf Concentration
+Try alpha=0.3 for gentler distribution - but this makes demand less realistic.
 
 ---
 
