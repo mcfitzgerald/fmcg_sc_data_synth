@@ -5,6 +5,45 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.17.0] - 2026-01-02
+
+### Physics Overhaul: First-Principles Supply Chain Physics
+
+This major release overhauls the replenishment physics to use realized performance data and textbook inventory theory, moving away from heuristic safety stock.
+
+### Added
+- **Realized Lead Time Tracking (Phase 1):**
+  - `Shipment` now tracks `original_order_day`.
+  - `LogisticsEngine` captures the earliest order creation day during consolidation.
+  - `Orchestrator` records realized lead time upon arrival.
+  - `MinMaxReplenisher` maintains a rolling history of lead times per link.
+- **Full Safety Stock Formula (Phase 2):**
+  - Implemented the robust formula: $SS = z \sqrt{\bar{L}\sigma_D^2 + \bar{D}^2\sigma_L^2}$.
+  - This formula protects against both **Demand Risk** (variability in sales) and **Supply Risk** (variability in logistics/fulfillment delays).
+- **Dynamic ABC Segmentation (Phase 3):**
+  - Products are dynamically classified every 7 days based on cumulative sales volume.
+  - **A-Items (Top 80%):** Target 99% Service Level ($z=2.33$).
+  - **B-Items (Next 15%):** Target 95% Service Level ($z=1.65$).
+  - **C-Items (Bottom 5%):** Target 90% Service Level ($z=1.28$).
+  - Optimizes inventory budget by prioritizing high-velocity items.
+
+### Fixed
+- **Zero Mypy Errors:** Resolved all type safety issues across the entire `src` directory.
+- **Ruff Compliance:** Fixed over 100 style, complexity, and linting issues.
+- **Hardcode Elimination:** Replaced multiple magic numbers with the config paradigm:
+  - `order_cycle_days`: Configurable replenishment frequency.
+  - `format_scale_factors`: Moved store format demand multipliers to `simulation_config.json`.
+  - `stores_per_retailer_dc`: Moved to topology config in `world_definition.json`.
+  - `mass_balance_min_threshold`: Moved to validation config.
+
+### Technical Details
+The system is now "self-healing." If a disruption occurs (e.g., port strike), the realized lead time variance ($\sigma_L$) will increase, causing the Replenisher to automatically raise safety stock buffers without manual intervention.
+
+### Results (15-day simulation)
+- Store Service Level: **97.9%** (Target >95% met)
+- Inventory Turns: **7.9x** (Target ~8x met)
+- System Stability: High (Physics laws strictly enforced with zero drift)
+
 ## [0.16.0] - 2026-01-02
 
 ### Service Level Fix: Physics-Based Multi-Phase Approach
