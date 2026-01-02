@@ -413,7 +413,13 @@ class MinMaxReplenisher:
             )
 
         # 3. Get Inventory & Demand for Targets
-        current_inv = self.state.inventory[target_idx_arr, :]
+        # v0.16.0: Use Inventory Position (On-Hand + In-Transit) for (s,S) decisions
+        # This is fundamental to (s,S) theory per Zipkin "Foundations of Inventory Management"
+        # Using only on-hand causes double-ordering when shipments are in transit
+        on_hand_inv = self.state.inventory[target_idx_arr, :]
+        in_transit_matrix = self.state.get_in_transit_by_target()
+        in_transit_inv = in_transit_matrix[target_idx_arr, :]
+        inventory_position = on_hand_inv + in_transit_inv  # IP = On-Hand + In-Transit
 
         # v0.15.9: Use inflow-based demand for customer DCs (orders received)
         # This prevents demand signal attenuation when DCs are short on inventory.
@@ -443,9 +449,11 @@ class MinMaxReplenisher:
         target_stock = avg_demand * t_days
         reorder_point = avg_demand * rop_days
 
-        # 5. Determine Order Quantities
-        needs_order = current_inv < reorder_point
-        raw_qty = target_stock - current_inv
+        # 5. Determine Order Quantities (using Inventory Position for (s,S) decision)
+        # v0.16.0: Compare IP against reorder point, order up to target minus IP
+        # This prevents double-ordering when shipments are already in transit
+        needs_order = inventory_position < reorder_point
+        raw_qty = target_stock - inventory_position
 
         # Use vectorized min_qty
         order_qty = np.where(needs_order, np.maximum(raw_qty, min_qty), 0.0)
@@ -476,9 +484,9 @@ class MinMaxReplenisher:
             p_id = self.state.product_idx_to_id[p_idx]
             orders_by_target[t_idx]["lines"].append(OrderLine(p_id, qty))
 
-            # Check days supply for Rush classification
+            # Check days supply for Rush classification (use on-hand for urgency)
             # Note: avg_demand here is the subset for this target row r
-            d_supply = current_inv[r, c] / avg_demand[r, c]
+            d_supply = on_hand_inv[r, c] / avg_demand[r, c]
             orders_by_target[t_idx]["days_supply_min"] = min(orders_by_target[t_idx]["days_supply_min"], d_supply)
 
             # Check Promo

@@ -5,6 +5,43 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.16.0] - 2026-01-02
+
+### Phase 1: Inventory Position Fix for (s,S) Replenishment
+
+This release implements the fundamental Inventory Position fix for (s,S) replenishment decisions. Per Zipkin's "Foundations of Inventory Management", (s,S) policies must use Inventory Position (On-Hand + In-Transit) rather than just On-Hand inventory to prevent double-ordering oscillation.
+
+### Added
+- **`get_in_transit_by_target()` (`state.py`):** New method calculates in-transit inventory per target node by aggregating quantities across all active shipments.
+
+### Changed
+- **Replenishment (s,S) Decision (`replenishment.py`):**
+  - Now uses Inventory Position (IP = On-Hand + In-Transit) for reorder point comparison
+  - Order quantity calculated as Target Stock - IP (not Target - On-Hand)
+  - This prevents double-ordering when shipments are already in transit
+
+### Technical Details
+
+**The Double-Ordering Problem (Fixed):**
+```
+Before (v0.15.9):
+  Store has 50 on-hand, 100 in-transit → compares 50 vs ROP → orders more
+  Result: Double-ordering when shipments already cover the gap
+
+After (v0.16.0):
+  Store has 50 on-hand, 100 in-transit → IP = 150 → compares 150 vs ROP
+  Result: No order if in-transit already covers replenishment need
+```
+
+### Files Modified
+- `src/prism_sim/simulation/state.py`: Added `get_in_transit_by_target()` method
+- `src/prism_sim/agents/replenishment.py`: Uses Inventory Position for (s,S) decisions
+
+### Validation
+Service level at 80.63% (unchanged from ~81%). This is Phase 1 of a 3-phase fix. The plan requires all phases (IP fix, Multi-Echelon SL targets, Zipfian SKU demand) to work together for full improvement to 95%+.
+
+---
+
 ## [0.15.9] - 2026-01-01
 
 ### Service Level Improvement Phase 2: Demand Signal Fix

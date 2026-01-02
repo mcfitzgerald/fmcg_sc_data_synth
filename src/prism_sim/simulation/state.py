@@ -127,3 +127,34 @@ class StateManager:
         # Floor to zero - prevent floating point noise from creating tiny negatives
         np.maximum(self.perceived_inventory, 0, out=self.perceived_inventory)
         np.maximum(self.actual_inventory, 0, out=self.actual_inventory)
+
+    def get_in_transit_by_target(self) -> np.ndarray:
+        """
+        Calculate in-transit inventory per target node and product.
+
+        Returns the quantity currently in transit TO each node, aggregated
+        across all active shipments. Used for Inventory Position calculation
+        in (s,S) replenishment decisions.
+
+        Inventory Position = On-Hand + In-Transit
+
+        This is a fundamental fix for (s,S) theory which requires decisions
+        to be based on IP, not just on-hand. Using only on-hand causes
+        double-ordering oscillation when shipments are in transit.
+
+        Returns:
+            np.ndarray: Shape [n_nodes, n_products] - in-transit qty per target
+        """
+        in_transit = np.zeros((self.n_nodes, self.n_products), dtype=np.float64)
+
+        for shipment in self.active_shipments:
+            target_idx = self.node_id_to_idx.get(shipment.target_id)
+            if target_idx is None:
+                continue
+
+            for line in shipment.lines:
+                p_idx = self.product_id_to_idx.get(line.product_id)
+                if p_idx is not None:
+                    in_transit[target_idx, p_idx] += line.quantity
+
+        return in_transit
