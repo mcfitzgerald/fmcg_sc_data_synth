@@ -135,6 +135,14 @@ class MinMaxReplenisher:
         # This prevents Day 1-2 bullwhip cascade from cold start
         self._initialize_warm_start(warm_start_demand)
 
+        # v0.16.0: Demand Variance Tracking for Safety Stock
+        # Rolling history of demand for standard deviation calculation
+        self.variance_lookback = int(params.get("variance_lookback_days", 28))
+        self.demand_history_buffer = np.zeros(
+            (self.variance_lookback, self.state.n_nodes, self.state.n_products)
+        )
+        self.history_idx = 0  # Circular buffer index
+
     def _init_policy_vectors(self) -> None:
         """Pre-calculate policy vectors based on node channels."""
         n_nodes = self.state.n_nodes
@@ -154,7 +162,10 @@ class MinMaxReplenisher:
             # Determine policy key
             policy_key = "default"
             if node.channel:
-                key = node.channel.name if hasattr(node.channel, "name") else str(node.channel)
+                key = (
+                    node.channel.name if hasattr(node.channel, "name")
+                    else str(node.channel)
+                )
                 if key.upper() in self.channel_policies:
                     policy_key = key.upper()
 
@@ -193,10 +204,15 @@ class MinMaxReplenisher:
                 continue
 
             # Customer DCs: DC type but NOT manufacturer RDCs
-            # EXCLUDE ECOM_FC - they're B2C nodes that should use POS demand, not outflow
-            # ECOM FCs sell directly to consumers, they don't have downstream stores
+            # EXCLUDE ECOM_FC - they're B2C nodes
+            # B2C nodes should use POS demand, not outflow
+            # ECOM FCs sell directly to consumers
             is_ecom_fc = node.store_format == StoreFormat.ECOM_FC
-            if node.type == NodeType.DC and not n_id.startswith("RDC-") and not is_ecom_fc:
+            if (
+                node.type == NodeType.DC
+                and not n_id.startswith("RDC-")
+                and not is_ecom_fc
+            ):
                 self._customer_dc_indices.add(idx)
 
                 # Count downstream stores for this DC
@@ -216,7 +232,7 @@ class MinMaxReplenisher:
         This prevents the Day 1-2 bullwhip cascade caused by cold start where
         customer DCs have no demand history and use a 0.1 floor.
 
-        For customer DCs, warm start = base_demand × downstream_store_count
+        For customer DCs, warm start = base_demand x downstream_store_count
         This represents the expected daily flow in steady state.
 
         v0.15.9: Now also initializes inflow history for true demand tracking.
@@ -244,6 +260,35 @@ class MinMaxReplenisher:
             for i in range(7):
                 self.outflow_history[i, dc_idx, :] = expected_flow
                 self.inflow_history[i, dc_idx, :] = expected_flow
+
+    def record_demand(self, daily_demand: np.ndarray) -> None:
+        """
+        Record daily demand for variance calculation.
+
+        Args:
+            daily_demand: Shape [n_nodes, n_products] - POS demand for the day
+        """
+        idx = self.history_idx % self.variance_lookback
+        self.demand_history_buffer[idx] = daily_demand
+        self.history_idx += 1
+
+    def get_demand_std(self) -> np.ndarray:
+        """
+        Calculate demand standard deviation per node-product.
+
+        Returns:
+            Shape [n_nodes, n_products] - Standard deviation of demand
+        """
+        # Need minimum history to calculate meaningful variance
+        min_history = 7
+        if self.history_idx < min_history:
+            # Fallback for cold start: assume zero std until we have history
+            return np.zeros((self.state.n_nodes, self.state.n_products))
+
+        n_samples = min(self.history_idx, self.variance_lookback)
+        # Calculate std along time axis (axis 0)
+        # Use ddof=1 for sample standard deviation
+        return np.std(self.demand_history_buffer[:n_samples], axis=0, ddof=1)
 
     def record_outflow(self, allocation_matrix: np.ndarray) -> None:
         """
@@ -413,9 +458,9 @@ class MinMaxReplenisher:
             )
 
         # 3. Get Inventory & Demand for Targets
-        # v0.16.0: Use Inventory Position (On-Hand + In-Transit) for (s,S) decisions
-        # This is fundamental to (s,S) theory per Zipkin "Foundations of Inventory Management"
-        # Using only on-hand causes double-ordering when shipments are in transit
+        # v0.16.0: Use Inventory Position (IP) for (s,S) decisions
+        # This is fundamental to (s,S) theory per Zipkin
+        # Using only on-hand causes double-ordering
         on_hand_inv = self.state.inventory[target_idx_arr, :]
         in_transit_matrix = self.state.get_in_transit_by_target()
         in_transit_inv = in_transit_matrix[target_idx_arr, :]
@@ -441,13 +486,58 @@ class MinMaxReplenisher:
         avg_demand = np.maximum(avg_demand, self.min_demand_floor)
 
         # 4. Calculate Targets (Vectorized)
-        t_days = self.target_days_vec[target_idx_arr]
-        rop_days = self.rop_vec[target_idx_arr]
+        # v0.16.0: Variance-Aware Safety Stock Logic
+        # ROP = LeadTime*Avg + Z*StdDev*sqrt(LeadTime)
+
+        # Get config parameters
+        replenishment_params = (
+            self.config.get("simulation_parameters", {})
+            .get("agents", {})
+            .get("replenishment", {})
+        )
+        lead_time = float(replenishment_params.get("lead_time_days", 3.0))
+        z_factor = float(replenishment_params.get("service_level_z", 1.65))
+        min_ss_days = float(replenishment_params.get("min_safety_stock_days", 3.0))
+
+        # Calculate Demand Standard Deviation for target nodes
+        full_sigma = self.get_demand_std()
+        sigma = full_sigma[target_idx_arr, :]
+
+        # 1. Cycle Stock = Average Demand during Lead Time
+        cycle_stock = avg_demand * lead_time
+
+        # 2. Safety Stock = Z * Sigma * sqrt(Lead Time)
+        # Check if we have enough history for sigma
+        min_history = 7
+        use_variance_logic = self.history_idx >= min_history
+
+        if use_variance_logic:
+            safety_stock = z_factor * sigma * np.sqrt(lead_time)
+
+            # Floor safety stock to minimum days coverage (hybrid approach)
+            # This protects against ultra-low variance artifacts or zero sigma
+            min_safety_stock = avg_demand * min_ss_days
+            safety_stock = np.maximum(safety_stock, min_safety_stock)
+
+            reorder_point = cycle_stock + safety_stock
+
+            # Target Stock (Order-Up-To)
+            # We use the target_days logic for S, ensuring S > ROP
+            target_stock_days = self.target_days_vec[target_idx_arr]
+            target_stock = np.maximum(
+                avg_demand * target_stock_days,
+                reorder_point + avg_demand  # Ensure at least 1 day gap
+            )
+        else:
+            # Cold start fallback: Use legacy fixed-days logic
+            rop_days = self.rop_vec[target_idx_arr]
+            target_days = self.target_days_vec[target_idx_arr]
+
+            reorder_point = avg_demand * rop_days
+            target_stock = avg_demand * target_days
+
         batch_sz = self.batch_vec[target_idx_arr]
         min_qty = self.min_qty_vec[target_idx_arr]
-
-        target_stock = avg_demand * t_days
-        reorder_point = avg_demand * rop_days
 
         # 5. Determine Order Quantities (using Inventory Position for (s,S) decision)
         # v0.16.0: Compare IP against reorder point, order up to target minus IP
@@ -484,23 +574,35 @@ class MinMaxReplenisher:
             p_id = self.state.product_idx_to_id[p_idx]
             orders_by_target[t_idx]["lines"].append(OrderLine(p_id, qty))
 
-            # Check days supply for Rush classification (use on-hand for urgency)
-            # Note: avg_demand here is the subset for this target row r
+            # Check days supply for Rush classification
             d_supply = on_hand_inv[r, c] / avg_demand[r, c]
-            orders_by_target[t_idx]["days_supply_min"] = min(orders_by_target[t_idx]["days_supply_min"], d_supply)
+            orders_by_target[t_idx]["days_supply_min"] = min(
+                orders_by_target[t_idx]["days_supply_min"], d_supply
+            )
 
             # Check Promo
             target_node = self.world.nodes.get(target_ids[r])
             if target_node and not orders_by_target[t_idx]["promo_id"]:
-                 for promo in active_promos:
-                      cat_match = "all" in promo.get("affected_categories", ["all"]) or \
-                                  self.world.products[p_id].category.name in promo.get("affected_categories", [])
-                      chan_match = not promo.get("affected_channels") or \
-                                   (target_node.channel and target_node.channel.name in promo.get("affected_channels"))
+                for promo in active_promos:
+                    affected_cats = promo.get("affected_categories", ["all"])
+                    cat_match = (
+                        "all" in affected_cats
+                        or self.world.products[p_id].category.name
+                        in affected_cats
+                    )
 
-                      if cat_match and chan_match:
-                          orders_by_target[t_idx]["promo_id"] = promo["code"]
-                          break
+                    affected_chans = promo.get("affected_channels")
+                    chan_match = (
+                        not affected_chans
+                        or (
+                            target_node.channel
+                            and target_node.channel.name in affected_chans
+                        )
+                    )
+
+                    if cat_match and chan_match:
+                        orders_by_target[t_idx]["promo_id"] = promo["code"]
+                        break
 
         # Generate Objects
         order_count = 0

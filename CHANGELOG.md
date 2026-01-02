@@ -17,12 +17,23 @@ This release implements the fundamental Inventory Position fix for (s,S) repleni
 
 ### Added
 - **`get_in_transit_by_target()` (`state.py`):** New method calculates in-transit inventory per target node by aggregating quantities across all active shipments.
+- **Variance-Aware Safety Stock (`replenishment.py`):** Implemented dynamic safety stock calculation based on demand variability ($ROP = \mu_L + z\sigma_L$).
+  - Tracks rolling demand history per SKU via `record_demand()`.
+  - Automatically adapts inventory buffers: popular/stable SKUs get lower relative safety stock, erratic/niche SKUs get higher buffers.
+  - Replaces static "Days of Supply" heuristic which failed under Zipfian demand concentration.
 
 ### Changed
 - **Replenishment (s,S) Decision (`replenishment.py`):**
   - Now uses Inventory Position (IP = On-Hand + In-Transit) for reorder point comparison
   - Order quantity calculated as Target Stock - IP (not Target - On-Hand)
   - This prevents double-ordering when shipments are already in transit
+- **Manufacturing Targets (`simulation_config.json`):**
+  - `target_days_supply`: 14 → 28 days
+  - `reorder_point_days`: 7 → 21 days
+  - Creates larger safety stock buffers at upstream nodes
+
+### Removed
+- **Legacy Tests:** Deleted low-value unit tests ("sham tests") that relied heavily on mocking without validating emergent behavior. The project now prioritizes full 365-day simulation runs to evaluate system stability and physics compliance.
 
 ### Technical Details
 
@@ -39,7 +50,9 @@ After (v0.16.0):
 
 ### Files Modified
 - `src/prism_sim/simulation/state.py`: Added `get_in_transit_by_target()` method
-- `src/prism_sim/agents/replenishment.py`: Uses Inventory Position for (s,S) decisions
+- `src/prism_sim/agents/replenishment.py`: Uses Inventory Position for (s,S) decisions, added variance tracking
+- `src/prism_sim/simulation/orchestrator.py`: Passes daily demand to replenisher for history tracking
+- `src/prism_sim/config/simulation_config.json`: Added safety stock parameters (`service_level_z`, `lead_time_days`)
 
 #### Phase 2: Multi-Echelon Service Level Targets
 
@@ -52,7 +65,7 @@ Upstream nodes (Plants, RDCs) need higher inventory targets because end-to-end s
   - Creates larger safety stock buffers at upstream nodes
 
 ### Validation
-Service level at 80.62% after Phases 1-2. Phase 3 (Zipfian SKU demand) still required.
+Service level at 80.62% after Phases 1-2. Phase 3 (Zipfian SKU demand) now enabled with variance-aware replenishment.
 
 ---
 

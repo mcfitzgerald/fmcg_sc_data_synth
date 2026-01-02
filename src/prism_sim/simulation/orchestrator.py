@@ -155,16 +155,13 @@ class Orchestrator:
         avg_demand = self.pos_engine.get_average_demand_estimate()
         print(f"Orchestrator: Priming inventory with base_demand={avg_demand:.2f}")
 
-        # Calculate RDC level (still uses scalar - RDCs aggregate across downstream)
-        rdc_level = avg_demand * rdc_multiplier * rdc_days
-
         # Seed finished goods at RDCs and Stores
         for node_id, node in self.world.nodes.items():
             if node.type == NodeType.STORE:
                 node_idx = self.state.node_id_to_idx.get(node_id)
                 if node_idx is not None:
                     # v0.16.0: Demand-proportional priming per SKU
-                    # Each SKU gets inventory = base_demand_for_that_sku * days_supply
+                    # inventory = base_demand_for_that_sku * days_supply
                     node_demand = base_demand_matrix[node_idx, :]
                     sku_levels = node_demand * store_days
                     self.state.perceived_inventory[node_idx, :] = sku_levels
@@ -174,14 +171,15 @@ class Orchestrator:
                 node_idx = self.state.node_id_to_idx.get(node_id)
                 if node_idx is not None:
                     if node_id.startswith("RDC-"):
-                        # Manufacturer RDCs: aggregate downstream DC/store demand per SKU
-                        # Sum demand across all nodes this RDC supplies
+                        # Manufacturer RDCs: aggregate downstream demand per SKU
                         rdc_downstream_demand = np.zeros(self.state.n_products)
                         for link in self.world.links.values():
                             if link.source_id == node_id:
                                 t_idx = self.state.node_id_to_idx.get(link.target_id)
                                 if t_idx is not None:
-                                    rdc_downstream_demand += base_demand_matrix[t_idx, :]
+                                    rdc_downstream_demand += (
+                                        base_demand_matrix[t_idx, :]
+                                    )
 
                         # Fallback to uniform if no downstream found
                         if rdc_downstream_demand.sum() == 0:
@@ -189,21 +187,27 @@ class Orchestrator:
                                 self.state.n_products, avg_demand * rdc_multiplier
                             )
 
-                        # RDC inventory = downstream demand × rdc_days_supply
+                        # RDC inventory = downstream demand x rdc_days_supply
                         rdc_sku_levels = rdc_downstream_demand * rdc_days
                         self.state.perceived_inventory[node_idx, :] = rdc_sku_levels
                         self.state.actual_inventory[node_idx, :] = rdc_sku_levels
                     else:
                         # Customer DCs: aggregate downstream store demand per SKU
-                        # Sum base_demand across all downstream stores for each SKU
                         downstream_demand = np.zeros(self.state.n_products)
                         for link in self.world.links.values():
                             if link.source_id == node_id:
                                 target_node = self.world.nodes.get(link.target_id)
-                                if target_node and target_node.type == NodeType.STORE:
-                                    t_idx = self.state.node_id_to_idx.get(link.target_id)
+                                if (
+                                    target_node
+                                    and target_node.type == NodeType.STORE
+                                ):
+                                    t_idx = self.state.node_id_to_idx.get(
+                                        link.target_id
+                                    )
                                     if t_idx is not None:
-                                        downstream_demand += base_demand_matrix[t_idx, :]
+                                        downstream_demand += (
+                                            base_demand_matrix[t_idx, :]
+                                        )
 
                         # Fallback to uniform if no downstream stores
                         if downstream_demand.sum() == 0:
@@ -211,7 +215,7 @@ class Orchestrator:
                                 self.state.n_products, avg_demand
                             )
 
-                        # DC inventory = aggregated downstream demand × days supply
+                        # DC inventory = aggregated downstream demand x days supply
                         dc_levels = downstream_demand * customer_dc_days
                         self.state.perceived_inventory[node_idx, :] = dc_levels
                         self.state.actual_inventory[node_idx, :] = dc_levels
@@ -264,11 +268,13 @@ class Orchestrator:
         daily_demand = self.pos_engine.generate_demand(day)
         daily_demand = self._apply_demand_quirks(daily_demand, day)
 
+        # v0.16.0: Record demand in replenisher for variance tracking
+        self.replenisher.record_demand(daily_demand)
+
         # 2. Consume Inventory (Sales) - Constrained to available inventory
         # Cannot sell more than what's on hand (lost sales model)
         available = np.maximum(0, self.state.actual_inventory)
         actual_sales = np.minimum(daily_demand, available)
-        lost_sales = daily_demand - actual_sales
         self.state.update_inventory_batch(-actual_sales)
         self.auditor.record_sales(actual_sales)
         # Note: lost_sales tracked implicitly via fill rate metrics
@@ -374,14 +380,20 @@ class Orchestrator:
         total_demand = np.sum(daily_demand)
         daily_shipments = new_shipments + plant_shipments
 
-        total_shipped_qty = sum(line.quantity for s in daily_shipments for line in s.lines)
+        total_shipped_qty = sum(
+            line.quantity for s in daily_shipments for line in s.lines
+        )
         shrinkage_qty = sum(e.quantity_lost for e in shrinkage_events)
 
         self._record_daily_metrics(
-            daily_demand, daily_shipments, arrived, plant_oee, day,
+            daily_demand,
+            daily_shipments,
+            arrived,
+            plant_oee,
+            day,
             ordered_qty=unconstrained_demand_qty,
             shipped_qty=total_shipped_qty,
-            shrinkage_qty=shrinkage_qty
+            shrinkage_qty=shrinkage_qty,
         )
         self._log_daily_data(
             raw_orders, new_shipments, plant_shipments, new_batches, day
@@ -592,11 +604,11 @@ class Orchestrator:
         [Task 7.3]
         """
         report = self.monitor.get_report()
-        scoring_config = self.config.get("simulation_parameters", {}).get("scoring", {})
+        scoring_config = (
+            self.config.get("simulation_parameters", {}).get("scoring", {})
+        )
 
         # Scoring Weights
-        base_service = scoring_config.get("service_index_base", 100.0)
-        backlog_penalty = scoring_config.get("backlog_penalty_divisor", 1000.0)
         truck_scale = scoring_config.get("truck_fill_scale", 100.0)
         oee_scale = scoring_config.get("oee_scale", 100.0)
 
@@ -611,10 +623,14 @@ class Orchestrator:
 
         # Use Store Service Level (Consumer OSA) for the Triangle Report
         # as it represents the actual "Service" delivered to customers.
-        service_index = report.get("store_service_level", {}).get("mean", 0.0) * 100.0
+        service_index = (
+            report.get("store_service_level", {}).get("mean", 0.0) * 100.0
+        )
         inv_turns = report.get("inventory_turns", {}).get("mean", 0)
 
-        perfect_order = report.get("perfect_order_rate", {}).get("mean", 0) * 100.0
+        perfect_order = (
+            report.get("perfect_order_rate", {}).get("mean", 0) * 100.0
+        )
         c2c = report.get("cash_to_cash_days", {}).get("mean", 0)
         scope3 = report.get("scope_3_emissions", {}).get("mean", 0)
         mape = report.get("mape", {}).get("mean", 0) * 100.0

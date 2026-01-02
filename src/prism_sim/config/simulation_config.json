@@ -23,6 +23,10 @@
         "backlog_penalty_factor": 2.0,
         "min_demand_floor": 0.1,
         "default_min_qty": 10.0,
+        "lead_time_days": 3.0,
+        "service_level_z": 1.65,
+        "min_safety_stock_days": 3.0,
+        "variance_lookback_days": 28,
         "channel_profiles": {
           "B2M_LARGE": {
             "target_days": 21.0,
