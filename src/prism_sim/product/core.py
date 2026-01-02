@@ -57,7 +57,7 @@ class Product:
     # Financials
     cost_per_case: float = 0.0
     price_per_case: float = 0.0
-    
+
     # Extended Attributes (Fix 0B)
     brand: str | None = None
     packaging_type_id: str | None = None

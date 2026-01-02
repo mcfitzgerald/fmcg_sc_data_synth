@@ -3,7 +3,7 @@ from typing import Any, cast
 
 import numpy as np
 
-from prism_sim.network.core import CustomerChannel, NodeType
+from prism_sim.network.core import NodeType
 from prism_sim.product.core import ValueSegment
 from prism_sim.simulation.state import StateManager
 from prism_sim.simulation.world import World
@@ -41,18 +41,18 @@ class PromoCalendar:
         self.world = world
         self.weeks_per_year = weeks_per_year
         self.config = config or {}
-        
+
         # Core index: week -> account_id (or channel) -> sku_id -> PromoEffect
         # For O(1) lookups during simulation
         self._index: dict[int, dict[str, dict[str, PromoEffect]]] = {}
-        
+
         self._build_calendar()
 
     def _build_calendar(self) -> None:
         """Build the promo index from configuration."""
         # Load promos from world definition
         promos = self.config.get("promotions", [])
-        
+
         for p in promos:
             code = p["code"]
             start = p["start_week"]
@@ -61,16 +61,16 @@ class PromoCalendar:
             hangover_wks = p.get("hangover_weeks", 0)
             hangover_mult = p.get("hangover_multiplier", 1.0)
             discount = p.get("discount_percent", 0.0)
-            
+
             affected_channels = p.get("affected_channels", []) # List of channel names
             affected_categories = p.get("affected_categories", ["all"])
-            
+
             # Identify target SKUs
             target_skus = []
             for prod in self.world.products.values():
                 if "all" in affected_categories or prod.category.name in affected_categories:
                     target_skus.append(prod.id)
-            
+
             # Identify target Nodes (Store/DC) based on Channel
             # Promos apply to the demand-generating nodes (Stores, or DCs if they generate demand directly?
             # Usually Stores generate demand. DCs generate aggregated demand via orders.
@@ -79,7 +79,7 @@ class PromoCalendar:
             for node in self.world.nodes.values():
                 if node.channel and node.channel.name in affected_channels:
                      target_nodes.append(node.id)
-            
+
             # Populate Index
             # 1. Promo Period
             for w in range(start, end + 1):
@@ -91,7 +91,7 @@ class PromoCalendar:
             for w in range(end + 1, end + 1 + hangover_wks):
                 if w > self.weeks_per_year: continue
                 if w not in self._index: self._index[w] = {}
-                effect = PromoEffect(code, 1.0, hangover_mult, 0.0, is_hangover=True) 
+                effect = PromoEffect(code, 1.0, hangover_mult, 0.0, is_hangover=True)
                 # Hangover lift applies to base, so multiplier is hangover_mult
                 # Actually PromoEffect definition above splits lift and hangover_mult.
                 # If is_hangover=True, we use hangover_mult.
@@ -122,9 +122,8 @@ class PromoCalendar:
                     elif not existing.is_hangover and effect.is_hangover:
                         pass
                     # If both hangover, take min? or max penalty? (min multiplier)
-                    else:
-                        if effect.hangover_multiplier < existing.hangover_multiplier:
-                            self._index[week][n_id][s_id] = effect
+                    elif effect.hangover_multiplier < existing.hangover_multiplier:
+                        self._index[week][n_id][s_id] = effect
                 else:
                     self._index[week][n_id][s_id] = effect
 
@@ -135,7 +134,7 @@ class PromoCalendar:
         if not node_map: return 1.0
         effect = node_map.get(product_id)
         if not effect: return 1.0
-        
+
         if effect.is_hangover:
             return effect.hangover_multiplier
         return effect.lift_multiplier
@@ -144,25 +143,25 @@ class PromoCalendar:
         """Returns the demand multipliers for a given week as a dense matrix."""
         # Initialize with 1.0
         multipliers = np.ones((state.n_nodes, state.n_products), dtype=np.float32)
-        
+
         if week not in self._index:
             return multipliers
-            
+
         week_data = self._index[week]
-        
+
         # Iterate only affected nodes in the week index
         # This is faster than iterating all nodes if promo is sparse
         for n_id, prod_map in week_data.items():
             n_idx = state.node_id_to_idx.get(n_id)
             if n_idx is None: continue
-            
+
             for p_id, effect in prod_map.items():
                 p_idx = state.product_id_to_idx.get(p_id)
                 if p_idx is None: continue
-                
+
                 mult = effect.hangover_multiplier if effect.is_hangover else effect.lift_multiplier
                 multipliers[n_idx, p_idx] = mult
-                
+
         return multipliers
 
 
@@ -208,30 +207,30 @@ class POSEngine:
         # Wait, Orchestrator loads simulation_config into self.config.
         # world_definition is in self.builder.manifest.
         # But POSEngine receives config (simulation_config).
-        
+
         # ISSUE: POSEngine needs access to world_definition for promos!
         # Check Orchestrator again.
         # self.pos_engine = POSEngine(self.world, self.state, self.config)
         # self.config is simulation_config.
-        
+
         # I need to merge manifest into config or access it?
-        # Since I cannot easily change Orchestrator passing right now (or I can?), 
-        # I will assume that the user will update Orchestrator to pass the merged config or 
+        # Since I cannot easily change Orchestrator passing right now (or I can?),
+        # I will assume that the user will update Orchestrator to pass the merged config or
         # that "promotions" are also in simulation_config?
         # NO, I put them in world_definition.json.
-        
+
         # I MUST fix Orchestrator to pass the manifest or merged config.
-        # But for now, I will assume self.config HAS the promotions. 
+        # But for now, I will assume self.config HAS the promotions.
         # (I will have to make sure they get there).
-        
+
         # Actually, in Orchestrator.__init__:
         # manifest = load_manifest()
         # self.config = load_simulation_config()
         # ...
         # self.pos_engine = POSEngine(self.world, self.state, self.config)
-        
+
         # I should probably merge them in Orchestrator.
-        
+
         self.calendar = PromoCalendar(world, weeks_per_year, config)
 
         # Build SKU popularity weights using Zipf distribution
@@ -313,18 +312,18 @@ class POSEngine:
         for n_id, node in self.world.nodes.items():
             # Only demand-generating nodes
             # Stores, and maybe DCs for Ecom/Distributor if they act as demand points
-            if node.type not in [NodeType.STORE, NodeType.DC]: 
+            if node.type not in [NodeType.STORE, NodeType.DC]:
                 continue
-            
+
             # Identify Channel
             channel_name = "B2M_LARGE" # Default
             if node.channel:
                 channel_name = node.channel.name
-            
+
             # If node is a PLANT or Supplier, no demand
             if node.type in [NodeType.PLANT, NodeType.SUPPLIER]:
                 continue
-                
+
             # Option C Architecture: DCs are logistics-only, Stores generate POS demand
             # Skip DCs that have child stores (RETAILER_DC, DISTRIBUTOR_DC)
             # ECOM_FC and DTC still generate demand (no stores under them)
@@ -334,36 +333,33 @@ class POSEngine:
 
             n_idx = self.state.node_id_to_idx[n_id]
 
+            # Scale Factor by Store Format
+            # Individual stores generate realistic per-store demand
+            scale_factors = (
+                self.config.get("simulation_parameters", {})
+                .get("demand", {})
+                .get("format_scale_factors", {})
+            )
+            scale_factor = 1.0
+            if node.store_format:
+                fmt = node.store_format.name
+                scale_factor = float(scale_factors.get(fmt, 1.0))
+
             for p_id, product in self.world.products.items():
-                if product.category.name == "INGREDIENT":
+                p_idx = self.state.product_id_to_idx.get(p_id)
+                if p_idx is None:
                     continue
 
-                p_idx = self.state.product_id_to_idx[p_id]
-
-                # Base Category Demand
+                # Get Base Demand from Category Profile
                 cat_name = product.category.name
                 profile = profiles.get(cat_name, {})
                 base_cat_demand = float(profile.get("base_daily_demand", 1.0))
 
                 # Segment Weight
                 segment_weights = self.channel_segment_weights.get(channel_name, {})
-                seg_weight = 0.5 # Default
+                seg_weight = 0.5  # Default
                 if product.value_segment:
-                     seg_weight = segment_weights.get(product.value_segment, 0.0)
-
-                # Scale Factor by Store Format
-                # Individual stores generate realistic per-store demand
-                scale_factor = 1.0
-                if node.store_format:
-                    fmt = node.store_format.name
-                    if fmt == "SUPERMARKET":
-                        scale_factor = 1.0   # Standard retail store
-                    elif fmt == "CONVENIENCE":
-                        scale_factor = 0.5   # Smaller format, less volume
-                    elif fmt == "CLUB":
-                        scale_factor = 15.0  # High-volume warehouse store
-                    elif fmt == "ECOM_FC":
-                        scale_factor = 50.0  # Fulfillment center (no child stores)
+                    seg_weight = segment_weights.get(product.value_segment, 0.0)
 
                 # SKU Popularity Weight (Channel-specific Zipf distribution)
                 channel_weights = self.channel_sku_weights.get(
@@ -375,6 +371,7 @@ class POSEngine:
                 self.base_demand[n_idx, p_idx] = (
                     base_cat_demand * seg_weight * scale_factor * sku_weight
                 )
+
 
     def generate_demand(self, day: int) -> np.ndarray:
         """Generates demand for a specific day."""

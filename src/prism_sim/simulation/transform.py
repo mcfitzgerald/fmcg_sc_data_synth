@@ -280,7 +280,7 @@ class TransformEngine:
         """
         p_idx = self.state.product_id_to_idx.get(product_id)
         plant_idx = self.state.node_id_to_idx.get(plant_id)
-        
+
         if p_idx is None or plant_idx is None:
             return True, {}
 
@@ -319,7 +319,7 @@ class TransformEngine:
         """
         p_idx = self.state.product_id_to_idx.get(product_id)
         plant_idx = self.state.node_id_to_idx.get(plant_id)
-        
+
         if p_idx is None or plant_idx is None:
             return {}
 
@@ -348,7 +348,7 @@ class TransformEngine:
         for idx in non_zero_indices:
             ing_id = self.state.product_idx_to_id[idx]
             consumed_dict[ing_id] = float(actual_consumed[idx])
-            
+
         return consumed_dict
 
     def _add_to_inventory(
@@ -387,7 +387,7 @@ class TransformEngine:
             status = BatchStatus.COMPLETE
 
         # Get ingredients consumed (for genealogy)
-        # Re-using matrix logic might be cleaner but for single batch creation 
+        # Re-using matrix logic might be cleaner but for single batch creation
         # using the recipe dict is fine as we need IDs anyway.
         # But we should consistent. Let's use recipe dict for now as it's O(1) lookup
         # and we need to return a dict.

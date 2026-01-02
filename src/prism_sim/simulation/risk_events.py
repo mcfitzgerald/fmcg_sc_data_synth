@@ -92,7 +92,7 @@ class RiskEventManager:
         Returns:
             Dict of {ingredient_id: new_status} (e.g. {"ING-SORB": "rejected"})
         """
-        overrides = {}
+        overrides: dict[str, str] = {}
         if not self.enabled:
             return overrides
 
@@ -111,7 +111,7 @@ class RiskEventManager:
         Returns:
             Dict of {supplier_id: new_reliability_score}
         """
-        overrides = {}
+        overrides: dict[str, float] = {}
         if not self.enabled:
             return overrides
 
@@ -130,7 +130,7 @@ class RiskEventManager:
         Returns:
             List of DC IDs that are effectively down.
         """
-        down_dcs = []
+        down_dcs: list[str] = []
         if not self.enabled:
             return down_dcs
 

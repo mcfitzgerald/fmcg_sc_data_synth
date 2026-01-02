@@ -21,17 +21,13 @@ class AllocationAgent:
     Implements 'Fair Share' logic when demand > supply.
     """
 
-    def __init__(
-        self, state: StateManager, config: dict[str, Any] | None = None
-    ) -> None:
+    def __init__(self, state: StateManager, config: dict[str, Any]) -> None:
         self.state = state
-
-        # Get epsilon from config or default
-        if config:
-            sim_params = config.get("simulation_parameters", {})
-            self.epsilon = sim_params.get("global_constants", {}).get("epsilon", 0.001)
-        else:
-            self.epsilon = 0.001
+        self.config = config
+        
+        sim_params = config.get("simulation_parameters", {})
+        constants = sim_params.get("global_constants", {})
+        self.epsilon = float(constants.get("epsilon", 0.001))
 
     def _group_orders_by_source(self, orders: list[Order]) -> dict[str, list[Order]]:
         """Group orders by their source node."""
@@ -116,7 +112,7 @@ class AllocationAgent:
                 capacity = getattr(source_node, "throughput_capacity", float("inf"))
 
                 ratio = 1.0
-                if total_demand > capacity and capacity > 0:
+                if total_demand > capacity > 0:
                     ratio = capacity / total_demand
 
                 for order in source_orders:
@@ -146,9 +142,9 @@ class AllocationAgent:
             for order in sorted_orders:
                 new_lines = []
                 for line in order.lines:
-                    p_idx = self.state.product_id_to_idx.get(line.product_id)
-                    if p_idx is not None:
-                        ratio = fill_ratios[p_idx]
+                    prod_idx = self.state.product_id_to_idx.get(line.product_id)
+                    if prod_idx is not None:
+                        ratio = fill_ratios[prod_idx]
                         new_qty = line.quantity * ratio
                         if new_qty > self.epsilon:
                             line.quantity = new_qty

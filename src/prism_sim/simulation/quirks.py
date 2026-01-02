@@ -421,12 +421,12 @@ class BullwhipWhipCrackQuirk:
         """
         if not self.enabled or not is_promo:
             return order_qty
-        
+
         # Batch size (e.g. 3.0 * 10 = 30 cases)
         batch_size = self.batching_factor * 10.0
-        
+
         # Simple roundup logic to simulate "topping off" the truck
-        return np.ceil(order_qty / batch_size) * batch_size
+        return float(np.ceil(order_qty / batch_size) * batch_size)
 
 
 # =============================================================================
@@ -489,7 +489,7 @@ class DataDecayQuirk:
         self.base_rejection_rate = quirk_config.get("base_rejection_rate", 0.02)
         self.elevated_rejection_rate = quirk_config.get("elevated_rejection_rate", 0.05)
         self.days_to_expiry_threshold = quirk_config.get("days_to_expiry_threshold", 30)
-        
+
         self._rng = np.random.default_rng(seed)
 
     def check_rejection(self, batch: Any, current_day: int) -> bool:
@@ -502,13 +502,13 @@ class DataDecayQuirk:
         # If batch doesn't track expiry, skip
         if not hasattr(batch, "expiry_day"):
             return False
-            
+
         remaining_life = batch.expiry_day - current_day
-        
+
         rate = self.base_rejection_rate
         if remaining_life < self.days_to_expiry_threshold:
             rate = self.elevated_rejection_rate
-            
+
         return bool(self._rng.random() < rate)
 
 
@@ -636,7 +636,7 @@ class QuirkManager:
                          # It's an enum, we need to handle this carefully.
                          # For now, let's assume the caller handles the actual rejection
                          # or we need to import BatchStatus.
-                         pass 
+                         pass
         pass
 
     def get_summary(self) -> dict[str, Any]:

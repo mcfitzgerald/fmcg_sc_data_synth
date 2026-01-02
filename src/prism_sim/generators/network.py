@@ -73,7 +73,7 @@ class NetworkGenerator:
         # A. B2M_LARGE (Retailer DCs + their stores)
         n_retailer_dcs = target_counts.get("retailer_dcs", 20)
         # Distribute stores across retailer DCs (assume ~100 stores per DC)
-        stores_per_retailer_dc = 100
+        stores_per_retailer_dc = target_counts.get("stores_per_retailer_dc", 100)
 
         retailer_companies = self.pool.sample_companies(n_retailer_dcs)
         for i in range(n_retailer_dcs):

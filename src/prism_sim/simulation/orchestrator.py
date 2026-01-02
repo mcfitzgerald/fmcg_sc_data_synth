@@ -660,6 +660,13 @@ class Orchestrator:
 
     def _process_arrivals(self, arrived_shipments: list[Shipment]) -> None:
         for shipment in arrived_shipments:
+            # Physics Overhaul: Record realized lead time
+            if shipment.original_order_day is not None:
+                lead_time = float(shipment.arrival_day - shipment.original_order_day)
+                self.replenisher.record_lead_time(
+                    shipment.target_id, shipment.source_id, lead_time
+                )
+
             target_idx = self.state.node_id_to_idx.get(shipment.target_id)
             if target_idx is None:
                 continue

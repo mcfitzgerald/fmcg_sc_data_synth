@@ -71,7 +71,7 @@ class MRPEngine:
         self._load_plant_capabilities(mrp_config)
 
         self._cache_node_info()
-        
+
         # Demand history for moving average [Products]
         # v0.15.6: Extended from 7 to 14 days for smoother signal
         self.demand_history = np.zeros((14, self.state.n_products), dtype=np.float64)
@@ -97,18 +97,18 @@ class MRPEngine:
         policies = mrp_config.get("inventory_policies", {})
         default_rop = mrp_config.get("reorder_point_days", 14.0)
         default_target = mrp_config.get("target_days_supply", 28.0)
-        
+
         n_products = self.state.n_products
         self.rop_vector = np.full(n_products, default_rop, dtype=np.float64)
         self.target_vector = np.full(n_products, default_target, dtype=np.float64)
-        
+
         spof_id = mrp_config.get("spof", {}).get("ingredient_id", "")
 
         for p_id, p in self.world.products.items():
             p_idx = self.state.product_id_to_idx.get(p_id)
             if p_idx is None:
                 continue
-                
+
             # Determine Policy Key
             key = "DEFAULT"
             if p_id == spof_id:
@@ -119,9 +119,9 @@ class MRPEngine:
                 key = "PACKAGING"
             elif p.category == ProductCategory.INGREDIENT:
                 key = "INGREDIENT"
-                
+
             policy = policies.get(key, policies.get("DEFAULT", {}))
-            
+
             self.rop_vector[p_idx] = policy.get("reorder_point_days", default_rop)
             self.target_vector[p_idx] = policy.get("target_days_supply", default_target)
 
@@ -367,7 +367,7 @@ class MRPEngine:
             # Scale down all orders proportionally
             scale_factor = (avg_recent * 1.5) / total_orders_today
             for po in production_orders:
-                po.quantity_cases = po.quantity_cases * scale_factor
+                po.quantity_cases = float(po.quantity_cases * scale_factor)
 
         # Update production history with ACTUAL (post-scaled) total
         actual_total = sum(po.quantity_cases for po in production_orders)
@@ -515,7 +515,7 @@ class MRPEngine:
             plant_idx = self.state.node_id_to_idx.get(plant_id)
             if plant_idx is None:
                 continue
-            
+
             # Inventory Position = On Hand + Pipeline
             on_hand = self.state.inventory[plant_idx]
             in_transit = pipeline[plant_idx]
@@ -524,7 +524,7 @@ class MRPEngine:
             # Mask: Only consider items where we have a requirement (Ingredients)
             # and where IP < ROP
             needs_ordering = (inv_position < rop_levels) & (ingredient_reqs > 0)
-            
+
             # Get indices of items to order
             # This returns a tuple of arrays, we want the first (and only) dimension
             order_indices = np.where(needs_ordering)[0]
@@ -545,7 +545,7 @@ class MRPEngine:
 
                 if supplier_id:
                     order_id = f"PO-ING-{current_day:03d}-{len(purchase_orders):06d}"
-                    po = Order(
+                    purchase_order = Order(
                         id=order_id,
                         source_id=supplier_id,
                         target_id=plant_id,
@@ -553,7 +553,7 @@ class MRPEngine:
                         lines=[OrderLine(ing_id, float(qty_to_order))],
                         status="OPEN",
                     )
-                    purchase_orders.append(po)
+                    purchase_orders.append(purchase_order)
 
         return purchase_orders
 

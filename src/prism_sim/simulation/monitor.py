@@ -3,7 +3,7 @@ from typing import Any
 
 import numpy as np
 
-from prism_sim.network.core import Batch, NodeType, Shipment, ShipmentStatus
+from prism_sim.network.core import Batch, Shipment, ShipmentStatus
 from prism_sim.simulation.state import StateManager
 from prism_sim.simulation.world import World
 
@@ -104,7 +104,7 @@ class RealismMonitor:
 
     def record_inventory_turns(self, turns: float) -> None:
         self.inventory_turns_tracker.update(turns)
-        
+
     def record_perfect_order(self, rate: float) -> None:
         self.perfect_order_tracker.update(rate)
 
@@ -234,8 +234,9 @@ class PhysicsAuditor:
 
         # Drift threshold (e.g. 0.02 = 2% mismatch allowed)
         self.mass_balance_drift_max = config.get("mass_balance_drift_max", 0.02)
+        self.mass_balance_min_threshold = config.get("mass_balance_min_threshold", 1.0)
         self.all_violations: list[str] = []
-        
+
         self.current_flows: DailyFlows | None = None
 
     def start_day(self, day: int) -> None:
@@ -313,7 +314,7 @@ class PhysicsAuditor:
             plant_idx = self.state.node_id_to_idx.get(b.plant_id)
             if plant_idx is None:
                 continue
-            
+
             # Record FG output
             prod_idx = self.state.product_id_to_idx.get(b.product_id)
             if prod_idx is not None:
@@ -352,11 +353,11 @@ class PhysicsAuditor:
         of shipments_out to fix the FTL consolidation timing mismatch where inventory
         is decremented before shipments are created.
         """
-        if self.current_flows is None or self.current_flows.closing_inventory is None:
+        f = self.current_flows
+        if f is None or f.closing_inventory is None:
             return []
 
         violations: list[str] = []
-        f = self.current_flows
 
         # Expected closing = opening + inflows - outflows
         expected = (
@@ -378,9 +379,8 @@ class PhysicsAuditor:
         # Find violations exceeding threshold
         # Also require minimum absolute difference (1.0 case) to filter
         # floating-point noise and floor guard artifacts
-        min_abs_threshold = 1.0
         violation_mask = (drift > self.mass_balance_drift_max) & (
-            abs_diff > min_abs_threshold
+            abs_diff > self.mass_balance_min_threshold
         )
 
         if np.any(violation_mask):
@@ -390,10 +390,10 @@ class PhysicsAuditor:
             for i in range(min(10, len(indices[0]))):
                 node_idx = indices[0][i]
                 prod_idx = indices[1][i]
-                
+
                 node_id = self.state.node_idx_to_id[node_idx]
                 prod_id = self.state.product_idx_to_id[prod_idx]
-                
+
                 msg = (
                     f"Day {f.day}: Node={node_id} Product={prod_id} "
                     f"Expected={expected[node_idx, prod_idx]:.1f} "

@@ -69,7 +69,7 @@ class ProductGenerator:
         """Load packaging definitions."""
         self.packaging_types: list[PackagingType] = []
         raw_pkgs = self.config.get("packaging_types", [])
-        
+
         for p in raw_pkgs:
             self.packaging_types.append(PackagingType(
                 code=p["code"],
@@ -88,14 +88,14 @@ class ProductGenerator:
         (n_skus is ignored in favor of exhaustive generation or limited by it)
         """
         products: list[Product] = []
-        
+
         # Brand-Category Mapping
         brands = {
             ProductCategory.ORAL_CARE: "PrismWhite",
             ProductCategory.PERSONAL_WASH: "AquaPure",
             ProductCategory.HOME_CARE: "ClearWave",
         }
-        
+
         # Packaging Suitability
         # Which packaging types fit which category?
         pack_map = {
@@ -105,20 +105,20 @@ class ProductGenerator:
         }
 
         counter = 0
-        
+
         for category, brand in brands.items():
             valid_containers = pack_map.get(category, [])
             valid_packs = [p for p in self.packaging_types if p.container in valid_containers]
-            
+
             # For each valid packaging type, generate 1-3 variants (flavors/scents)
             for pkg in valid_packs:
                 n_variants = self.rng.integers(1, 3) # 1 or 2 variants
-                
+
                 for v in range(n_variants):
                     counter += 1
                     # Stop if we exceed requested n_skus drastically, but usually we want full range
-                    if n_skus > 0 and counter > n_skus * 1.5: 
-                         break 
+                    if n_skus > 0 and counter > n_skus * 1.5:
+                         break
 
                     sku_id = f"SKU-{category.name.split('_')[0]}-{counter:03d}"
                     variant_name = f"{brand} {pkg.size_ml}ml {pkg.container.value.title()}"
@@ -126,25 +126,25 @@ class ProductGenerator:
                         variant_name += f" Var-{v+1}"
 
                     profile = self.profiles[category]
-                    
+
                     # Calculate weight based on size_ml and specific gravity
                     # Water = 1g/ml. Paste ~1.3. Soap ~1.1.
                     specific_gravity = 1.0
                     if category == ProductCategory.ORAL_CARE: specific_gravity = 1.3
                     elif category == ProductCategory.PERSONAL_WASH: specific_gravity = 1.05
-                    
+
                     net_weight_kg = (pkg.size_ml * specific_gravity) / 1000.0
                     case_weight_kg = net_weight_kg * pkg.units_per_case * 1.05 # +5% packaging weight
-                    
+
                     # Dimensions from profile scaled by size
                     # Simplified: scale base profile by cube root of volume ratio
                     base_vol = profile.avg_volume_cc
                     target_vol = pkg.size_ml * pkg.units_per_case * 1.2 # Packing factor
                     scale = (target_vol / base_vol) ** (1/3)
-                    
+
                     r1, r2, r3 = profile.dim_ratios
                     x = (target_vol / (r1 * r2 * r3)) ** (1/3)
-                    
+
                     products.append(Product(
                         id=sku_id,
                         name=variant_name,
@@ -155,12 +155,12 @@ class ProductGenerator:
                         value_segment=pkg.segment,
                         recyclable=pkg.recyclable,
                         material=pkg.material,
-                        
+
                         weight_kg=round(case_weight_kg, 2),
                         length_cm=round(r1 * x, 1),
                         width_cm=round(r2 * x, 1),
                         height_cm=round(r3 * x, 1),
-                        
+
                         cases_per_pallet=profile.cases_per_pallet_range[0], # Simplified
                         cost_per_case=round(self.rng.uniform(*profile.cost_range), 2),
                         price_per_case=round(self.rng.uniform(*profile.cost_range) * 1.5, 2),
@@ -171,20 +171,20 @@ class ProductGenerator:
     def generate_ingredients(self, n_per_type: int = 5) -> list[Product]:
         """Generate a pool of ingredients based on profiles."""
         ingredients: list[Product] = []
-        
+
         # 1. Packaging Components
         pkg_profile = self.ingredient_profiles.get("PACKAGING", {})
         pkg_types = pkg_profile.get("types", [])
         pkg_prefix = pkg_profile.get("prefix", "PKG")
-        
+
         for p_type in pkg_types:
             for i in range(n_per_type):
                 ing_id = f"{pkg_prefix}-{p_type}-{i + 1:03d}"
                 name = f"Std {p_type.title()} Type {i + 1}"
-                
+
                 weight = self.rng.uniform(*pkg_profile.get("weight_range", [0.01, 0.05]))
                 cost = self.rng.uniform(*pkg_profile.get("cost_range", [0.05, 0.20]))
-                
+
                 ingredients.append(Product(
                     id=ing_id,
                     name=name,
@@ -201,10 +201,10 @@ class ProductGenerator:
         for i in range(n_per_type * 2):
             ing_id = f"{act_prefix}-CHEM-{i + 1:03d}"
             name = f"Active Agent {i + 1}"
-            
+
             weight = self.rng.uniform(*act_profile.get("weight_range", [0.1, 0.5]))
             cost = self.rng.uniform(*act_profile.get("cost_range", [10.0, 50.0]))
-            
+
             ingredients.append(Product(
                 id=ing_id,
                 name=name,
@@ -214,7 +214,7 @@ class ProductGenerator:
                 cases_per_pallet=100,
                 cost_per_case=round(cost, 3)
             ))
-            
+
         # 3. Bulk Base
         blk_profile = self.ingredient_profiles.get("BASE_BULK", {})
         blk_prefix = blk_profile.get("prefix", "BLK")
@@ -223,10 +223,10 @@ class ProductGenerator:
             for i in range(3):
                 ing_id = f"{blk_prefix}-{b_type}-{i + 1:03d}"
                 name = f"Bulk {b_type.title()} Grade {i + 1}"
-                
+
                 weight = self.rng.uniform(*blk_profile.get("weight_range", [1000, 1000]))
                 cost = self.rng.uniform(*blk_profile.get("cost_range", [100.0, 100.0]))
-                
+
                 ingredients.append(Product(
                     id=ing_id,
                     name=name,
@@ -263,11 +263,11 @@ class ProductGenerator:
             logic = self.recipe_logic.get(p.category.name, self.recipe_logic.get("DEFAULT", {}))
             base_pct = logic.get("base_pct", 0.9)
             act_pct = logic.get("active_pct", 0.1)
-            
+
             # 1. Packaging Logic
             # Use packaging_type_id to guide BOM
             # e.g., PKG-TUBE-100 -> Needs TUBE, CAP, BOX
-            
+
             pkg_code = p.packaging_type_id
             container_type = None
             if pkg_code:
@@ -306,13 +306,15 @@ class ProductGenerator:
 
             # Active (Chem)
             chem_candidates = ing_map.get("CHEM", [])
-            spof_id = "ACT-CHEM-001"
-            spof_ing = next((x for x in chem_candidates if x.id == spof_id), None)
+            # Identify SPOF candidates
+            mfg_config = self.config.get("simulation_parameters", {}).get("manufacturing", {})
+            spof_id = mfg_config.get("spof", {}).get("ingredient_id", "ACT-CHEM-001")
+            spof_ing = next((i for i in ingredients if i.id == spof_id), None)
             general_chem_candidates = [x for x in chem_candidates if x.id != spof_id]
 
             if general_chem_candidates:
                 is_premium_oral = (p.category == ProductCategory.ORAL_CARE) and (p.value_segment == ValueSegment.PREMIUM)
-                
+
                 if is_premium_oral and spof_ing:
                     actives = [spof_ing]
                     if len(general_chem_candidates) > 0:
@@ -320,7 +322,7 @@ class ProductGenerator:
                 else:
                     n_actives = self.rng.integers(1, 3)
                     actives = self.rng.choice(general_chem_candidates, size=n_actives, replace=False) # type: ignore
-                
+
                 total_active_kg = p.weight_kg * act_pct
                 for act in actives:
                     qty_kg = total_active_kg / len(actives)

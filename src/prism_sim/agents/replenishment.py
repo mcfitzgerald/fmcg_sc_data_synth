@@ -143,6 +143,100 @@ class MinMaxReplenisher:
         )
         self.history_idx = 0  # Circular buffer index
 
+        # Physics Overhaul: Lead Time Tracking (v0.17.0+)
+        # Rolling history of lead times per link (target, source)
+        # Shape: [n_nodes (target), n_nodes (source), history_len]
+        # Using a fixed history length of 20 samples
+        self.lt_history_len = 20
+        self.lead_time_history = np.zeros(
+            (self.state.n_nodes, self.state.n_nodes, self.lt_history_len),
+            dtype=np.float32
+        )
+        self.lt_ptr = np.zeros((self.state.n_nodes, self.state.n_nodes), dtype=int)
+        self.lt_count = np.zeros((self.state.n_nodes, self.state.n_nodes), dtype=int)
+
+        # Physics Overhaul Phase 3: ABC Segmentation
+        # Track cumulative volume per product for dynamic classification
+        self.product_volume_history = np.zeros(self.state.n_products, dtype=np.float64)
+
+        # Z-score vector per product [n_products]
+        # Defaults to B-item target (1.65) until history accumulates
+        segmentation = params.get("segmentation", {})
+        self.z_score_A = float(segmentation.get("A", 2.33))
+        self.z_score_B = float(segmentation.get("B", 1.65))
+        self.z_score_C = float(segmentation.get("C", 1.28))
+
+        self.z_scores_vec = np.full(self.state.n_products, self.z_score_B)
+
+    def record_lead_time(self, target_id: str, source_id: str, lead_time_days: float) -> None:
+        """
+        Record a realized lead time for a specific link.
+        Phase 1 of Physics Overhaul.
+        """
+        t_idx = self.state.node_id_to_idx.get(target_id)
+        s_idx = self.state.node_id_to_idx.get(source_id)
+
+        if t_idx is None or s_idx is None:
+            return
+
+        ptr = self.lt_ptr[t_idx, s_idx]
+        self.lead_time_history[t_idx, s_idx, ptr] = lead_time_days
+
+        self.lt_ptr[t_idx, s_idx] = (ptr + 1) % self.lt_history_len
+        if self.lt_count[t_idx, s_idx] < self.lt_history_len:
+            self.lt_count[t_idx, s_idx] += 1
+
+    def get_lead_time_stats(self, target_id: str, source_id: str) -> tuple[float, float]:
+        """
+        Get Mean and StdDev of lead time for a link.
+        Returns (mu_L, sigma_L).
+        """
+        t_idx = self.state.node_id_to_idx.get(target_id)
+        s_idx = self.state.node_id_to_idx.get(source_id)
+
+        if t_idx is None or s_idx is None:
+            return 3.0, 0.0 # Default fallback
+
+        count = self.lt_count[t_idx, s_idx]
+        if count < 2:
+            return 3.0, 0.0 # Insufficient history
+
+        history = self.lead_time_history[t_idx, s_idx, :count]
+        return float(np.mean(history)), float(np.std(history, ddof=1))
+
+    def _update_abc_classification(self) -> None:
+        """
+        Dynamically classify products into A/B/C buckets based on volume.
+        Updates self.z_scores_vec.
+        
+        Logic:
+        - Sort products by total volume (descending)
+        - Calculate cumulative percentage of volume
+        - A: Top 80% volume -> Target z_score_A
+        - B: Next 15% volume -> Target z_score_B
+        - C: Bottom 5% volume -> Target z_score_C
+        """
+        total_volume = np.sum(self.product_volume_history)
+        if total_volume <= 0:
+            return
+
+        # Sort indices by volume descending
+        sorted_indices = np.argsort(self.product_volume_history)[::-1]
+
+        cumulative_vol = 0.0
+
+        for p_idx in sorted_indices:
+            vol = self.product_volume_history[p_idx]
+            cumulative_vol += vol
+            pct = cumulative_vol / total_volume
+
+            if pct <= 0.80:
+                self.z_scores_vec[p_idx] = self.z_score_A
+            elif pct <= 0.95:
+                self.z_scores_vec[p_idx] = self.z_score_B
+            else:
+                self.z_scores_vec[p_idx] = self.z_score_C
+
     def _init_policy_vectors(self) -> None:
         """Pre-calculate policy vectors based on node channels."""
         n_nodes = self.state.n_nodes
@@ -272,6 +366,15 @@ class MinMaxReplenisher:
         self.demand_history_buffer[idx] = daily_demand
         self.history_idx += 1
 
+        # Physics Overhaul Phase 3: Update volume history
+        # Sum demand across all nodes for network-wide popularity
+        total_daily_vol = np.sum(daily_demand, axis=0)
+        self.product_volume_history += total_daily_vol
+
+        # Re-classify every week
+        if self.history_idx % 7 == 0:
+            self._update_abc_classification()
+
     def get_demand_std(self) -> np.ndarray:
         """
         Calculate demand standard deviation per node-product.
@@ -288,7 +391,7 @@ class MinMaxReplenisher:
         n_samples = min(self.history_idx, self.variance_lookback)
         # Calculate std along time axis (axis 0)
         # Use ddof=1 for sample standard deviation
-        return np.std(self.demand_history_buffer[:n_samples], axis=0, ddof=1)
+        return np.array(np.std(self.demand_history_buffer[:n_samples], axis=0, ddof=1))
 
     def record_outflow(self, allocation_matrix: np.ndarray) -> None:
         """
@@ -323,7 +426,7 @@ class MinMaxReplenisher:
         """
         if self.outflow_history is None:
             return np.zeros((self.state.n_nodes, self.state.n_products))
-        return np.mean(self.outflow_history, axis=0)
+        return np.array(np.mean(self.outflow_history, axis=0))
 
     def record_inflow(self, orders: list[Order]) -> None:
         """
@@ -377,7 +480,7 @@ class MinMaxReplenisher:
         """
         if self.inflow_history is None:
             return np.zeros((self.state.n_nodes, self.state.n_products))
-        return np.mean(self.inflow_history, axis=0)
+        return np.array(np.mean(self.inflow_history, axis=0))
 
     def _build_supplier_map(self) -> dict[str, str]:
         """Builds a lookup map for Store -> Source ID."""
@@ -398,7 +501,12 @@ class MinMaxReplenisher:
         # Order staggering: Stores order daily to improve service level
         # v0.15.8: Reduced from 3-day to 1-day cycle for better service level
         # With higher target/ROP (14/10 days), daily ordering is sustainable
-        order_cycle_days = 1  # Stores order daily
+        params = (
+            self.config.get("simulation_parameters", {})
+            .get("agents", {})
+            .get("replenishment", {})
+        )
+        order_cycle_days = int(params.get("order_cycle_days", 1))
 
         # Identify active promos for this week
         active_promos = []
@@ -434,9 +542,8 @@ class MinMaxReplenisher:
                     # v0.15.9: Customer DCs now order daily (was 5-day cycle)
                     # Daily ordering creates smoother demand signals upstream
                     # and faster response to inventory shortages
-                    dc_cycle_days = 1
-                    order_day = hash(n_id) % dc_cycle_days
-                    if day % dc_cycle_days != order_day:
+                    order_day = hash(n_id) % order_cycle_days
+                    if day % order_cycle_days != order_day:
                         continue  # Skip this DC today
 
                 target_indices.append(idx)
@@ -496,23 +603,54 @@ class MinMaxReplenisher:
             .get("replenishment", {})
         )
         lead_time = float(replenishment_params.get("lead_time_days", 3.0))
-        z_factor = float(replenishment_params.get("service_level_z", 1.65))
         min_ss_days = float(replenishment_params.get("min_safety_stock_days", 3.0))
 
         # Calculate Demand Standard Deviation for target nodes
         full_sigma = self.get_demand_std()
         sigma = full_sigma[target_idx_arr, :]
 
-        # 1. Cycle Stock = Average Demand during Lead Time
-        cycle_stock = avg_demand * lead_time
+        # Physics Overhaul Phase 2: Vectorized Lead Time Stats
+        # Fetch lead time stats for each target node -> supplier link
+        # Shape: [n_targets, 1] - applies to all products for that link
+        n_targets = len(target_indices)
+        mu_L_vec = np.zeros((n_targets, 1))
+        sigma_L_vec = np.zeros((n_targets, 1))
 
-        # 2. Safety Stock = Z * Sigma * sqrt(Lead Time)
+        for i, t_idx in enumerate(target_indices):
+            target_id = self.state.node_idx_to_id[t_idx]
+            source_id = self.store_supplier_map.get(target_id)
+            if source_id:
+                mu, sigma_val = self.get_lead_time_stats(target_id, source_id)
+                mu_L_vec[i, 0] = mu
+                sigma_L_vec[i, 0] = sigma_val
+            else:
+                mu_L_vec[i, 0] = lead_time  # Fallback to config default
+                sigma_L_vec[i, 0] = 0.0
+
+        # 1. Cycle Stock = Average Demand * Mean Lead Time
+        # Using realized mean lead time instead of static config
+        cycle_stock = avg_demand * mu_L_vec
+
+        # 2. Safety Stock = Full Formula
+        # SS = z * sqrt( mu_L * sigma_D^2 + mu_D^2 * sigma_L^2 )
+        # Protects against both Demand Variability and Supply Variability
+
         # Check if we have enough history for sigma
         min_history = 7
         use_variance_logic = self.history_idx >= min_history
 
         if use_variance_logic:
-            safety_stock = z_factor * sigma * np.sqrt(lead_time)
+            # Variance of demand during lead time
+            demand_risk_sq = mu_L_vec * (sigma**2)
+
+            # Variance of supply (lead time) affecting total demand
+            supply_risk_sq = (avg_demand**2) * (sigma_L_vec**2)
+
+            # Combined Standard Deviation
+            combined_sigma = np.sqrt(demand_risk_sq + supply_risk_sq)
+
+            # Physics Overhaul Phase 3: Use Dynamic Z-Scores (ABC Segmentation)
+            safety_stock = self.z_scores_vec * combined_sigma
 
             # Floor safety stock to minimum days coverage (hybrid approach)
             # This protects against ultra-low variance artifacts or zero sigma
@@ -522,7 +660,7 @@ class MinMaxReplenisher:
             reorder_point = cycle_stock + safety_stock
 
             # Target Stock (Order-Up-To)
-            # We use the target_days logic for S, ensuring S > ROP
+            # S = max(TargetDays * AvgDemand, ROP + Buffer)
             target_stock_days = self.target_days_vec[target_idx_arr]
             target_stock = np.maximum(
                 avg_demand * target_stock_days,
@@ -555,7 +693,7 @@ class MinMaxReplenisher:
         rows, cols = np.nonzero(batched_qty)
 
         # Prepare Order Data
-        orders_by_target: dict[int, dict] = {} # target_idx -> {lines: [], type: ...}
+        orders_by_target: dict[int, dict[str, Any]] = {} # target_idx -> {lines: [], type: ...}
 
         for r, c in zip(rows, cols, strict=True):
             qty = batched_qty[r, c]

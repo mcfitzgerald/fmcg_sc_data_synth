@@ -7,8 +7,9 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 if TYPE_CHECKING:
-    from prism_sim.product.core import Product, Recipe
     from numpy.typing import NDArray
+
+    from prism_sim.product.core import Product, Recipe
 
 
 class RecipeMatrixBuilder:
@@ -44,7 +45,7 @@ class RecipeMatrixBuilder:
                         # In a strict simulation, this might be an error.
                         # For now, we assume ingredients might be outside the list if filtering happened.
                         pass
-        
+
         return matrix
 
     def get_id_mapping(self) -> dict[str, int]:

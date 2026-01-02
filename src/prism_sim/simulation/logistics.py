@@ -1,10 +1,8 @@
-import math
 from typing import Any
 
 from prism_sim.network.core import (
     CustomerChannel,
     Link,
-    Node,
     NodeType,
     Order,
     OrderLine,
@@ -34,7 +32,7 @@ class LogisticsEngine:
         self.max_volume_m3 = float(constraints.get("truck_max_volume_m3", 60.0))
         self.epsilon_weight = float(constraints.get("epsilon_weight_kg", 0.001))
         self.epsilon_volume = float(constraints.get("epsilon_volume_m3", 0.0001))
-        
+
         # Channel Rules
         self.channel_rules = log_config.get("channel_rules", {})
 
@@ -148,9 +146,14 @@ class LogisticsEngine:
             lead_time = link.lead_time_days if link else 1.0
             arrival_day = current_day + int(lead_time)
 
+            # Physics Overhaul: Track earliest order day for effective lead time
+            earliest_order_day = current_day
+            if route_orders:
+                earliest_order_day = min(o.creation_day for o in route_orders)
+
             # Bin Packing Loop
             current_shipment = self._new_shipment(
-                source_id, target_id, current_day, arrival_day, shipment_counter
+                source_id, target_id, current_day, arrival_day, shipment_counter, earliest_order_day
             )
             shipment_counter += 1
 
@@ -178,6 +181,7 @@ class LogisticsEngine:
                             current_day,
                             arrival_day,
                             shipment_counter,
+                            earliest_order_day
                         )
                         shipment_counter += 1
                         weight_space = self.max_weight_kg
@@ -195,7 +199,7 @@ class LogisticsEngine:
                     if fit_qty < 1e-9:
                         if not current_shipment.lines:
                             # Item exceeds empty truck dimensions?
-                            # Forcing 1 unit if it's just a float issue, 
+                            # Forcing 1 unit if it's just a float issue,
                             # but if it's physically too big, error.
                             # Assuming standard pallets fit.
                             raise ValueError(
@@ -210,6 +214,7 @@ class LogisticsEngine:
                                 current_day,
                                 arrival_day,
                                 shipment_counter,
+                                earliest_order_day
                             )
                             shipment_counter += 1
                             continue
@@ -236,9 +241,9 @@ class LogisticsEngine:
         """
         weight_tons = shipment.total_weight_kg / 1000.0
         base_emissions = weight_tons * distance_km * self.co2_emission_factor
-        
+
         # Emissions can be affected by risk events (carbon tax spike)
-        # Note: We don't have direct access to risks here easily without passing it, 
+        # Note: We don't have direct access to risks here easily without passing it,
         # but we can check config for a static multiplier or assume it's applied later.
         # For now, return base.
         return base_emissions
@@ -261,7 +266,7 @@ class LogisticsEngine:
         return active, arrived
 
     def _new_shipment(
-        self, source: str, target: str, day: int, arrival: int, counter: int
+        self, source: str, target: str, day: int, arrival: int, counter: int, original_order_day: int | None = None
     ) -> Shipment:
         return Shipment(
             id=f"SHP-{day}-{source}-{target}-{counter}",
@@ -271,13 +276,15 @@ class LogisticsEngine:
             arrival_day=arrival,
             lines=[],
             status=ShipmentStatus.IN_TRANSIT,
+            original_order_day=original_order_day,
         )
 
     def _get_channel_rules(self, channel: CustomerChannel | None) -> dict[str, Any]:
         """Get logistics rules for a channel."""
         if not channel:
             return {}
-        return self.channel_rules.get(channel.value, self.channel_rules.get(channel.name, {}))
+        res = self.channel_rules.get(channel.value, self.channel_rules.get(channel.name, {}))
+        return dict(res) if res is not None else {}
 
     def _calculate_pallets(self, order: Order) -> float:
         """Calculate total pallets for an order."""
@@ -287,7 +294,7 @@ class LogisticsEngine:
             if product and product.cases_per_pallet > 0:
                 pallets += line.quantity / product.cases_per_pallet
         return pallets
-    
+
     def get_staged_inventory(self) -> dict[str, float]:
         """
         Return the amount of inventory currently held in staging (waiting for FTL).

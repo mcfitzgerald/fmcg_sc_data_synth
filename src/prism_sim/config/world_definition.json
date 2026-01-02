@@ -2,6 +2,7 @@
   "topology": {
     "target_counts": {
       "retailer_dcs": 20,
+      "stores_per_retailer_dc": 100,
       "club_stores": 30,
       "distributor_dcs": 8,
       "small_retailers": 4000,

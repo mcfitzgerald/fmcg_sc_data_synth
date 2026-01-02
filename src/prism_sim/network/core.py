@@ -95,7 +95,7 @@ class Order:
     creation_day: int
     lines: list[OrderLine] = field(default_factory=list)
     status: str = "OPEN"  # OPEN, IN_TRANSIT, CLOSED
-    
+
     # Advanced attributes
     order_type: OrderType = OrderType.STANDARD
     promo_id: str | None = None
@@ -119,6 +119,9 @@ class Shipment:
     arrival_day: int
     lines: list[OrderLine] = field(default_factory=list)
     status: ShipmentStatus = ShipmentStatus.PENDING
+
+    # Physics Overhaul: Track effective lead time
+    original_order_day: int | None = None
 
     # Physicals
     total_weight_kg: float = 0.0

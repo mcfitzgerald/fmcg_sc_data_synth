@@ -28,7 +28,7 @@ class StateManager:
         sorted_pids = sorted(self.world.products.keys())
         sorted_products = [self.world.products[pid] for pid in sorted_pids]
         recipes = list(self.world.recipes.values())
-        
+
         builder = RecipeMatrixBuilder(sorted_products, recipes)
         self.recipe_matrix = builder.build_matrix()
 

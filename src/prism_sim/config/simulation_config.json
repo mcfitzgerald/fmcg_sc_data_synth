@@ -27,6 +27,12 @@
         "service_level_z": 1.65,
         "min_safety_stock_days": 3.0,
         "variance_lookback_days": 28,
+        "order_cycle_days": 1,
+        "segmentation": {
+          "A": 2.33,
+          "B": 1.65,
+          "C": 1.28
+        },
         "channel_profiles": {
           "B2M_LARGE": {
             "target_days": 21.0,
@@ -77,6 +83,14 @@
         "PERSONAL_WASH": { "base_daily_demand": 7.0 },
         "HOME_CARE": { "base_daily_demand": 7.0 },
         "INGREDIENT": { "base_daily_demand": 0.0 }
+      },
+      "format_scale_factors": {
+        "SUPERMARKET": 1.0,
+        "HYPERMARKET": 1.0,
+        "CONVENIENCE": 0.5,
+        "CLUB": 15.0,
+        "ECOM_FC": 50.0,
+        "PHARMACY": 0.8
       },
       "channel_value_segment_mix": {
         "B2M_CLUB": {
@@ -226,6 +240,7 @@
       "inventory_turns_range": [6.0, 14.0],
       "cost_per_case_range": [1.00, 3.00],
       "mass_balance_drift_max": 0.02,
+      "mass_balance_min_threshold": 1.0,
       "min_samples_for_variance": 2,
       "perfect_order_threshold": 0.90,
       "mape_base": 0.30,
