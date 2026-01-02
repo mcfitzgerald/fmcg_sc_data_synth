@@ -49,7 +49,7 @@ Any code change must preserve these. Violations indicate bugs:
 | Concept | File | Key Classes/Functions |
 |---------|------|----------------------|
 | **POS demand generation** | `simulation/demand.py` | `POSEngine.generate_daily_demand()` |
-| **Replenishment orders** | `agents/replenishment.py` | `MinMaxReplenisher.generate_orders()` |
+| **Replenishment orders** | `agents/replenishment.py` | `MinMaxReplenisher` (Variance-aware ROP) |
 | **Order allocation** | `agents/allocation.py` | `AllocationAgent.allocate()` |
 
 ### Manufacturing
@@ -601,6 +601,7 @@ Orchestrator
 
 | Version | Key Changes |
 |---------|-------------|
+| 0.16.0 | **Variance-Aware Safety Stock** - Implemented dynamic ROP ($ROP = \mu_L + z\sigma_L$) replacing static days-of-supply; (s,S) policies now use Inventory Position (IP) to prevent double-ordering; System stable with Zipfian demand (76% SL) |
 | 0.15.9 | **Service Level Phase 2 (Demand Signal Fix)** - Inflow-based demand for customer DCs (orders received vs shipped); Daily DC ordering (5d→1d); Higher DC buffers (21/14 days); MRP order signal; Awaiting 365-day validation |
 | 0.15.8 | **Service Level Phase 1** - ECOM FC demand signal fix; Increased replenishment targets (14/10 days); Daily store ordering; Higher initial inventory priming; Service level 75% → 80.5% |
 | 0.15.7 | **Inventory Turns Fix** - Exclude raw materials from turns calculation; FG mask for metrics |

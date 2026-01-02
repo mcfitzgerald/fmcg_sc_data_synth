@@ -65,7 +65,7 @@ Upstream nodes (Plants, RDCs) need higher inventory targets because end-to-end s
   - Creates larger safety stock buffers at upstream nodes
 
 ### Validation
-Service level at 80.62% after Phases 1-2. Phase 3 (Zipfian SKU demand) now enabled with variance-aware replenishment.
+Service level stabilized at 76.20% in 365-day run with Zipfian demand enabled (System survives full year without collapse). Inventory turns at 4.73x. Further tuning of Z-scores required to reach >90% target.
 
 ---
 
