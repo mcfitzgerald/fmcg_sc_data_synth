@@ -58,6 +58,7 @@
       }
     },
     "demand": {
+      "sku_popularity_alpha": 0.5,
       "seasonality": {
         "amplitude": 0.12,
         "phase_shift_days": 150,
@@ -145,8 +146,8 @@
       "co2_emission_factor_kg_per_ton_km": 0.1
     },
     "manufacturing": {
-      "target_days_supply": 14.0,
-      "reorder_point_days": 7.0,
+      "target_days_supply": 28.0,
+      "reorder_point_days": 21.0,
       "mrp_thresholds": {
         "demand_signal_collapse_pct": 0.4,
         "velocity_trend_threshold_pct": 0.6,

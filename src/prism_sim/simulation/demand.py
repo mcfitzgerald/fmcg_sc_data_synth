@@ -234,9 +234,71 @@ class POSEngine:
         
         self.calendar = PromoCalendar(world, weeks_per_year, config)
 
+        # Build SKU popularity weights using Zipf distribution
+        # Top 20% of SKUs generate ~80% of volume (Pareto principle)
+        self._build_sku_popularity_weights()
+
         # Base Demand (Cases per day)
         self.base_demand = np.zeros((state.n_nodes, state.n_products), dtype=np.float32)
         self._init_base_demand()
+
+    def _build_sku_popularity_weights(self) -> None:
+        """
+        Build channel-specific SKU popularity weights using Zipf distribution.
+
+        Creates realistic FMCG demand patterns where:
+        - Top 20% of SKUs generate ~80% of volume (Pareto principle)
+        - Different channels have different "top" SKUs based on segment affinity
+        - Club stores favor VALUE/bulk SKUs, DTC favors PREMIUM, etc.
+
+        The Zipf exponent (alpha) controls concentration:
+        - alpha=1.0: Moderate concentration
+        - alpha=1.05: Standard FMCG (used here)
+        - alpha>1.2: High concentration (few dominant SKUs)
+        """
+        demand_config = (
+            self.config.get("simulation_parameters", {}).get("demand", {})
+        )
+        alpha = demand_config.get("sku_popularity_alpha", 1.05)
+
+        # Get finished goods only (SKU-* products, not ingredients)
+        finished_goods = [
+            p for p in self.world.products.values()
+            if p.category.name != "INGREDIENT"
+        ]
+        n_skus = len(finished_goods)
+
+        if n_skus == 0:
+            self.sku_popularity_weights: dict[str, float] = {}
+            self.channel_sku_weights: dict[str, dict[str, float]] = {}
+            return
+
+        # Build per-channel rankings based on segment affinity
+        self.channel_sku_weights: dict[str, dict[str, float]] = {}
+
+        for channel_name, segment_weights in self.channel_segment_weights.items():
+            # Sort SKUs by segment affinity (higher weight = earlier rank)
+            # Then alphabetically within same affinity for determinism
+            def sort_key(p: Any) -> tuple[float, str]:
+                seg_weight = segment_weights.get(p.value_segment, 0.0)
+                return (-seg_weight, p.id)  # Descending affinity, then alpha
+
+            sorted_skus = sorted(finished_goods, key=sort_key)
+
+            # Apply Zipf to this channel-specific ordering
+            ranks = np.arange(1, n_skus + 1, dtype=np.float64)
+            raw_weights = 1.0 / np.power(ranks, alpha)
+            normalized = raw_weights / raw_weights.sum() * n_skus
+
+            self.channel_sku_weights[channel_name] = {
+                sku.id: float(normalized[i])
+                for i, sku in enumerate(sorted_skus)
+            }
+
+        # Keep global weights as fallback (use B2M_LARGE as default)
+        self.sku_popularity_weights = self.channel_sku_weights.get(
+            "B2M_LARGE", {}
+        )
 
     def _init_base_demand(self) -> None:
         """
@@ -303,8 +365,16 @@ class POSEngine:
                     elif fmt == "ECOM_FC":
                         scale_factor = 50.0  # Fulfillment center (no child stores)
 
+                # SKU Popularity Weight (Channel-specific Zipf distribution)
+                channel_weights = self.channel_sku_weights.get(
+                    channel_name, self.sku_popularity_weights
+                )
+                sku_weight = channel_weights.get(p_id, 1.0)
+
                 # Final Demand
-                self.base_demand[n_idx, p_idx] = base_cat_demand * seg_weight * scale_factor
+                self.base_demand[n_idx, p_idx] = (
+                    base_cat_demand * seg_weight * scale_factor * sku_weight
+                )
 
     def generate_demand(self, day: int) -> np.ndarray:
         """Generates demand for a specific day."""
@@ -351,3 +421,19 @@ class POSEngine:
             if n_active > 0:
                 return float(total_base / n_active)
         return 1.0
+
+    def get_base_demand_matrix(self) -> np.ndarray:
+        """
+        Return the base_demand matrix for demand-proportional inventory priming.
+
+        This exposes the per-node, per-SKU demand levels which incorporate
+        Zipfian popularity weights, channel segment affinities, and store
+        format scale factors.
+
+        Used by Orchestrator._initialize_inventory() to prime inventory
+        proportional to expected demand rather than uniformly.
+
+        Returns:
+            np.ndarray: Shape [n_nodes, n_products] - base daily demand per cell
+        """
+        return self.base_demand.copy()

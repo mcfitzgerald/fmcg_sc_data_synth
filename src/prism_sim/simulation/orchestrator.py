@@ -124,7 +124,14 @@ class Orchestrator:
         self._fg_product_mask = self._build_finished_goods_mask()
 
     def _initialize_inventory(self) -> None:
-        """Seed initial inventory across the network (Priming)."""
+        """
+        Seed initial inventory across the network (Priming).
+
+        v0.16.0: Uses demand-proportional priming for Stores and Customer DCs.
+        Each SKU gets inventory proportional to its expected demand (including
+        Zipfian popularity weights), preventing immediate stockouts on popular
+        SKUs when using concentrated demand distributions.
+        """
         # Get manufacturing config for plant initial inventory
         sim_params = self.config.get("simulation_parameters", {})
         mfg_config = sim_params.get("manufacturing", {})
@@ -140,45 +147,74 @@ class Orchestrator:
         rdc_multiplier = init_config.get("rdc_store_multiplier", 1500.0)
         customer_dc_days = init_config.get("customer_dc_days_supply", 21.0)
 
-        # Base demand proxy (calculated from POSEngine)
-        base_demand = self.pos_engine.get_average_demand_estimate()
-        print(f"Orchestrator: Priming inventory with base_demand={base_demand:.2f}")
+        # Get per-SKU demand matrix for demand-proportional priming
+        # This includes Zipfian popularity, channel segment, and store format weights
+        base_demand_matrix = self.pos_engine.get_base_demand_matrix()
 
-        # Calculate Levels
-        store_level = base_demand * store_days
-        rdc_level = base_demand * rdc_multiplier * rdc_days
+        # Also get scalar average for RDC priming and logging
+        avg_demand = self.pos_engine.get_average_demand_estimate()
+        print(f"Orchestrator: Priming inventory with base_demand={avg_demand:.2f}")
+
+        # Calculate RDC level (still uses scalar - RDCs aggregate across downstream)
+        rdc_level = avg_demand * rdc_multiplier * rdc_days
 
         # Seed finished goods at RDCs and Stores
         for node_id, node in self.world.nodes.items():
             if node.type == NodeType.STORE:
                 node_idx = self.state.node_id_to_idx.get(node_id)
                 if node_idx is not None:
-                    self.state.perceived_inventory[node_idx, :] = store_level
-                    self.state.actual_inventory[node_idx, :] = store_level
+                    # v0.16.0: Demand-proportional priming per SKU
+                    # Each SKU gets inventory = base_demand_for_that_sku * days_supply
+                    node_demand = base_demand_matrix[node_idx, :]
+                    sku_levels = node_demand * store_days
+                    self.state.perceived_inventory[node_idx, :] = sku_levels
+                    self.state.actual_inventory[node_idx, :] = sku_levels
 
             elif node.type == NodeType.DC:
                 node_idx = self.state.node_id_to_idx.get(node_id)
                 if node_idx is not None:
                     if node_id.startswith("RDC-"):
-                        # Manufacturer RDCs use fixed multiplier
-                        dc_level = rdc_level
-                    else:
-                        # Customer DCs: scale by downstream store count
-                        # Count downstream stores for this DC
-                        downstream_stores = sum(
-                            1
-                            for link in self.world.links.values()
-                            if link.source_id == node_id
-                            and self.world.nodes.get(link.target_id)
-                            and self.world.nodes[link.target_id].type
-                            == NodeType.STORE
-                        )
-                        # Customer DC level = base_demand × store_count × target_days
-                        # v0.15.8: Use config value for customer DC days supply
-                        dc_level = base_demand * max(downstream_stores, 1) * customer_dc_days
+                        # Manufacturer RDCs: aggregate downstream DC/store demand per SKU
+                        # Sum demand across all nodes this RDC supplies
+                        rdc_downstream_demand = np.zeros(self.state.n_products)
+                        for link in self.world.links.values():
+                            if link.source_id == node_id:
+                                t_idx = self.state.node_id_to_idx.get(link.target_id)
+                                if t_idx is not None:
+                                    rdc_downstream_demand += base_demand_matrix[t_idx, :]
 
-                    self.state.perceived_inventory[node_idx, :] = dc_level
-                    self.state.actual_inventory[node_idx, :] = dc_level
+                        # Fallback to uniform if no downstream found
+                        if rdc_downstream_demand.sum() == 0:
+                            rdc_downstream_demand = np.full(
+                                self.state.n_products, avg_demand * rdc_multiplier
+                            )
+
+                        # RDC inventory = downstream demand × rdc_days_supply
+                        rdc_sku_levels = rdc_downstream_demand * rdc_days
+                        self.state.perceived_inventory[node_idx, :] = rdc_sku_levels
+                        self.state.actual_inventory[node_idx, :] = rdc_sku_levels
+                    else:
+                        # Customer DCs: aggregate downstream store demand per SKU
+                        # Sum base_demand across all downstream stores for each SKU
+                        downstream_demand = np.zeros(self.state.n_products)
+                        for link in self.world.links.values():
+                            if link.source_id == node_id:
+                                target_node = self.world.nodes.get(link.target_id)
+                                if target_node and target_node.type == NodeType.STORE:
+                                    t_idx = self.state.node_id_to_idx.get(link.target_id)
+                                    if t_idx is not None:
+                                        downstream_demand += base_demand_matrix[t_idx, :]
+
+                        # Fallback to uniform if no downstream stores
+                        if downstream_demand.sum() == 0:
+                            downstream_demand = np.full(
+                                self.state.n_products, avg_demand
+                            )
+
+                        # DC inventory = aggregated downstream demand × days supply
+                        dc_levels = downstream_demand * customer_dc_days
+                        self.state.perceived_inventory[node_idx, :] = dc_levels
+                        self.state.actual_inventory[node_idx, :] = dc_levels
 
             # Seed raw materials at Plants
             elif node.type == NodeType.PLANT:

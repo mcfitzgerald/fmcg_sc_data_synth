@@ -7,7 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.16.0] - 2026-01-02
 
-### Phase 1: Inventory Position Fix for (s,S) Replenishment
+### Service Level Fix: Physics-Based Multi-Phase Approach
+
+This release implements a multi-phase fix for the 81% service level problem.
+
+#### Phase 1: Inventory Position Fix for (s,S) Replenishment
 
 This release implements the fundamental Inventory Position fix for (s,S) replenishment decisions. Per Zipkin's "Foundations of Inventory Management", (s,S) policies must use Inventory Position (On-Hand + In-Transit) rather than just On-Hand inventory to prevent double-ordering oscillation.
 
@@ -37,8 +41,18 @@ After (v0.16.0):
 - `src/prism_sim/simulation/state.py`: Added `get_in_transit_by_target()` method
 - `src/prism_sim/agents/replenishment.py`: Uses Inventory Position for (s,S) decisions
 
+#### Phase 2: Multi-Echelon Service Level Targets
+
+Upstream nodes (Plants, RDCs) need higher inventory targets because end-to-end service level is the product of individual node service levels (0.95³ ≈ 85%).
+
+### Changed
+- **Manufacturing Targets (`simulation_config.json`):**
+  - `target_days_supply`: 14 → 28 days
+  - `reorder_point_days`: 7 → 21 days
+  - Creates larger safety stock buffers at upstream nodes
+
 ### Validation
-Service level at 80.63% (unchanged from ~81%). This is Phase 1 of a 3-phase fix. The plan requires all phases (IP fix, Multi-Echelon SL targets, Zipfian SKU demand) to work together for full improvement to 95%+.
+Service level at 80.62% after Phases 1-2. Phase 3 (Zipfian SKU demand) still required.
 
 ---
 
