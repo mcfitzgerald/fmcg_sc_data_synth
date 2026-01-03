@@ -4,7 +4,7 @@ from prism_sim.network.core import Link, Node, NodeType
 from prism_sim.product.core import Product, ProductCategory
 
 
-def test_node_creation():
+def test_node_creation() -> None:
     node = Node(
         id="RDC-NAM-NE",
         name="Northeast RDC",
@@ -17,7 +17,7 @@ def test_node_creation():
     assert node.storage_capacity == 50000
 
 
-def test_link_creation():
+def test_link_creation() -> None:
     link = Link(
         id="LANE-PA-NY",
         source_id="RDC-NAM-NE",
@@ -29,7 +29,7 @@ def test_link_creation():
     assert link.distance_km == 150
 
 
-def test_product_physics():
+def test_product_physics() -> None:
     # Test "The Brick" (Soap)
     soap = Product(
         id="SKU-SOAP-001",

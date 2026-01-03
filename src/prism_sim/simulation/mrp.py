@@ -147,7 +147,8 @@ class MRPEngine:
         )
         # Fallback if no stores found
         if n_stores == 0:
-            n_stores = 100
+            mfg_config = self.config.get("simulation_parameters", {}).get("manufacturing", {})
+            n_stores = int(mfg_config.get("default_store_count", 100))
 
         self.expected_daily_demand = np.zeros(self.state.n_products, dtype=np.float64)
 
@@ -184,7 +185,7 @@ class MRPEngine:
             .get("abc_prioritization", {})
         )
         enabled = abc_config.get("enabled", True)
-        
+
         if not enabled:
             return
 
@@ -204,7 +205,7 @@ class MRPEngine:
 
         sorted_indices = np.argsort(self.expected_daily_demand)[::-1]
         cumulative_volume = np.cumsum(self.expected_daily_demand[sorted_indices])
-        
+
         # Determine cutoffs
         # side='right' ensures boundary items are included in the higher priority category
         idx_a = np.searchsorted(cumulative_volume, total_volume * thresh_a, side='right')
@@ -365,7 +366,7 @@ class MRPEngine:
             # v0.19.3: Apply ABC multiplier to ROP (Phase 2)
             # A-items get higher ROP (earlier ordering), C-items get lower
             effective_rop = self.rop_vector[p_idx] * self.abc_rop_multiplier[p_idx]
-            
+
             if dos_position < effective_rop:
                 # Calculate quantity needed to reach target days supply
                 target_inventory = avg_daily_demand * self.target_vector[p_idx]
@@ -379,7 +380,9 @@ class MRPEngine:
                     #   2. 7 days of demand (cover lead time)
                     #   3. Absolute floor of 1000 cases (avoid tiny batches)
                     demand_based_min = avg_daily_demand * 7.0  # 7 days coverage
-                    absolute_min = 1000.0  # Minimum viable batch
+                    
+                    mfg_config = self.config.get("simulation_parameters", {}).get("manufacturing", {})
+                    absolute_min = float(mfg_config.get("min_batch_size_absolute", 1000.0))  # Minimum viable batch
                     order_qty = max(net_requirement, demand_based_min, absolute_min)
 
                     # Assign to a plant (simple round-robin for now)

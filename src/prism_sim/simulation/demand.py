@@ -273,7 +273,6 @@ class POSEngine:
             return
 
         # Build per-channel rankings based on segment affinity
-        self.channel_sku_weights: dict[str, dict[str, float]] = {}
 
         for channel_name, segment_weights in self.channel_segment_weights.items():
             # Sort SKUs by segment affinity (higher weight = earlier rank)

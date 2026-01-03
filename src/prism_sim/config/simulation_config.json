@@ -41,6 +41,7 @@
         "order_cycle_days": 1,
         "store_batch_size_cases": 20.0,
         "lead_time_history_len": 20,
+        "min_history_days": 7,
         "segmentation": {
           "A": 2.33,
           "B": 1.65,
@@ -196,12 +197,14 @@
         "SPOF": { "reorder_point_days": 14.0, "target_days_supply": 21.0 }
       },
       "min_production_qty": 25000.0,
+      "min_batch_size_absolute": 1000.0,
       "min_ingredient_moq": 100.0,
       "production_lead_time_days": 3,
       "production_hours_per_day": 24.0,
       "efficiency_factor": 0.95,
       "unplanned_downtime_pct": 0.05,
       "backup_supplier_cost_premium": 0.25,
+      "default_store_count": 100,
       "plant_parameters": {
         "PLANT-OH": {
           "description": "Legacy plant - upgraded efficiency, still higher downtime",

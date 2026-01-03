@@ -74,6 +74,19 @@ class Link:
             raise ValueError("Link ID cannot be empty")
 
 
+class OrderPriority(enum.IntEnum):
+    RUSH = 1
+    HIGH = 2
+    STANDARD = 5
+    LOW = 10
+
+
+class ABCClass(enum.StrEnum):
+    A = "A"
+    B = "B"
+    C = "C"
+
+
 class OrderType(enum.Enum):
     STANDARD = "standard"      # Normal replenishment (70%)
     RUSH = "rush"              # Expedited handling (10%)
@@ -99,7 +112,7 @@ class Order:
     # Advanced attributes
     order_type: OrderType = OrderType.STANDARD
     promo_id: str | None = None
-    priority: int = 5  # 1=highest, 10=lowest
+    priority: OrderPriority = OrderPriority.STANDARD  # 1=highest, 10=lowest
     requested_date: int | None = None  # Day number
 
 

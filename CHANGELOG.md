@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.19.6] - 2026-01-03
+
+### Refactoring
+- **Config-Driven Logic:** Replaced "genuine logic hardcodes" with configuration parameters and enums to improve maintainability and flexibility.
+  - **Enums:** Introduced `OrderPriority` (`RUSH`, `HIGH`, `STANDARD`, `LOW`) and `ABCClass` (`A`, `B`, `C`) in `core.py` to replace integer/string literals.
+  - **Configuration:** Added `min_history_days` to `replenishment` config and `min_batch_size_absolute`, `default_store_count` to `manufacturing` config in `simulation_config.json`.
+  - **Agents:** Updated `replenishment.py`, `mrp.py`, and `transform.py` to use the new enums and configuration values instead of hardcoded numbers.
+
 ## [0.19.5] - 2026-01-03
 
 ### Status

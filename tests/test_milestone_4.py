@@ -16,7 +16,7 @@ from prism_sim.simulation.world import World
 
 
 @pytest.fixture
-def minimal_world():
+def minimal_world() -> World:
     world = World()
 
     # 1. Products
@@ -45,7 +45,7 @@ def minimal_world():
     return world
 
 
-def test_allocation_shortage(minimal_world):
+def test_allocation_shortage(minimal_world: World) -> None:
     state = StateManager(minimal_world)
     config = {
         "simulation_parameters": {
@@ -88,7 +88,7 @@ def test_allocation_shortage(minimal_world):
     assert state.inventory[dc_idx, soap_idx] == pytest.approx(0.0)
 
 
-def test_tetris_weight_out(minimal_world):
+def test_tetris_weight_out(minimal_world: World) -> None:
     state = StateManager(minimal_world)
     logistics = LogisticsEngine(minimal_world, state, {})
 
@@ -113,7 +113,7 @@ def test_tetris_weight_out(minimal_world):
     assert s2.lines[0].quantity == 500
 
 
-def test_tetris_cube_out(minimal_world):
+def test_tetris_cube_out(minimal_world: World) -> None:
     state = StateManager(minimal_world)
     logistics = LogisticsEngine(minimal_world, state, {})
 
@@ -132,7 +132,7 @@ def test_tetris_cube_out(minimal_world):
     assert shipments[0].lines[0].quantity == 600
 
 
-def test_transit_physics(minimal_world):
+def test_transit_physics(minimal_world: World) -> None:
     state = StateManager(minimal_world)
     # v0.15.5: Use LTL mode for store deliveries to avoid FTL minimum constraints
     logistics_config = {

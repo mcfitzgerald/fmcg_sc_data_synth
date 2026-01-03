@@ -616,6 +616,7 @@ Orchestrator
 
 | Version | Key Changes |
 |---------|-------------|
+| 0.19.6 | **Hardcode Refactoring** - Introduced `OrderPriority` and `ABCClass` enums; Moved logic parameters (`min_history_days`, `min_batch_size_absolute`, `default_store_count`) to config; Strict type safety enforcement |
 | 0.19.3 | **ABC Prioritization (Phase 1 & 2)** - Implemented Pareto-based logic for Allocation (A-items first) and MRP (ROP multipliers 1.2x/0.8x) to fix product mix issues; Configurable thresholds/multipliers |
 | 0.19.2 | **Signal Flow Optimization** - Daily DC ordering, Push Allocation, Demand-Proportional MRP batches; 90-day Service Level >90% achieved |
 | 0.19.1 | **MEIO Bug Fixes** - Fixed Customer DC IP calculation (use Local IP not Echelon IP); MRP uses POS demand as floor; Added diagnostic scripts (`diagnose_service_level.py`, `diagnose_slob.py`); Root cause identified: negative feedback spiral |

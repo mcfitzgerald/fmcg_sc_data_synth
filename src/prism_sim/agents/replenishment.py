@@ -6,6 +6,7 @@ from prism_sim.network.core import (
     NodeType,
     Order,
     OrderLine,
+    OrderPriority,
     OrderType,
     StoreFormat,
 )
@@ -487,7 +488,8 @@ class MinMaxReplenisher:
             Shape [n_nodes, n_products] - Standard deviation of demand
         """
         # Need minimum history to calculate meaningful variance
-        min_history = 7
+        repl_config = self.config.get("simulation_parameters", {}).get("agents", {}).get("replenishment", {})
+        min_history = int(repl_config.get("min_history_days", 7))
         if self.history_idx < min_history:
             # Fallback for cold start: assume zero std until we have history
             return np.zeros((self.state.n_nodes, self.state.n_products))
@@ -743,7 +745,8 @@ class MinMaxReplenisher:
         # Protects against both Demand Variability and Supply Variability
 
         # Check if we have enough history for sigma
-        min_history = 7
+        repl_config = self.config.get("simulation_parameters", {}).get("agents", {}).get("replenishment", {})
+        min_history = int(repl_config.get("min_history_days", 7))
         use_variance_logic = self.history_idx >= min_history
 
         if use_variance_logic:
@@ -927,14 +930,17 @@ class MinMaxReplenisher:
 
             # Determine Order Type
             o_type = OrderType.STANDARD
-            priority = 5
+            priority = OrderPriority.LOW
+            if node.type == NodeType.DC:
+                # DC orders are standard replenishment
+                priority = OrderPriority.STANDARD
 
             if data["promo_id"]:
                 o_type = OrderType.PROMOTIONAL
-                priority = 2
+                priority = OrderPriority.HIGH
             elif data["days_supply_min"] < 2.0: # Critical low stock
                 o_type = OrderType.RUSH
-                priority = 1
+                priority = OrderPriority.RUSH
 
             order_count += 1
             orders.append(Order(

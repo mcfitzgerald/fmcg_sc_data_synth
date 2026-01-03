@@ -18,6 +18,7 @@ from typing import Any
 import numpy as np
 
 from prism_sim.network.core import (
+    ABCClass,
     Batch,
     BatchStatus,
     NodeType,
@@ -168,7 +169,7 @@ class TransformEngine:
         # Calculate network-wide velocity per product
         velocity = np.sum(self._base_demand, axis=0)
         total_volume = np.sum(velocity)
-        
+
         if total_volume == 0:
             return
 
@@ -180,29 +181,28 @@ class TransformEngine:
         idx_a = np.searchsorted(cumulative, total_volume * thresh_a, side='right')
         idx_b = np.searchsorted(cumulative, total_volume * thresh_b, side='right')
 
-        self._product_abc_class = {}
+        self._product_abc_class: dict[str, str] = {}
         for i, p_idx in enumerate(sorted_indices):
             p_id = self.state.product_idx_to_id[p_idx]
             if i < idx_a:
-                self._product_abc_class[p_id] = 'A'
+                self._product_abc_class[p_id] = ABCClass.A
             elif i < idx_b:
-                self._product_abc_class[p_id] = 'B'
+                self._product_abc_class[p_id] = ABCClass.B
             else:
-                self._product_abc_class[p_id] = 'C'
+                self._product_abc_class[p_id] = ABCClass.C
 
-    def _get_abc_priority(self, product_id: str) -> int:
-        """Return sort priority for product (A=1, B=2, C=3)."""
-        if not hasattr(self, "_product_abc_class"):
-            return 2  # Default to B (Standard)
-        
-        cls = self._product_abc_class.get(product_id, 'B')
-        if cls == 'A':
-            return 1
-        elif cls == 'B':
-            return 2
-        else:
-            return 3
-
+        def _get_abc_priority(self, product_id: str) -> int:
+            """Return sort priority for product (A=1, B=2, C=3)."""
+            if not hasattr(self, "_product_abc_class"):
+                return 2  # Default to B (Standard)
+            
+            cls = self._product_abc_class.get(product_id, ABCClass.B)
+            if cls == ABCClass.A:
+                return 1
+            elif cls == ABCClass.B:
+                return 2
+            else:
+                return 3
     def process_production_orders(
         self, orders: list[ProductionOrder], current_day: int
     ) -> tuple[list[ProductionOrder], list[Batch], dict[str, float]]:
