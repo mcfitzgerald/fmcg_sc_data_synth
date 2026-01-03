@@ -47,7 +47,14 @@ def minimal_world():
 
 def test_allocation_shortage(minimal_world):
     state = StateManager(minimal_world)
-    allocator = AllocationAgent(state)
+    config = {
+        "simulation_parameters": {
+            "global_constants": {
+                "epsilon": 0.001
+            }
+        }
+    }
+    allocator = AllocationAgent(state, config)
 
     # Setup Inventory: 100 Soap (set both perceived and actual)
     dc_idx = state.node_id_to_idx["DC-01"]

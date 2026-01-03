@@ -105,6 +105,7 @@ class MinMaxReplenisher:
         # Config-driven thresholds (previously hardcoded)
         self.min_demand_floor = float(params.get("min_demand_floor", 0.1))
         self.default_min_qty = float(params.get("default_min_qty", 10.0))
+        self.store_batch_size = float(params.get("store_batch_size_cases", 20.0))
 
         # Optimization: Cache Store->Supplier map
         self.store_supplier_map = self._build_supplier_map()
@@ -136,6 +137,12 @@ class MinMaxReplenisher:
         if base_demand_matrix is not None:
             self._calculate_expected_throughput(base_demand_matrix)
 
+        # v0.19.0: Echelon Inventory Logic (MEIO)
+        # Matrix [n_customer_dcs, n_nodes] to aggregate downstream stores
+        self.echelon_matrix: np.ndarray | None = None
+        self.dc_idx_to_echelon_row: dict[int, int] = {}
+        self._build_echelon_matrix()
+
         # Vectorized Policy Parameters (N_Nodes, 1)
         self._init_policy_vectors()
 
@@ -155,7 +162,7 @@ class MinMaxReplenisher:
         # Rolling history of lead times per link (target, source)
         # Shape: [n_nodes (target), n_nodes (source), history_len]
         # Using a fixed history length of 20 samples
-        self.lt_history_len = 20
+        self.lt_history_len = int(params.get("lead_time_history_len", 20))
         self.lead_time_history = np.zeros(
             (self.state.n_nodes, self.state.n_nodes, self.lt_history_len),
             dtype=np.float32
@@ -288,7 +295,7 @@ class MinMaxReplenisher:
 
             # OVERRIDE: Stores order cases, not pallets
             if node.type == NodeType.STORE:
-                self.batch_vec[idx] = 20.0  # Reduced from 500/200/100 to 20
+                self.batch_vec[idx] = self.store_batch_size  # Config-driven override (default 20.0)
                 self.min_qty_vec[idx] = self.default_min_qty
 
     def _cache_customer_dcs(self) -> None:
@@ -366,6 +373,46 @@ class MinMaxReplenisher:
                         aggregated += base_demand_matrix[t_idx, :]
 
             self._expected_throughput[dc_idx] = aggregated
+
+    def _build_echelon_matrix(self) -> None:
+        """
+        Builds the Echelon Matrix for MEIO logic.
+        
+        M_E [n_dcs, n_nodes] where M_E[i, j] = 1 if node j is in DC i's echelon.
+        (i.e., node j is the DC itself or a downstream store).
+        """
+        if not self._customer_dc_indices:
+            return
+
+        # Map each Customer DC to a row index
+        sorted_dc_indices = sorted(list(self._customer_dc_indices))
+        self.dc_idx_to_echelon_row = {idx: i for i, idx in enumerate(sorted_dc_indices)}
+        
+        n_rows = len(sorted_dc_indices)
+        n_cols = self.state.n_nodes
+        self.echelon_matrix = np.zeros((n_rows, n_cols), dtype=np.float32)
+
+        # Build downstream map: source_id -> list of target_ids
+        downstream_map: dict[str, list[str]] = {}
+        for link in self.world.links.values():
+            downstream_map.setdefault(link.source_id, []).append(link.target_id)
+
+        # Populate matrix
+        for i, dc_idx in enumerate(sorted_dc_indices):
+            dc_id = self.state.node_idx_to_id[dc_idx]
+            
+            # 1. Include the DC itself
+            self.echelon_matrix[i, dc_idx] = 1.0
+            
+            # 2. Include all downstream stores
+            children = downstream_map.get(dc_id, [])
+            for child_id in children:
+                child_node = self.world.nodes.get(child_id)
+                # Only include Stores in the echelon (ignore other node types if any)
+                if child_node and child_node.type == NodeType.STORE:
+                    child_idx = self.state.node_id_to_idx.get(child_id)
+                    if child_idx is not None:
+                        self.echelon_matrix[i, child_idx] = 1.0
 
     def _initialize_warm_start(self, warm_start_demand: float) -> None:
         """
@@ -734,6 +781,68 @@ class MinMaxReplenisher:
         # This prevents double-ordering when shipments are already in transit
         needs_order = inventory_position < reorder_point
         raw_qty = target_stock - inventory_position
+
+        # --- v0.19.0 ECHELON INVENTORY LOGIC (Override for Customer DCs) ---
+        # For Customer DCs, we replace the Local IP logic with Echelon IP logic.
+        # Order = Echelon_Target - Echelon_IP
+        # Echelon_IP = M_E @ (On_Hand + In_Transit)
+        # Echelon_Demand = M_E @ POS_Demand (smoothed_demand)
+
+        if self.echelon_matrix is not None and self.dc_idx_to_echelon_row:
+            # Identify which targets are Customer DCs
+            dc_target_indices = []
+            echelon_rows = []
+            
+            for i, t_idx in enumerate(target_indices):
+                if t_idx in self.dc_idx_to_echelon_row:
+                    dc_target_indices.append(i) # Index in the current 'target_indices' subset
+                    echelon_rows.append(self.dc_idx_to_echelon_row[t_idx])
+            
+            if dc_target_indices:
+                dc_indices = np.array(dc_target_indices)
+                row_indices = np.array(echelon_rows)
+                
+                # 1. Calculate Echelon IP (Subset of rows relevant to these DCs)
+                # We can do the full matrix multiply or just the relevant rows.
+                # Since echelon_matrix is [n_dcs, n_nodes], full multiply is cheap.
+                # shape: [n_dcs, n_products]
+                # Note: We must use global state inventory, not the subset 'on_hand_inv'
+                
+                full_ip = self.state.inventory + self.state.get_in_transit_by_target()
+                echelon_ip_all = self.echelon_matrix @ full_ip
+                
+                # 2. Calculate Echelon Demand (Aggregated POS)
+                # smoothed_demand is [n_nodes, n_products], stores have data, DCs have 0
+                echelon_demand_all = self.echelon_matrix @ self.smoothed_demand
+                
+                # Extract relevant rows for the DCs currently being processed
+                current_e_ip = echelon_ip_all[row_indices]
+                current_e_demand = echelon_demand_all[row_indices]
+                
+                # 3. Calculate Echelon Target
+                # Target = Demand * TargetDays
+                # We use the target_days setting for the DC itself
+                # (e.g. 21 days coverage of the ENTIRE downstream network)
+                dc_target_days = self.target_days_vec[target_idx_arr[dc_indices]]
+                echelon_target = current_e_demand * dc_target_days
+                
+                # 4. Calculate Order Quantity
+                # Order = Target - IP
+                echelon_qty = echelon_target - current_e_ip
+                
+                # Override the local logic results
+                # We force needs_order = True if qty > 0 (Echelon logic is pure Order-Up-To, usually)
+                # Or we can respect a reorder point?
+                # Echelon ROP = Demand * ROP_Days
+                dc_rop_days = self.rop_vec[target_idx_arr[dc_indices]]
+                echelon_rop = current_e_demand * dc_rop_days
+                
+                needs_echelon_order = current_e_ip < echelon_rop
+                
+                # Update the main arrays
+                # We map back using dc_indices which indexes into 'raw_qty' / 'needs_order'
+                raw_qty[dc_indices] = echelon_qty
+                needs_order[dc_indices] = needs_echelon_order
 
         # Use vectorized min_qty
         order_qty = np.where(needs_order, np.maximum(raw_qty, min_qty), 0.0)

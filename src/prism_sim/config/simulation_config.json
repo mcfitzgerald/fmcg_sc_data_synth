@@ -28,6 +28,8 @@
         "min_safety_stock_days": 3.0,
         "variance_lookback_days": 28,
         "order_cycle_days": 1,
+        "store_batch_size_cases": 20.0,
+        "lead_time_history_len": 20,
         "segmentation": {
           "A": 2.33,
           "B": 1.65,

@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.19.0] - 2026-01-03
+
+### Added
+- **Echelon Inventory Logic (MEIO):** Implemented Multi-Echelon Inventory Optimization for Customer DCs. DCs now use aggregated downstream Echelon Inventory Position (DC + Stores) and Echelon Demand (POS) to trigger replenishment, resolving the "Signal Trap" where DCs stopped ordering when stores were empty.
+- **Configuration:** Added `store_batch_size_cases` and `lead_time_history_len` to `simulation_config.json` to eliminate hardcoded values in `MinMaxReplenisher`.
+
+### Changed
+- **Replenishment Logic:** Customer DCs now bypass "Orders Received" signal and link directly to POS data via Echelon logic.
+- **Refactoring:** Removed hardcoded overrides for store batch sizes and lead time history length in `replenishment.py` in favor of config-driven values.
+
 ## [0.18.2] - 2026-01-02
 
 ### Fixed
