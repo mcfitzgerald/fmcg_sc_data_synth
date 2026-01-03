@@ -64,6 +64,7 @@ class MinMaxReplenisher:
         state: StateManager,
         config: dict[str, Any],
         warm_start_demand: float = 0.0,
+        base_demand_matrix: np.ndarray | None = None,
     ) -> None:
         self.world = world
         self.state = state
@@ -127,6 +128,12 @@ class MinMaxReplenisher:
         self._customer_dc_indices: set[int] = set()
         self._downstream_store_count: dict[int, int] = {}  # dc_idx -> store count
         self._cache_customer_dcs()
+
+        # v0.18.0: Calculate expected throughput for customer DCs (physics-based floor)
+        # This prevents cold-start under-ordering when stores haven't placed orders yet
+        self._expected_throughput: dict[int, np.ndarray] = {}
+        if base_demand_matrix is not None:
+            self._calculate_expected_throughput(base_demand_matrix)
 
         # Vectorized Policy Parameters (N_Nodes, 1)
         self._init_policy_vectors()
@@ -318,6 +325,38 @@ class MinMaxReplenisher:
                     and self.world.nodes[tid].type == NodeType.STORE
                 )
                 self._downstream_store_count[idx] = max(store_count, 1)
+
+    def _calculate_expected_throughput(self, base_demand_matrix: np.ndarray) -> None:
+        """
+        Calculate expected daily throughput for customer DCs from downstream stores.
+
+        This provides a physics-based floor for the demand signal, preventing
+        cold-start under-ordering when stores haven't placed orders yet (Days 1-7).
+
+        For each customer DC, we aggregate the base_demand from all downstream
+        stores. This represents the expected steady-state demand that will flow
+        through the DC, regardless of whether stores have ordered yet.
+
+        Args:
+            base_demand_matrix: Shape [n_nodes, n_products] from POSEngine
+        """
+        # Build downstream map: source_id -> [target_ids]
+        downstream_map: dict[str, list[str]] = {}
+        for link in self.world.links.values():
+            downstream_map.setdefault(link.source_id, []).append(link.target_id)
+
+        for dc_idx in self._customer_dc_indices:
+            dc_id = self.state.node_idx_to_id[dc_idx]
+            aggregated = np.zeros(self.state.n_products, dtype=np.float64)
+
+            for target_id in downstream_map.get(dc_id, []):
+                target_node = self.world.nodes.get(target_id)
+                if target_node and target_node.type == NodeType.STORE:
+                    t_idx = self.state.node_id_to_idx.get(target_id)
+                    if t_idx is not None:
+                        aggregated += base_demand_matrix[t_idx, :]
+
+            self._expected_throughput[dc_idx] = aggregated
 
     def _initialize_warm_start(self, warm_start_demand: float) -> None:
         """
@@ -582,9 +621,12 @@ class MinMaxReplenisher:
 
         for i, t_idx in enumerate(target_indices):
             if t_idx in self._customer_dc_indices:
-                # Customer DC: use inflow-based demand (orders received)
-                # This is the TRUE demand signal - what downstream nodes requested
-                avg_demand[i, :] = inflow_demand[t_idx, :]
+                # Customer DC: use max of inflow and expected throughput
+                # v0.18.0: Expected throughput floor prevents cold-start under-ordering
+                # when stores haven't placed orders yet (Days 1-7)
+                inflow_signal = inflow_demand[t_idx, :]
+                expected = self._expected_throughput.get(t_idx, inflow_signal)
+                avg_demand[i, :] = np.maximum(inflow_signal, expected)
             else:
                 # Store: use POS-based demand (consumer sales)
                 avg_demand[i, :] = self.smoothed_demand[t_idx, :]
@@ -685,6 +727,24 @@ class MinMaxReplenisher:
 
         # Use vectorized min_qty
         order_qty = np.where(needs_order, np.maximum(raw_qty, min_qty), 0.0)
+
+        # v0.18.0: Flow-based minimum for customer DCs
+        # Even if IP >= ROP, customer DCs should order to maintain expected throughput
+        # This prevents (s,S) from stopping orders when inventory is slightly above ROP
+        for i, t_idx in enumerate(target_indices):
+            if t_idx in self._customer_dc_indices and t_idx in self._expected_throughput:
+                expected = self._expected_throughput[t_idx]
+                # Minimum order = expected throughput * lead time (replenish consumed)
+                # Only if below target (don't order if fully stocked)
+                lead_time = float(replenishment_params.get("lead_time_days", 3.0))
+                min_flow_order = expected * lead_time
+                below_target = inventory_position[i, :] < target_stock[i, :]
+                # Apply flow minimum where current order is zero but below target
+                order_qty[i, :] = np.where(
+                    (order_qty[i, :] == 0) & below_target,
+                    np.maximum(min_flow_order, min_qty[i]),
+                    order_qty[i, :],
+                )
 
         # 6. Apply Batching
         batched_qty = np.ceil(order_qty / batch_sz) * batch_sz

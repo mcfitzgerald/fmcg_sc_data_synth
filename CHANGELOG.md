@@ -5,6 +5,37 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.18.0] - 2026-01-03
+
+### Bug Fixes: Plant Shipment Routing & SLOB Calculation
+
+This release fixes two critical bugs identified during 365-day simulation analysis.
+
+### Fixed
+- **Plant Shipment Routing Bug (Critical):** Plants were shipping production to ALL 44 DC nodes instead of just 4 manufacturer RDCs. Added `n_id.startswith("RDC-")` filter to `_ship_production_to_rdcs()` in `orchestrator.py:699-705`. This prevented 150M+ units of unauthorized PUSH shipments to customer DCs.
+- **SLOB Calculation Bug:** SLOB (Slow/Obsolete) inventory was calculated as binary (0% or 100%) based on global days-of-supply. Fixed to per-SKU calculation: flags each SKU where `DOS > threshold`, then reports `sum(SLOB inventory) / total FG inventory`. Now correctly identifies which portion of inventory is slow-moving.
+
+### Added (Experimental - May Revert)
+- **Expected Throughput Floor for Customer DCs:** Customer DCs now use `max(inflow_demand, expected_throughput)` as their demand signal. `expected_throughput` is calculated by aggregating base demand from all downstream stores. This prevents cold-start under-ordering when stores haven't placed orders yet.
+- **Flow-Based Minimum Order:** Customer DCs order at least `expected_throughput * lead_time` even when `IP > ROP`, to maintain inventory flow.
+
+### Changed
+- **Initialization Inventory Levels:** Reduced to prevent over-priming:
+  - `customer_dc_days_supply`: 21 → 10 days
+  - `store_days_supply`: 21 → 14 days
+  - `rdc_days_supply`: 28 → 21 days
+
+### Known Issues
+- **365-Day Service Level Degradation:** Service level degrades from ~92% (30-day) to ~70% (365-day). The bullwhip effect is intentional realism, but the system should stabilize rather than degrade. Root cause under investigation - may be allocation/logistics bottleneck rather than replenishment policy.
+- **Inventory Imbalance:** 93% of finished goods remain at RDCs, only 3% at stores. This suggests a flow bottleneck between RDCs and downstream nodes.
+
+### Files Modified
+- `src/prism_sim/simulation/orchestrator.py` - Plant shipment filter, SLOB calculation, pass base_demand_matrix
+- `src/prism_sim/agents/replenishment.py` - Expected throughput floor, flow-based minimum
+- `src/prism_sim/config/simulation_config.json` - Reduced initialization inventory levels
+
+---
+
 ## [0.17.0] - 2026-01-02
 
 ### Physics Overhaul: First-Principles Supply Chain Physics

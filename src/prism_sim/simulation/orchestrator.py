@@ -67,9 +67,14 @@ class Orchestrator:
         # Get equilibrium demand estimate for warm start
         # This prevents Day 1-2 bullwhip cascade from cold start
         warm_start_demand = self.pos_engine.get_average_demand_estimate()
+        base_demand_matrix = self.pos_engine.get_base_demand_matrix()
 
         self.replenisher = MinMaxReplenisher(
-            self.world, self.state, self.config, warm_start_demand=warm_start_demand
+            self.world,
+            self.state,
+            self.config,
+            warm_start_demand=warm_start_demand,
+            base_demand_matrix=base_demand_matrix,
         )
         self.allocator = AllocationAgent(self.state, self.config)
         self.logistics = LogisticsEngine(self.world, self.state, self.config)
@@ -502,11 +507,24 @@ class Orchestrator:
             shrink_rate = shrinkage_qty / total_fg_inv
             self.monitor.record_shrinkage_rate(shrink_rate)
 
-            # SLOB % (Simplification: FG Inventory > threshold days of demand)
+            # SLOB % (Per-SKU calculation)
             # Only finished goods can be "slow/obsolete" for this metric
-            global_dos = total_fg_inv / max(total_demand_qty, 1.0)
-            is_slob = 1.0 if global_dos > self.slob_days_threshold else 0.0
-            self.monitor.record_slob(is_slob)
+            # Calculate per-SKU days of supply across all nodes
+            fg_inv_per_sku = np.sum(fg_inventory, axis=0)  # Sum across nodes
+            fg_demand_per_sku = np.sum(
+                daily_demand[:, self._fg_product_mask], axis=0
+            )
+
+            # Avoid division by zero - use small floor for zero-demand SKUs
+            demand_per_sku_safe = np.maximum(fg_demand_per_sku, 0.01)
+            sku_dos = fg_inv_per_sku / demand_per_sku_safe
+
+            # Flag SKUs with DOS > threshold as SLOB
+            slob_mask = sku_dos > self.slob_days_threshold
+            slob_inventory = fg_inv_per_sku[slob_mask].sum()
+
+            slob_pct = slob_inventory / total_fg_inv if total_fg_inv > 0 else 0.0
+            self.monitor.record_slob(slob_pct)
 
         log_config = self.config.get("simulation_parameters", {}).get("logistics", {})
         constraints = log_config.get("constraints", {})
@@ -696,9 +714,12 @@ class Orchestrator:
             .get("default_lead_time_days", 3.0)
         )
 
-        # Get list of RDC IDs
+        # Get list of manufacturer RDC IDs only (RDC-* prefix)
+        # Excludes customer DCs (RET-DC-*, DIST-DC-*, ECOM-FC-*, DTC-FC-*)
         rdc_ids = [
-            n_id for n_id, n in self.world.nodes.items() if n.type == NodeType.DC
+            n_id
+            for n_id, n in self.world.nodes.items()
+            if n.type == NodeType.DC and n_id.startswith("RDC-")
         ]
 
         if not rdc_ids:

@@ -122,10 +122,10 @@
     "inventory": {
       "initial_fg_level": 5.0,
       "initialization": {
-        "store_days_supply": 21.0,
-        "rdc_days_supply": 28.0,
+        "store_days_supply": 14.0,
+        "rdc_days_supply": 21.0,
         "rdc_store_multiplier": 500.0,
-        "customer_dc_days_supply": 21.0
+        "customer_dc_days_supply": 10.0
       }
     },
     "logistics": {
