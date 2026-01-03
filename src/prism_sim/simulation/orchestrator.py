@@ -389,6 +389,7 @@ class Orchestrator:
         # inventory while downstream nodes starve.
         push_shipments = self._push_excess_rdc_inventory(day)
         if push_shipments:
+            self.auditor.record_plant_shipments_out(push_shipments)
             self._apply_logistics_quirks_and_risks(push_shipments)
             self.state.active_shipments.extend(push_shipments)
 

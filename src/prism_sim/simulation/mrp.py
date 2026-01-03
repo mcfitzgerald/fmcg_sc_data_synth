@@ -77,17 +77,24 @@ class MRPEngine:
 
         self._cache_node_info()
 
-        # Demand history for moving average [Products]
-        # v0.15.6: Extended from 7 to 14 days for smoother signal
-        self.demand_history = np.zeros((14, self.state.n_products), dtype=np.float64)
-        self._history_ptr = 0
-
         # C.1 FIX: Cache expected daily demand for fallback (prevents death spiral)
         self._build_expected_demand_vector()
 
+        # Demand history for moving average [Products]
+        # v0.15.6: Extended from 7 to 14 days for smoother signal
+        # v0.19.9: Warm start with expected demand to prevent Day 1 dip
+        self.demand_history = np.tile(
+            self.expected_daily_demand, (14, 1)
+        ).astype(np.float64)
+        self._history_ptr = 0
+
         # C.5 FIX: Production order history for smoothing (reduces volatility)
         # v0.15.6: Extended from 7 to 14 days
-        self.production_order_history = np.zeros(14, dtype=np.float64)
+        # v0.19.9: Warm start with total expected production
+        total_expected_production = np.sum(self.expected_daily_demand)
+        self.production_order_history = np.full(
+            14, total_expected_production, dtype=np.float64
+        )
         self._prod_hist_ptr = 0
 
         # v0.15.6: Velocity tracking - detect declining demand trends
@@ -550,6 +557,12 @@ class MRPEngine:
                 if p_idx is not None:
                     daily_vol[p_idx] += line.quantity
 
+        # v0.19.8: Clamp demand signal to prevent panic-order poisoning
+        # Cap at 4x expected demand (allows for promos but stops 30x bullwhip)
+        if self.expected_daily_demand is not None:
+            max_signal = self.expected_daily_demand * 4.0
+            daily_vol = np.minimum(daily_vol, max_signal)
+
         # Blend with existing history - use max to not lose shipment signal
         # This ensures we capture the higher of (orders, shipments) as demand
         current_slot = (self._history_ptr - 1) % 14
@@ -601,15 +614,16 @@ class MRPEngine:
         # Use 7-day average of production history as signal (smoothed)
         # Fall back to expected demand during cold start
         avg_production = np.mean(self.production_order_history)
+        daily_production = self.expected_daily_demand.copy()  # Default fallback
+        
         if avg_production > 0:
-            # Scale production_by_product to daily average
-            # (production orders may span multiple days)
-            daily_production = production_by_product / max(
-                1, len(active_production_orders) // 10 + 1
-            )
-        else:
-            # Cold start: use expected demand as floor
-            daily_production = self.expected_daily_demand.copy()
+            # Use the flow rate (avg_production) distributed by the backlog mix
+            # This ensures we order ingredients to support the target production rate
+            # regardless of how many individual orders are in the backlog
+            total_backlog = np.sum(production_by_product)
+            if total_backlog > 0:
+                mix = production_by_product / total_backlog
+                daily_production = mix * avg_production
 
         # Ensure minimum floor to prevent zero-ordering
         daily_production = np.maximum(
