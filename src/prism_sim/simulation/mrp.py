@@ -208,17 +208,30 @@ class MRPEngine:
         current_day: int,
         rdc_shipments: list[Shipment],  # FIX 3: Accept Shipments instead of Orders
         active_production_orders: list[ProductionOrder],
+        pos_demand: np.ndarray | None = None,  # v0.19.1: POS demand floor
     ) -> list[ProductionOrder]:
         """
-        Generate Production Orders based on RDC inventory and lumpy shipment signals.
+        Generate Production Orders based on RDC inventory and demand signals.
+
+        v0.19.1: Added POS demand as a floor to prevent demand signal collapse.
+        When the order-based demand signal declines (because downstream is starving),
+        we use actual consumer demand (POS) to maintain production levels.
         """
         production_orders: list[ProductionOrder] = []
 
         # 1. Update Demand History with daily shipment volume (The "Lumpy" Signal)
         self._update_demand_history(current_day, rdc_shipments)
 
-        # Calculate Moving Average Demand
+        # Calculate Moving Average Demand from order/shipment history
         avg_daily_demand_vec = np.mean(self.demand_history, axis=0)
+
+        # v0.19.1: Use POS demand as floor for demand signal
+        # This is the TRUE consumer demand, not constrained by inventory availability
+        # Sum POS across all nodes to get network-wide demand per product
+        if pos_demand is not None:
+            pos_demand_by_product = np.sum(pos_demand, axis=0)
+            # Use maximum of order-based signal and POS demand
+            avg_daily_demand_vec = np.maximum(avg_daily_demand_vec, pos_demand_by_product)
 
         # v0.15.6: Calculate demand velocity (week-over-week trend)
         # Detect declining trends before full collapse

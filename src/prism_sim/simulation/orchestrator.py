@@ -345,8 +345,10 @@ class Orchestrator:
             and self.world.nodes[s.target_id].type == NodeType.STORE
         ]
 
+        # v0.19.1: Pass POS demand to MRP as signal floor
+        # This prevents demand signal collapse when orders decline
         new_production_orders = self.mrp_engine.generate_production_orders(
-            day, rdc_store_shipments, self.active_production_orders
+            day, rdc_store_shipments, self.active_production_orders, daily_demand
         )
         self.active_production_orders.extend(new_production_orders)
 

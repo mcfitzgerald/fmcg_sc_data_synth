@@ -2,7 +2,7 @@
 
 > **System Prompt Context:** This document contains the critical architectural, functional, and physical constraints of the Prism Sim project. Use this as primary context when reasoning about code changes, bug fixes, or feature expansions.
 
-**Version:** 0.17.0 | **Last Updated:** 2026-01-02
+**Version:** 0.19.1 | **Last Updated:** 2026-01-03
 
 ---
 
@@ -340,26 +340,42 @@ Every decision impacts the balance between:
 
 ## 15. Known Issues & Current State
 
-### Service Level Gap (v0.15.8 - FIXED in v0.15.9)
-**Status:** FIX IMPLEMENTED - AWAITING VALIDATION
+### Service Level Degradation (v0.19.1 - IN PROGRESS)
+**Status:** ROOT CAUSE IDENTIFIED, FIX PLAN CREATED
 
-**Previous State (v0.15.8):** Store service level at 80.5%, target is 98.5% (~18pp gap).
+**Current State (v0.19.1):** 365-day simulation shows service level degrading from ~99% (first 30 days) to ~73% (full year).
 
-**Root Cause Identified:** Demand signal attenuation at customer DCs. Each echelon used "outflow" (what was shipped) as demand signal, but outflow is constrained by available inventory. This caused demand to compress 50-75% at each level.
+**Key Metrics (365-day run):**
+- Store Service Level: 73%
+- Inventory Turns: 5.7x
+- SLOB: 65%
+- MFG RDC Inventory: 92.8% of total (target ~40%)
+- Store Inventory: 4.5% of total (target ~20%)
+- Customer DC Orders: 54% of demand
 
-**Fix Implemented (v0.15.9):**
-1. **Inflow Tracking:** Customer DCs now use inflow-based demand (orders received) instead of outflow-based demand (orders shipped). This preserves the true demand signal as it propagates upstream.
-2. **Daily DC Ordering:** Customer DC order cycle reduced from 5 days to 1 day for smoother signals.
-3. **Higher DC Buffers:** Customer DC target/ROP increased from 14/10 to 21/14 days.
-4. **MRP Order Signal:** MRP now receives order quantities (pre-allocation) in addition to shipments.
+**Root Cause:** Negative feedback spiral - declining downstream inventory → declining orders → production adjusts down → inventory accumulates at RDCs with no push mechanism.
 
-**Validation:** Requires 365-day simulation to confirm service level improvement. Target: ≥95%.
+**Fixes Attempted (v0.19.0-v0.19.1):**
+1. **MEIO Echelon Logic** (v0.19.0): Customer DCs use aggregated downstream demand for replenishment
+2. **MEIO IP Fix** (v0.19.1): Changed Customer DCs to use Local IP instead of Echelon IP
+3. **MRP POS Floor** (v0.19.1): MRP uses POS demand as floor to prevent signal collapse
 
-**Key Metrics (v0.15.8 baseline):**
-- Store Service Level: 80.5%
-- Inventory Turns: 5.11x (slightly below 6-14x target)
-- OEE: 81.9%
-- SLOB: 94.8% (metric broken - threshold logic issue)
+**Remaining Issues:**
+- 3-day ordering cycle for Customer DCs reduces responsiveness
+- Target days (21d) may be insufficient for echelon coverage
+- No push-based allocation from RDCs when they accumulate excess
+
+**Next Steps:** See `docs/planning/new-fix.md` for detailed fix plan:
+1. Daily ordering for Customer DCs
+2. Increase target_days to 35d
+3. Push-based allocation from RDCs
+4. Safety stock multiplier for echelon logic
+
+**Diagnostic Scripts:**
+```bash
+poetry run python scripts/analysis/diagnose_service_level.py data/results/<run> --csv
+poetry run python scripts/analysis/diagnose_slob.py data/results/<run> --csv
+```
 
 ### The Bullwhip Crisis (v0.12.1 - FIXED in v0.12.3)
 **Status:** RESOLVED
@@ -602,6 +618,8 @@ Orchestrator
 
 | Version | Key Changes |
 |---------|-------------|
+| 0.19.1 | **MEIO Bug Fixes** - Fixed Customer DC IP calculation (use Local IP not Echelon IP); MRP uses POS demand as floor; Added diagnostic scripts (`diagnose_service_level.py`, `diagnose_slob.py`); Root cause identified: negative feedback spiral |
+| 0.19.0 | **Echelon Inventory Logic (MEIO)** - Customer DCs use aggregated downstream demand + inventory position; Config for store_batch_size_cases and lead_time_history_len |
 | 0.18.2 | **Order Signal Stabilization** - Fixed order collapse by using 7-day inflow average for all nodes; Masked ingredients in Replenisher to prevent phantom orders; Reverted v0.18.0 band-aids |
 | 0.18.0 | **Service Level Fix Attempt (Partially Reverted)** - Plant shipment routing fix; SLOB calculation fix; (Reverted: throughput floors) |
 | 0.17.0 | **Physics Overhaul** - Full Safety Stock formula ($SS = z \sqrt{\bar{L}\sigma_D^2 + \bar{D}^2\sigma_L^2}$); Dynamic ABC Segmentation; Zero mypy errors; config-driven order cycles and scale factors |

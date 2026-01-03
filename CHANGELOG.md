@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.19.1] - 2026-01-03
+
+### Fixed
+- **MEIO Inventory Position Bug:** Fixed echelon logic to use **Local IP** (DC inventory + in-transit) instead of **Echelon IP** (DC + all downstream stores). The original implementation caused Customer DCs to under-order because downstream store inventory inflated the IP calculation, making the system appear "well-stocked" even as stores depleted.
+- **MRP Demand Signal Collapse:** Added POS demand as a floor for MRP demand signal. When order-based demand declines (due to downstream starvation), MRP now uses actual consumer demand (POS) to maintain production levels, preventing the death spiral where low orders → low production → more starvation.
+
+### Analysis
+Comprehensive diagnostic scripts created in `scripts/analysis/`:
+- `diagnose_service_level.py` - Analyzes service degradation patterns by echelon, product, and time
+- `diagnose_slob.py` - Analyzes inventory distribution, velocity, and SLOB (slow/obsolete) products
+
+### Known Issues
+- **365-Day Service Level: 73%** (target >90%) - Inventory accumulates at MFG RDCs (93% of total) while stores starve (4.5%). Customer DCs are ordering only 54% of demand despite MEIO fix.
+- **Root Cause Identified:** The signal flow architecture creates a negative feedback loop where declining downstream inventory → declining orders → declining production. The MEIO/MRP fixes are applied but the 3-day ordering cycle and target_days parameters may need tuning.
+- **Next Steps:** Consider (1) daily ordering for Customer DCs, (2) higher target_days, (3) push-based allocation from RDCs to supplement pull-based ordering.
+
 ## [0.19.0] - 2026-01-03
 
 ### Added

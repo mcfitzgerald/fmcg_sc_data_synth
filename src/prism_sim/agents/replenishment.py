@@ -783,64 +783,62 @@ class MinMaxReplenisher:
         raw_qty = target_stock - inventory_position
 
         # --- v0.19.0 ECHELON INVENTORY LOGIC (Override for Customer DCs) ---
-        # For Customer DCs, we replace the Local IP logic with Echelon IP logic.
-        # Order = Echelon_Target - Echelon_IP
-        # Echelon_IP = M_E @ (On_Hand + In_Transit)
-        # Echelon_Demand = M_E @ POS_Demand (smoothed_demand)
+        # For Customer DCs, use ECHELON DEMAND (downstream POS) but LOCAL IP.
+        #
+        # BUG FIX (v0.19.1): Original implementation used Echelon IP which included
+        # store inventory. This caused DCs to under-order because the system looked
+        # "well-stocked" even as stores depleted. The DC's ability to ship depends
+        # on its LOCAL inventory, not downstream inventory.
+        #
+        # Correct approach:
+        # - Echelon Demand = M_E @ POS_Demand (aggregate downstream demand)
+        # - Local IP = DC's own inventory + in-transit TO the DC
+        # - Order = Target - Local IP (where Target is based on Echelon Demand)
 
         if self.echelon_matrix is not None and self.dc_idx_to_echelon_row:
             # Identify which targets are Customer DCs
             dc_target_indices = []
             echelon_rows = []
-            
+
             for i, t_idx in enumerate(target_indices):
                 if t_idx in self.dc_idx_to_echelon_row:
-                    dc_target_indices.append(i) # Index in the current 'target_indices' subset
+                    dc_target_indices.append(i)  # Index in 'target_indices' subset
                     echelon_rows.append(self.dc_idx_to_echelon_row[t_idx])
-            
+
             if dc_target_indices:
                 dc_indices = np.array(dc_target_indices)
                 row_indices = np.array(echelon_rows)
-                
-                # 1. Calculate Echelon IP (Subset of rows relevant to these DCs)
-                # We can do the full matrix multiply or just the relevant rows.
-                # Since echelon_matrix is [n_dcs, n_nodes], full multiply is cheap.
-                # shape: [n_dcs, n_products]
-                # Note: We must use global state inventory, not the subset 'on_hand_inv'
-                
-                full_ip = self.state.inventory + self.state.get_in_transit_by_target()
-                echelon_ip_all = self.echelon_matrix @ full_ip
-                
-                # 2. Calculate Echelon Demand (Aggregated POS)
-                # smoothed_demand is [n_nodes, n_products], stores have data, DCs have 0
+
+                # 1. Calculate Echelon Demand (Aggregated downstream POS)
+                # smoothed_demand is [n_nodes, n_products], stores have data, DCs ~0
                 echelon_demand_all = self.echelon_matrix @ self.smoothed_demand
-                
+
                 # Extract relevant rows for the DCs currently being processed
-                current_e_ip = echelon_ip_all[row_indices]
                 current_e_demand = echelon_demand_all[row_indices]
-                
-                # 3. Calculate Echelon Target
-                # Target = Demand * TargetDays
-                # We use the target_days setting for the DC itself
-                # (e.g. 21 days coverage of the ENTIRE downstream network)
+
+                # 2. Use LOCAL IP for the DC (NOT Echelon IP)
+                # This is the DC's own inventory + in-transit to the DC
+                # Already calculated above as inventory_position for all targets
+                # dc_indices indexes into the target subset, so use inventory_position[dc_indices]
+                local_ip = inventory_position[dc_indices]
+
+                # 3. Calculate Echelon-based Target and ROP
+                # Target = Echelon_Demand * TargetDays
+                # This represents how much the DC needs to cover downstream demand
                 dc_target_days = self.target_days_vec[target_idx_arr[dc_indices]]
-                echelon_target = current_e_demand * dc_target_days
-                
-                # 4. Calculate Order Quantity
-                # Order = Target - IP
-                echelon_qty = echelon_target - current_e_ip
-                
-                # Override the local logic results
-                # We force needs_order = True if qty > 0 (Echelon logic is pure Order-Up-To, usually)
-                # Or we can respect a reorder point?
-                # Echelon ROP = Demand * ROP_Days
                 dc_rop_days = self.rop_vec[target_idx_arr[dc_indices]]
+
+                echelon_target = current_e_demand * dc_target_days
                 echelon_rop = current_e_demand * dc_rop_days
-                
-                needs_echelon_order = current_e_ip < echelon_rop
-                
+
+                # 4. Calculate Order Quantity using Local IP
+                # Order = Target - Local IP
+                echelon_qty = echelon_target - local_ip
+
+                # 5. Order trigger: Local IP < Echelon ROP
+                needs_echelon_order = local_ip < echelon_rop
+
                 # Update the main arrays
-                # We map back using dc_indices which indexes into 'raw_qty' / 'needs_order'
                 raw_qty[dc_indices] = echelon_qty
                 needs_order[dc_indices] = needs_echelon_order
 
