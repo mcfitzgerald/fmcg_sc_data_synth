@@ -77,6 +77,10 @@ class MRPEngine:
 
         self._cache_node_info()
 
+        # v0.19.8: Cache max daily plant capacity for ingredient ordering
+        # Must be after _cache_node_info() to have _plant_ids populated
+        self._max_daily_capacity = self._calculate_max_daily_capacity()
+
         # C.1 FIX: Cache expected daily demand for fallback (prevents death spiral)
         self._build_expected_demand_vector()
 
@@ -271,6 +275,61 @@ class MRPEngine:
             f"(Multiplier {mult_b}x)"
         )
         print(f"  C-Items (Tail): {n_c} SKUs (Multiplier {mult_c}x)")
+
+    def _calculate_max_daily_capacity(self) -> float:
+        """
+        Calculate maximum daily production capacity across all plants.
+
+        v0.19.8: Used to cap ingredient ordering at plant capacity,
+        breaking the feedback loop where low historical production
+        led to under-ordering ingredients.
+
+        Returns:
+            Total cases/day the network can produce at max capacity.
+        """
+        mfg_config = self.config.get("simulation_parameters", {}).get(
+            "manufacturing", {}
+        )
+        plant_params = mfg_config.get("plant_parameters", {})
+        hours_per_day = mfg_config.get("production_hours_per_day", 24.0)
+        global_efficiency = mfg_config.get("efficiency_factor", 0.85)
+        global_downtime = mfg_config.get("unplanned_downtime_pct", 0.05)
+
+        total_capacity = 0.0
+
+        for plant_id in self._plant_ids:
+            # Get plant-specific config
+            p_config = plant_params.get(plant_id, {})
+            efficiency = p_config.get("efficiency_factor", global_efficiency)
+            downtime = p_config.get("unplanned_downtime_pct", global_downtime)
+
+            # Effective hours = hours * (1 - downtime) * efficiency
+            effective_hours = hours_per_day * (1.0 - downtime) * efficiency
+
+            # Get average run rate for products this plant can make
+            # Use the recipes to find run rates for supported categories
+            supported_cats = p_config.get("supported_categories", [])
+            run_rates = []
+
+            for product_id, recipe in self.world.recipes.items():
+                product = self.world.products.get(product_id)
+                if product is None:
+                    continue
+
+                # If plant has restrictions, check category
+                if supported_cats:
+                    if product.category.name not in supported_cats:
+                        continue
+
+                run_rates.append(recipe.run_rate_cases_per_hour)
+
+            # Use average run rate for this plant
+            if run_rates:
+                avg_run_rate = sum(run_rates) / len(run_rates)
+                plant_capacity = effective_hours * avg_run_rate
+                total_capacity += plant_capacity
+
+        return total_capacity
 
     def _cache_node_info(self) -> None:
         """Cache RDC and Plant node IDs for efficient lookups.
@@ -505,12 +564,19 @@ class MRPEngine:
                 total_orders_today = sum(po.quantity_cases for po in production_orders)
 
         # C.5 FIX: Smooth production orders to reduce volatility
-        # Cap total daily orders at 1.5x rolling average (after warmup)
+        # v0.19.8: Use max(history, expected) as baseline to prevent feedback loop.
+        # Previously, using only avg_recent created a death spiral where low
+        # production → lower cap → even lower production.
         avg_recent = np.mean(self.production_order_history)
+        expected_production = np.sum(self.expected_daily_demand)
 
-        if avg_recent > 0 and total_orders_today > avg_recent * 1.5:
-            # Scale down all orders proportionally
-            scale_factor = (avg_recent * 1.5) / total_orders_today
+        # Use the higher of recent history or expected as the baseline
+        # This ensures we can always scale up to meet expected demand
+        smoothing_baseline = max(avg_recent, expected_production)
+
+        if smoothing_baseline > 0 and total_orders_today > smoothing_baseline * 1.5:
+            # Scale down all orders proportionally (prevent bullwhip spikes)
+            scale_factor = (smoothing_baseline * 1.5) / total_orders_today
             for po in production_orders:
                 po.quantity_cases = float(po.quantity_cases * scale_factor)
 
@@ -602,36 +668,55 @@ class MRPEngine:
         if not self._plant_ids:
             return purchase_orders
 
-        # 1. Calculate production signal from active production orders
-        # This is what we're ACTUALLY producing, not downstream demand
+        # v0.19.8 FIX: Decouple ingredient ordering from historical production.
+        # This breaks the feedback loop where low production → fewer ingredients
+        # → more shortages → even lower production (starvation spiral).
+        #
+        # NEW LOGIC: Order ingredients based on SCHEDULED DEMAND (active backlog)
+        # constrained by PLANT CAPACITY, NOT historical throughput.
+
+        # 1. Calculate active backlog from production orders (what we NEED to produce)
         # Shape: [n_products]
         production_by_product = np.zeros(self.state.n_products, dtype=np.float64)
         for po in active_production_orders:
-            p_idx = self.state.product_id_to_idx.get(po.product_id)
-            if p_idx is not None:
-                production_by_product[p_idx] += po.quantity_cases
+            if po.status != ProductionOrderStatus.COMPLETE:
+                p_idx = self.state.product_id_to_idx.get(po.product_id)
+                if p_idx is not None:
+                    # Count remaining quantity to be produced
+                    remaining = po.quantity_cases - po.produced_quantity
+                    production_by_product[p_idx] += remaining
 
-        # Use 7-day average of production history as signal (smoothed)
-        # Fall back to expected demand during cold start
-        avg_production = np.mean(self.production_order_history)
-        daily_production = self.expected_daily_demand.copy()  # Default fallback
-        
-        if avg_production > 0:
-            # Use the flow rate (avg_production) distributed by the backlog mix
-            # This ensures we order ingredients to support the target production rate
-            # regardless of how many individual orders are in the backlog
-            total_backlog = np.sum(production_by_product)
-            if total_backlog > 0:
-                mix = production_by_product / total_backlog
-                daily_production = mix * avg_production
+        total_backlog = np.sum(production_by_product)
 
-        # Ensure minimum floor to prevent zero-ordering
+        # 2. Determine target daily production rate
+        # v0.19.8: Always order ingredients for at least expected demand.
+        # The original fix only used backlog, which created a feedback loop
+        # when production orders were at floor level (30%).
+        #
+        # NEW LOGIC:
+        # - If backlog > expected: use backlog mix (catch up mode)
+        # - If backlog <= expected: use expected demand mix (steady state)
+        # - Cap at plant capacity
+        expected_daily = np.sum(self.expected_daily_demand)
+
+        if total_backlog > expected_daily:
+            # Catch-up mode: order for the backlog using backlog mix
+            target_daily_rate = min(total_backlog, self._max_daily_capacity)
+            mix = production_by_product / total_backlog
+            daily_production = mix * target_daily_rate
+        else:
+            # Steady-state: order for expected demand using expected mix
+            # This ensures we always have ingredients for full production
+            daily_production = self.expected_daily_demand.copy()
+
+        # 3. Apply floors and caps for robustness
+        # Floor: never order less than min_production_cap_pct of expected demand
+        # This prevents complete ingredient starvation during demand lulls
         daily_production = np.maximum(
             daily_production, self.expected_daily_demand * self.min_production_cap_pct
         )
 
-        # v0.15.4: Cap daily production estimate to prevent bullwhip-driven explosion
-        # Max ingredient ordering = 2x expected demand (reasonable buffer)
+        # Cap: prevent bullwhip-driven explosion (max 2x expected demand)
         max_daily = self.expected_daily_demand * 2.0
         daily_production = np.minimum(daily_production, max_daily)
 

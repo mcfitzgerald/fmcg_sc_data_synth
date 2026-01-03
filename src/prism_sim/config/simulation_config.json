@@ -186,8 +186,8 @@
       "mrp_thresholds": {
         "demand_signal_collapse_pct": 0.4,
         "velocity_trend_threshold_pct": 0.6,
-        "production_floor_pct": 0.3,
-        "min_production_cap_pct": 0.5
+        "production_floor_pct": 0.5,
+        "min_production_cap_pct": 0.7
       },
       "inventory_policies": {
         "DEFAULT": { "reorder_point_days": 7.0, "target_days_supply": 14.0 },
