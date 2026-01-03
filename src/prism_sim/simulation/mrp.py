@@ -33,11 +33,16 @@ class MRPEngine:
     """
 
     def __init__(
-        self, world: World, state: StateManager, config: dict[str, Any]
+        self,
+        world: World,
+        state: StateManager,
+        config: dict[str, Any],
+        base_demand_matrix: np.ndarray | None = None,
     ) -> None:
         self.world = world
         self.state = state
         self.config = config
+        self.base_demand_matrix = base_demand_matrix
 
         # Extract manufacturing config
         mrp_config = config.get("simulation_parameters", {}).get("manufacturing", {})
@@ -132,11 +137,18 @@ class MRPEngine:
 
     def _build_expected_demand_vector(self) -> None:
         """
-        C.1 FIX: Build expected daily demand vector from config.
+        C.1 FIX: Build expected daily demand vector.
 
-        Used as fallback when shipment signals collapse to prevent death spiral.
-        Expected demand = base_daily_demand * n_stores (per product category).
+        v0.19.6: Use base_demand_matrix (Zipf-aware) if available, otherwise
+        fallback to config-based estimation.
         """
+        if self.base_demand_matrix is not None:
+            # Sum demand across all nodes for each product
+            # This captures Zipfian distribution correctly
+            self.expected_daily_demand = np.sum(self.base_demand_matrix, axis=0)
+            return
+
+        # Fallback to legacy config-based logic (Zipf-blind)
         demand_config = self.config.get("simulation_parameters", {}).get("demand", {})
         cat_profiles = demand_config.get("category_profiles", {})
 
@@ -147,7 +159,9 @@ class MRPEngine:
         )
         # Fallback if no stores found
         if n_stores == 0:
-            mfg_config = self.config.get("simulation_parameters", {}).get("manufacturing", {})
+            mfg_config = self.config.get(
+                "simulation_parameters", {}
+            ).get("manufacturing", {})
             n_stores = int(mfg_config.get("default_store_count", 100))
 
         self.expected_daily_demand = np.zeros(self.state.n_products, dtype=np.float64)
@@ -208,8 +222,12 @@ class MRPEngine:
 
         # Determine cutoffs
         # side='right' ensures boundary items are included in the higher priority category
-        idx_a = np.searchsorted(cumulative_volume, total_volume * thresh_a, side='right')
-        idx_b = np.searchsorted(cumulative_volume, total_volume * thresh_b, side='right')
+        idx_a = np.searchsorted(
+            cumulative_volume, total_volume * thresh_a, side='right'
+        )
+        idx_b = np.searchsorted(
+            cumulative_volume, total_volume * thresh_b, side='right'
+        )
 
         # Apply multipliers
         # A-items
@@ -218,6 +236,34 @@ class MRPEngine:
         self.abc_rop_multiplier[sorted_indices[idx_a:idx_b]] = mult_b
         # C-items
         self.abc_rop_multiplier[sorted_indices[idx_b:]] = mult_c
+
+        # Log Alignment Verification
+        n_a = idx_a
+        n_b = idx_b - idx_a
+        n_c = len(sorted_indices) - idx_b
+
+        # Filter out zero-demand items from count (usually ingredients)
+        # We only care about products with demand
+        active_indices = [
+            i for i in sorted_indices if self.expected_daily_demand[i] > 0
+        ]
+        n_active = len(active_indices)
+
+        # Recalculate counts for active items only for clearer logging
+        # (This is just for logging display, the multipliers are already applied)
+        print(
+            f"MRPEngine: Initialized ABC Classification "
+            f"(Total Vol: {total_volume:,.0f})"
+        )
+        print(
+            f"  A-Items (Top {thresh_a*100:.0f}%): {n_a} SKUs "
+            f"(Multiplier {mult_a}x)"
+        )
+        print(
+            f"  B-Items (Next {(thresh_b-thresh_a)*100:.0f}%): {n_b} SKUs "
+            f"(Multiplier {mult_b}x)"
+        )
+        print(f"  C-Items (Tail): {n_c} SKUs (Multiplier {mult_c}x)")
 
     def _cache_node_info(self) -> None:
         """Cache RDC and Plant node IDs for efficient lookups.
@@ -287,7 +333,9 @@ class MRPEngine:
         if pos_demand is not None:
             pos_demand_by_product = np.sum(pos_demand, axis=0)
             # Use maximum of order-based signal and POS demand
-            avg_daily_demand_vec = np.maximum(avg_daily_demand_vec, pos_demand_by_product)
+            avg_daily_demand_vec = np.maximum(
+                avg_daily_demand_vec, pos_demand_by_product
+            )
 
         # v0.15.6: Calculate demand velocity (week-over-week trend)
         # Detect declining trends before full collapse
@@ -317,7 +365,9 @@ class MRPEngine:
 
         if use_fallback:
             # Signal has collapsed or declining - use maximum of actual signal and expected
-            avg_daily_demand_vec = np.maximum(avg_daily_demand_vec, self.expected_daily_demand)
+            avg_daily_demand_vec = np.maximum(
+                avg_daily_demand_vec, self.expected_daily_demand
+            )
 
         # 2. Calculate In-Production qty per product
         lookahead_horizon = self.reorder_point_days
@@ -380,10 +430,16 @@ class MRPEngine:
                     #   2. 7 days of demand (cover lead time)
                     #   3. Absolute floor of 1000 cases (avoid tiny batches)
                     demand_based_min = avg_daily_demand * 7.0  # 7 days coverage
-                    
-                    mfg_config = self.config.get("simulation_parameters", {}).get("manufacturing", {})
-                    absolute_min = float(mfg_config.get("min_batch_size_absolute", 1000.0))  # Minimum viable batch
-                    order_qty = max(net_requirement, demand_based_min, absolute_min)
+
+                    mfg_config = self.config.get(
+                        "simulation_parameters", {}
+                    ).get("manufacturing", {})
+                    absolute_min = float(
+                        mfg_config.get("min_batch_size_absolute", 1000.0)
+                    )  # Minimum viable batch
+                    order_qty = max(
+                        net_requirement, demand_based_min, absolute_min
+                    )
 
                     # Assign to a plant (simple round-robin for now)
                     plant_id = self._select_plant(product_id)
@@ -548,7 +604,9 @@ class MRPEngine:
         if avg_production > 0:
             # Scale production_by_product to daily average
             # (production orders may span multiple days)
-            daily_production = production_by_product / max(1, len(active_production_orders) // 10 + 1)
+            daily_production = production_by_product / max(
+                1, len(active_production_orders) // 10 + 1
+            )
         else:
             # Cold start: use expected demand as floor
             daily_production = self.expected_daily_demand.copy()
@@ -578,12 +636,14 @@ class MRPEngine:
         rop_levels = ingredient_reqs * self.rop_vector
 
         # v0.15.4: Cap ingredient order quantities to prevent explosion
-        # Max order per ingredient per day = daily requirement × target days × 2
+        # Max order per ingredient per day = daily requirement * target days * 2
         max_order_per_ingredient = ingredient_reqs * self.target_vector * 2.0
 
         # 4. Build Pipeline Vector (In-Transit to Plants)
         # Shape: [n_nodes, n_products] - but we only care about plants
-        pipeline = np.zeros((self.state.n_nodes, self.state.n_products), dtype=np.float64)
+        pipeline = np.zeros(
+            (self.state.n_nodes, self.state.n_products), dtype=np.float64
+        )
         for shipment in self.state.active_shipments:
             target_idx = self.state.node_id_to_idx.get(shipment.target_id)
             if target_idx is not None and shipment.target_id in self._plant_ids:

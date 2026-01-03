@@ -267,9 +267,10 @@ class POSEngine:
         ]
         n_skus = len(finished_goods)
 
+        self.channel_sku_weights: dict[str, dict[str, float]] = {}
+
         if n_skus == 0:
             self.sku_popularity_weights: dict[str, float] = {}
-            self.channel_sku_weights: dict[str, dict[str, float]] = {}
             return
 
         # Build per-channel rankings based on segment affinity

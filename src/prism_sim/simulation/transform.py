@@ -191,18 +191,19 @@ class TransformEngine:
             else:
                 self._product_abc_class[p_id] = ABCClass.C
 
-        def _get_abc_priority(self, product_id: str) -> int:
-            """Return sort priority for product (A=1, B=2, C=3)."""
-            if not hasattr(self, "_product_abc_class"):
-                return 2  # Default to B (Standard)
-            
-            cls = self._product_abc_class.get(product_id, ABCClass.B)
-            if cls == ABCClass.A:
-                return 1
-            elif cls == ABCClass.B:
-                return 2
-            else:
-                return 3
+    def _get_abc_priority(self, product_id: str) -> int:
+        """Return sort priority for product (A=1, B=2, C=3)."""
+        if not hasattr(self, "_product_abc_class"):
+            return 2  # Default to B (Standard)
+
+        cls = self._product_abc_class.get(product_id, ABCClass.B)
+        if cls == ABCClass.A:
+            return 1
+        elif cls == ABCClass.B:
+            return 2
+        else:
+            return 3
+
     def process_production_orders(
         self, orders: list[ProductionOrder], current_day: int
     ) -> tuple[list[ProductionOrder], list[Batch], dict[str, float]]:
@@ -353,7 +354,7 @@ class TransformEngine:
     ) -> tuple[bool, dict[str, float]]:
         """
         Check if raw materials are available using Matrix ops.
-        
+
         Returns: Tuple of (is_available, shortage_dict)
         """
         p_idx = self.state.product_id_to_idx.get(product_id)
@@ -392,7 +393,7 @@ class TransformEngine:
     ) -> dict[str, float]:
         """
         Consume raw materials using Matrix ops (Mass Balance).
-        
+
         Returns: Dictionary of consumed materials
         """
         p_idx = self.state.product_id_to_idx.get(product_id)

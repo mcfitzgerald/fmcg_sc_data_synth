@@ -87,7 +87,9 @@ class Orchestrator:
         self.logistics = LogisticsEngine(self.world, self.state, self.config)
 
         # 4. Initialize Manufacturing Engines (Milestone 5)
-        self.mrp_engine = MRPEngine(self.world, self.state, self.config)
+        self.mrp_engine = MRPEngine(
+            self.world, self.state, self.config, base_demand_matrix
+        )
         self.transform_engine = TransformEngine(self.world, self.state, self.config)
 
         # v0.19.2: Pass base demand to transform engine for production prioritization
@@ -850,7 +852,8 @@ class Orchestrator:
                         link.target_id
                     )
 
-        # Use POS-based demand (stable signal) instead of outflow demand (which collapses)
+        # Use POS-based demand (stable signal) instead of outflow demand
+        # (which collapses)
         # This ensures push allocation doesn't under-push during the negative spiral
         base_demand_matrix = self.pos_engine.get_base_demand_matrix()
 
@@ -912,7 +915,8 @@ class Orchestrator:
             if total_excess < 100:  # Min threshold to avoid tiny pushes
                 continue
 
-            # Distribute excess proportionally to downstream DCs based on their POS demand
+            # Distribute excess proportionally to downstream DCs based on their
+            # POS demand
             # Calculate each DC's share of downstream demand (using stable POS signal)
             dc_demands: dict[str, np.ndarray] = {}
             total_dc_demand = np.zeros(self.state.n_products)
