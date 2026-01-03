@@ -633,12 +633,11 @@ class MinMaxReplenisher:
                     if day % order_cycle_days != order_day:
                         continue  # Skip this store today
                 elif idx in self._customer_dc_indices:
-                    # v0.15.9: Customer DCs now order daily (was 5-day cycle)
-                    # Daily ordering creates smoother demand signals upstream
-                    # and faster response to inventory shortages
-                    order_day = hash(n_id) % order_cycle_days
-                    if day % order_cycle_days != order_day:
-                        continue  # Skip this DC today
+                    # v0.19.2: Customer DCs using echelon logic ALWAYS order daily
+                    # Removing cycle restriction to break negative feedback spiral.
+                    # With 3-day cycles, demand signals accumulate but orders don't
+                    # flow, causing stores to starve while RDCs accumulate inventory.
+                    pass  # Always process Customer DCs, no cycle restriction
 
                 target_indices.append(idx)
                 target_ids.append(n_id)
@@ -823,13 +822,18 @@ class MinMaxReplenisher:
                 local_ip = inventory_position[dc_indices]
 
                 # 3. Calculate Echelon-based Target and ROP
-                # Target = Echelon_Demand * TargetDays
+                # Target = Echelon_Demand * TargetDays * SafetyMultiplier
                 # This represents how much the DC needs to cover downstream demand
                 dc_target_days = self.target_days_vec[target_idx_arr[dc_indices]]
                 dc_rop_days = self.rop_vec[target_idx_arr[dc_indices]]
 
-                echelon_target = current_e_demand * dc_target_days
-                echelon_rop = current_e_demand * dc_rop_days
+                # v0.19.2: Add safety multiplier to account for demand/lead time variance
+                # at echelon level. This provides buffer beyond raw echelon demand.
+                echelon_safety_multiplier = float(
+                    params.get("echelon_safety_multiplier", 1.3)
+                )
+                echelon_target = current_e_demand * dc_target_days * echelon_safety_multiplier
+                echelon_rop = current_e_demand * dc_rop_days * echelon_safety_multiplier
 
                 # 4. Calculate Order Quantity using Local IP
                 # Order = Target - Local IP

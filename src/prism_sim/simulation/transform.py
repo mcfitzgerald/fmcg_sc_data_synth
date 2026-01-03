@@ -76,6 +76,10 @@ class TransformEngine:
             "notes", "RECALL: Contaminated sorbitol detected"
         )
 
+        # v0.19.2: Base demand matrix for production prioritization
+        # Set by orchestrator after POS engine is initialized
+        self._base_demand: np.ndarray | None = None
+
         # SPOF Configuration
         spof_config = mfg_config.get("spof", {})
         self.spof_ingredient_id = spof_config.get("ingredient_id", "ING-SURF-SPEC")
@@ -129,6 +133,15 @@ class TransformEngine:
                     remaining_capacity_hours=effective_hours,
                     max_capacity_hours=effective_hours,
                 )
+
+    def set_base_demand(self, base_demand: np.ndarray) -> None:
+        """
+        Set the base demand matrix for production prioritization.
+
+        v0.19.2: Used to prioritize high-demand products over low-demand ones
+        during production scheduling, breaking the SLOB accumulation pattern.
+        """
+        self._base_demand = base_demand
 
     def process_production_orders(
         self, orders: list[ProductionOrder], current_day: int

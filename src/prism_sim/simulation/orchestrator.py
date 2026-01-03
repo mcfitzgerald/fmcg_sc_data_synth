@@ -83,6 +83,9 @@ class Orchestrator:
         self.mrp_engine = MRPEngine(self.world, self.state, self.config)
         self.transform_engine = TransformEngine(self.world, self.state, self.config)
 
+        # v0.19.2: Pass base demand to transform engine for production prioritization
+        self.transform_engine.set_base_demand(base_demand_matrix)
+
         # 5. Initialize Validation & Quirks (Milestone 6)
         sim_params = self.config.get("simulation_parameters", {})
         self.monitor = RealismMonitor(sim_params)
@@ -372,6 +375,14 @@ class Orchestrator:
         self._apply_logistics_quirks_and_risks(plant_shipments)
         self.state.active_shipments.extend(plant_shipments)
 
+        # 10a. v0.19.2: Push excess RDC inventory to Customer DCs
+        # This breaks the negative feedback spiral where RDCs accumulate
+        # inventory while downstream nodes starve.
+        push_shipments = self._push_excess_rdc_inventory(day)
+        if push_shipments:
+            self._apply_logistics_quirks_and_risks(push_shipments)
+            self.state.active_shipments.extend(push_shipments)
+
         # 11. Validation & Resilience
         self._apply_post_step_validation(day, arrived)
 
@@ -385,7 +396,7 @@ class Orchestrator:
 
         # 12. Monitors & Data Logging
         total_demand = np.sum(daily_demand)
-        daily_shipments = new_shipments + plant_shipments
+        daily_shipments = new_shipments + plant_shipments + push_shipments
 
         total_shipped_qty = sum(
             line.quantity for s in daily_shipments for line in s.lines
@@ -784,6 +795,175 @@ class Orchestrator:
                     self.state.update_inventory(
                         order.target_id, line.product_id, line.quantity
                     )
+
+    def _push_excess_rdc_inventory(self, day: int) -> list[Shipment]:
+        """
+        Push excess RDC inventory to Customer DCs when DOS > threshold.
+
+        v0.19.2: Implements push-based allocation to break the negative feedback
+        spiral. When RDCs accumulate inventory (because Customer DCs under-order),
+        this pushes excess downstream to maintain flow.
+
+        Returns:
+            List of push shipments created
+        """
+        push_shipments: list[Shipment] = []
+
+        # Get config
+        sim_params = self.config.get("simulation_parameters", {})
+        replen_params = sim_params.get("agents", {}).get("replenishment", {})
+        push_threshold_dos = float(replen_params.get("push_threshold_dos", 30.0))
+        push_enabled = replen_params.get("push_allocation_enabled", True)
+
+        if not push_enabled:
+            return push_shipments
+
+        default_lead_time = (
+            sim_params.get("logistics", {}).get("default_lead_time_days", 3.0)
+        )
+
+        # Get RDC IDs (manufacturer RDCs only)
+        rdc_ids = [
+            n_id
+            for n_id, n in self.world.nodes.items()
+            if n.type == NodeType.DC and n_id.startswith("RDC-")
+        ]
+
+        if not rdc_ids:
+            return push_shipments
+
+        # Build downstream map: RDC -> list of Customer DC IDs
+        downstream_map: dict[str, list[str]] = {}
+        for link in self.world.links.values():
+            if link.source_id in rdc_ids:
+                target_node = self.world.nodes.get(link.target_id)
+                # Only push to Customer DCs (not stores directly)
+                if target_node and target_node.type == NodeType.DC:
+                    downstream_map.setdefault(link.source_id, []).append(
+                        link.target_id
+                    )
+
+        # Use POS-based demand (stable signal) instead of outflow demand (which collapses)
+        # This ensures push allocation doesn't under-push during the negative spiral
+        base_demand_matrix = self.pos_engine.get_base_demand_matrix()
+
+        shipment_counter = 0
+
+        for rdc_id in rdc_ids:
+            rdc_idx = self.state.node_id_to_idx.get(rdc_id)
+            if rdc_idx is None:
+                continue
+
+            downstream_dcs = downstream_map.get(rdc_id, [])
+            if not downstream_dcs:
+                continue
+
+            # Calculate RDC inventory and average outflow per product
+            rdc_inventory = self.state.actual_inventory[rdc_idx, :]
+
+            # Calculate expected daily demand for this RDC based on downstream POS
+            # This is a stable signal that doesn't collapse with the spiral
+            rdc_expected_demand = np.zeros(self.state.n_products)
+            for dc_id in downstream_dcs:
+                dc_idx = self.state.node_id_to_idx.get(dc_id)
+                if dc_idx is not None:
+                    # Get downstream stores for this DC and sum their base demand
+                    for link in self.world.links.values():
+                        if link.source_id == dc_id:
+                            store_node = self.world.nodes.get(link.target_id)
+                            if store_node and store_node.type == NodeType.STORE:
+                                store_idx = self.state.node_id_to_idx.get(
+                                    link.target_id
+                                )
+                                if store_idx is not None:
+                                    rdc_expected_demand += base_demand_matrix[
+                                        store_idx, :
+                                    ]
+
+            # Floor demand to avoid division by zero
+            rdc_demand_safe = np.maximum(rdc_expected_demand, 0.1)
+
+            # Calculate DOS per product based on expected demand
+            dos_per_product = rdc_inventory / rdc_demand_safe
+
+            # Find products with DOS > threshold
+            excess_mask = dos_per_product > push_threshold_dos
+
+            if not np.any(excess_mask):
+                continue
+
+            # Calculate excess inventory to push
+            target_dos = push_threshold_dos
+            target_inventory = rdc_demand_safe * target_dos
+            excess_inventory = np.maximum(0, rdc_inventory - target_inventory)
+
+            # Only push products with excess
+            excess_inventory[~excess_mask] = 0
+
+            # Skip if no significant excess
+            total_excess = np.sum(excess_inventory)
+            if total_excess < 100:  # Min threshold to avoid tiny pushes
+                continue
+
+            # Distribute excess proportionally to downstream DCs based on their POS demand
+            # Calculate each DC's share of downstream demand (using stable POS signal)
+            dc_demands: dict[str, np.ndarray] = {}
+            total_dc_demand = np.zeros(self.state.n_products)
+            for dc_id in downstream_dcs:
+                # Calculate POS-based demand for this DC's downstream stores
+                dc_pos_demand = np.zeros(self.state.n_products)
+                for link in self.world.links.values():
+                    if link.source_id == dc_id:
+                        store_node = self.world.nodes.get(link.target_id)
+                        if store_node and store_node.type == NodeType.STORE:
+                            store_idx = self.state.node_id_to_idx.get(link.target_id)
+                            if store_idx is not None:
+                                dc_pos_demand += base_demand_matrix[store_idx, :]
+                dc_demands[dc_id] = dc_pos_demand
+                total_dc_demand += dc_pos_demand
+
+            total_dc_demand_safe = np.maximum(total_dc_demand, 0.1)
+
+            for dc_id, dc_demand in dc_demands.items():
+                # Calculate this DC's share (proportional to demand)
+                share_ratio = dc_demand / total_dc_demand_safe
+                dc_push_qty = excess_inventory * share_ratio
+
+                # Create order lines for products with significant push qty
+                lines = []
+                for p_idx in range(self.state.n_products):
+                    qty = dc_push_qty[p_idx]
+                    if qty >= 10:  # Min 10 cases per product
+                        p_id = self.state.product_idx_to_id[p_idx]
+                        lines.append(OrderLine(p_id, qty))
+
+                if not lines:
+                    continue
+
+                # Find link for lead time
+                link_obj = self._find_link(rdc_id, dc_id)
+                lead_time = (
+                    link_obj.lead_time_days if link_obj else default_lead_time
+                )
+
+                shipment_counter += 1
+                shipment = Shipment(
+                    id=f"PUSH-{day:03d}-{rdc_id}-{shipment_counter:04d}",
+                    source_id=rdc_id,
+                    target_id=dc_id,
+                    creation_day=day,
+                    arrival_day=day + int(lead_time),
+                    lines=lines,
+                    status=ShipmentStatus.IN_TRANSIT,
+                )
+
+                # Deduct from RDC inventory
+                for line in lines:
+                    self.state.update_inventory(rdc_id, line.product_id, -line.quantity)
+
+                push_shipments.append(shipment)
+
+        return push_shipments
 
 
 if __name__ == "__main__":

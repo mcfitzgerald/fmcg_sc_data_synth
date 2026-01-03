@@ -5,6 +5,46 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.19.2] - 2026-01-03
+
+### Service Level Improvement: Signal Flow Optimization
+
+This release implements the fixes outlined in `docs/planning/new-fix.md` to break the negative feedback spiral causing service level degradation.
+
+### Fixed
+- **Daily Ordering for Customer DCs:** Removed the 3-day order cycle restriction for Customer DCs using echelon logic. DCs now order every day, ensuring demand signals flow continuously upstream without accumulation delays.
+- **Increased Customer DC Targets:** Raised target_days from 21 to 35 and reorder_point_days from 14 to 21 for B2M_LARGE, B2M_CLUB, and B2M_DISTRIBUTOR channels. Higher targets ensure DCs order sufficient quantities to cover downstream demand.
+- **Increased Store Targets:** Raised default target_days from 14 to 21 and reorder_point_days from 10 to 14 to provide more buffer at store level.
+- **Echelon Safety Multiplier:** Added `echelon_safety_multiplier` (default 1.3) to echelon target/ROP calculations. This provides a buffer beyond raw echelon demand to account for variance at the echelon level.
+- **Demand-Proportional MRP Batches:** Changed MRP minimum batch size from fixed 50,000 cases to demand-proportional (7 days of demand, minimum 1,000 cases). Prevents SLOB accumulation from massive batches of low-demand products.
+
+### Added
+- **Push-Based Allocation:** Implemented `_push_excess_rdc_inventory()` in Orchestrator to push excess RDC inventory to Customer DCs when Days of Supply exceeds threshold. Uses POS-based demand signal (stable) instead of outflow demand (which collapses during the spiral).
+- **Production Prioritization Support:** Added `set_base_demand()` to TransformEngine for future demand-based production scheduling.
+- **Configuration Parameters:**
+  - `echelon_safety_multiplier`: Buffer multiplier for echelon targets (default: 1.3)
+  - `push_allocation_enabled`: Toggle for push-based allocation (default: true)
+  - `push_threshold_dos`: Days of supply threshold for push (default: 21)
+
+### Results
+| Metric | v0.19.1 Baseline | v0.19.2 (90-day) | v0.19.2 (365-day) | Target |
+|--------|------------------|------------------|-------------------|--------|
+| Service Level | 73% | **91.84%** ✅ | 76% | >90% |
+| SLOB | 65% | 54% | 73% | <30% |
+| Inventory Turns | 4.73x | 6.12x ✅ | 4.69x | 6-14x |
+
+### Root Cause Analysis
+The 90-day simulation achieves >90% service level, but 365-day degrades to ~76%. Investigation revealed:
+- **Product Mix Issue:** Highly concentrated demand (top 10 SKUs = 60% of volume) with SLOB at 73-80% suggests wrong products are stocked
+- **Zipfian Distribution:** A-items (16 SKUs, 80% of demand) may be stocking out while C-items (47 SKUs) accumulate
+- **Slow Drift:** System starts well (initial inventory priming) but drifts to suboptimal equilibrium over time
+
+### Next Steps for v0.19.3
+1. **ABC-Prioritized Allocation:** When inventory is scarce, prioritize A-items over C-items
+2. **ABC-Prioritized MRP:** Weight production planning toward high-velocity SKUs
+3. **Inventory Distribution Monitoring:** Track echelon-level inventory vs demand alignment
+4. **Store-Level Push:** Extend push allocation to Customer DC → Store link
+
 ## [0.19.1] - 2026-01-03
 
 ### Fixed

@@ -313,8 +313,15 @@ class MRPEngine:
                 net_requirement = target_inventory - inventory_position
 
                 if net_requirement > 0:
-                    # Increase minimum batch size to amplify Bullwhip
-                    order_qty = max(net_requirement, self.min_production_qty * 2.0)
+                    # v0.19.2: Use demand-proportional minimum batch size
+                    # instead of fixed minimum to prevent SLOB accumulation.
+                    # Min batch = max of:
+                    #   1. Net requirement (what we actually need)
+                    #   2. 7 days of demand (cover lead time)
+                    #   3. Absolute floor of 1000 cases (avoid tiny batches)
+                    demand_based_min = avg_daily_demand * 7.0  # 7 days coverage
+                    absolute_min = 1000.0  # Minimum viable batch
+                    order_qty = max(net_requirement, demand_based_min, absolute_min)
 
                     # Assign to a plant (simple round-robin for now)
                     plant_id = self._select_plant(product_id)

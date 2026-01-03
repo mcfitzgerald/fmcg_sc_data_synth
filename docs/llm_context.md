@@ -2,7 +2,7 @@
 
 > **System Prompt Context:** This document contains the critical architectural, functional, and physical constraints of the Prism Sim project. Use this as primary context when reasoning about code changes, bug fixes, or feature expansions.
 
-**Version:** 0.19.1 | **Last Updated:** 2026-01-03
+**Version:** 0.19.2 | **Last Updated:** 2026-01-03
 
 ---
 
@@ -340,36 +340,34 @@ Every decision impacts the balance between:
 
 ## 15. Known Issues & Current State
 
-### Service Level Degradation (v0.19.1 - IN PROGRESS)
-**Status:** ROOT CAUSE IDENTIFIED, FIX PLAN CREATED
+### Service Level Degradation (v0.19.2 - PARTIAL FIX)
+**Status:** 90-DAY FIXED, 365-DAY NEEDS ABC PRIORITIZATION
 
-**Current State (v0.19.1):** 365-day simulation shows service level degrading from ~99% (first 30 days) to ~73% (full year).
+**Current State (v0.19.2):**
+| Metric | 90-day | 365-day | Target |
+|--------|--------|---------|--------|
+| Service Level | **91.84%** ✅ | 76% | >90% |
+| SLOB | 54% | 73% | <30% |
+| Inventory Turns | 6.12x ✅ | 4.69x | 6-14x |
 
-**Key Metrics (365-day run):**
-- Store Service Level: 73%
-- Inventory Turns: 5.7x
-- SLOB: 65%
-- MFG RDC Inventory: 92.8% of total (target ~40%)
-- Store Inventory: 4.5% of total (target ~20%)
-- Customer DC Orders: 54% of demand
+**Root Cause (365-day degradation):** Product mix problem, not flow problem.
+- Demand is highly concentrated: Top 10 SKUs = 60% of volume
+- A-items (16 SKUs, 80% demand) stock out → low service level
+- C-items (47 SKUs, 5% demand) accumulate → high SLOB
+- System drifts from good equilibrium to bad equilibrium over time
 
-**Root Cause:** Negative feedback spiral - declining downstream inventory → declining orders → production adjusts down → inventory accumulates at RDCs with no push mechanism.
+**Fixes Implemented (v0.19.2):**
+1. **Daily Ordering for Customer DCs** - improved signal flow
+2. **Increased DC/Store Targets** (35/21 days) - provides buffer
+3. **Echelon Safety Multiplier** (1.3x) - helps throughput
+4. **Push Allocation from RDCs** - moves inventory downstream
+5. **Demand-Proportional MRP Batches** - reduces SLOB slightly
 
-**Fixes Attempted (v0.19.0-v0.19.1):**
-1. **MEIO Echelon Logic** (v0.19.0): Customer DCs use aggregated downstream demand for replenishment
-2. **MEIO IP Fix** (v0.19.1): Changed Customer DCs to use Local IP instead of Echelon IP
-3. **MRP POS Floor** (v0.19.1): MRP uses POS demand as floor to prevent signal collapse
-
-**Remaining Issues:**
-- 3-day ordering cycle for Customer DCs reduces responsiveness
-- Target days (21d) may be insufficient for echelon coverage
-- No push-based allocation from RDCs when they accumulate excess
-
-**Next Steps:** See `docs/planning/new-fix.md` for detailed fix plan:
-1. Daily ordering for Customer DCs
-2. Increase target_days to 35d
-3. Push-based allocation from RDCs
-4. Safety stock multiplier for echelon logic
+**Next Steps:** See `docs/planning/abc_prioritization.md` for detailed plan:
+1. **ABC-Prioritized Allocation** - prioritize A-items when inventory is scarce
+2. **ABC-Prioritized MRP** - weight production toward high-velocity SKUs
+3. **ABC-Aware Replenishment** - different service levels per ABC class
+4. **Production Capacity Reservation** - reserve capacity for A-items
 
 **Diagnostic Scripts:**
 ```bash
