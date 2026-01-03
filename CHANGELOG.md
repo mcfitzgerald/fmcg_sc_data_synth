@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.19.7] - 2026-01-03
+
+### Fixed
+- **ABC Alignment (Phase 1):** Aligned `MRPEngine` ABC classification with `Replenisher` and `TransformEngine` by injecting `base_demand_matrix` (Zipf-aware) into MRP. This resolves the regression where popular A-items were misclassified as B/C in production planning.
+- **Service Level Recovery:** 90-day simulation Service Level recovered to **86.84%** (from 71%), exceeding the >85% target.
+- **Engine Bugs:**
+  - Fixed `AttributeError` in `POSEngine` by initializing `channel_sku_weights`.
+  - Fixed `AttributeError` in `TransformEngine` by correcting scope of `_get_abc_priority`.
+
+### Changed
+- **MRPEngine:** Now calculates `expected_daily_demand` by summing the injected `base_demand_matrix` instead of using static config profiles.
+- **Orchestrator:** Passes `base_demand_matrix` to `MRPEngine` during initialization.
+
 ## [0.19.6] - 2026-01-03
 
 ### Refactoring
