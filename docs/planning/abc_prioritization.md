@@ -40,138 +40,23 @@ C-items (bottom 5%): 47 SKUs (mostly ingredients with 0 demand)
 3. Batch production creates lumpy supply vs. smooth demand
 4. Result: C-items sit in inventory for months (SLOB)
 
-## Proposed Solution: ABC Prioritization
+  Completed:
+   1. Phase 1: ABC-Prioritized Allocation (agents/allocation.py)
+       * Logic: When inventory is scarce at an RDC, orders are now sorted by (Order Priority, -Product Velocity).
+   2. Phase 2: ABC-Prioritized MRP (simulation/mrp.py)
+       * Logic: Production planning now applies dynamic Reorder Point (ROP) multipliers based on product classification.
+   3. Phase 3: ABC-Aware Replenishment (agents/replenishment.py):
+       * Logic: MinMaxReplenisher now uses config-driven thresholds (80/95%) for dynamic ABC classification.
+       * Mechanism: Updates Z-scores based on product volume history using configurable thresholds.
+   4. Phase 4: Production Capacity Reservation (simulation/transform.py):
+       * Logic: Production orders are sorted by ABC priority (A > B > C) then Due Date.
+       * Mechanism: TransformEngine classifies products using base demand and prioritizes A-item orders.
 
-### Phase 1: ABC-Prioritized Allocation (HIGH PRIORITY)
-
-**File:** `src/prism_sim/agents/allocation.py`
-
-**Current Behavior:** Orders are sorted by `order_type` priority (RUSH > PROMO > STANDARD), then processed FIFO.
-
-**Problem:** When inventory is scarce at a source (DC/RDC), all products compete equally. A C-item order might get filled before an A-item order.
-
-**Fix:** Add product velocity as a secondary sort key within each priority tier.
-
-```python
-# In AllocationAgent._prioritize_orders()
-def _prioritize_orders(self, orders: list[Order]) -> list[Order]:
-    """
-    Sort orders by:
-    1. Order type priority (RUSH=1, PROMO=2, STANDARD=5)
-    2. Product velocity (A-items first within same priority)
-    """
-    def order_sort_key(order: Order) -> tuple[int, float]:
-        priority = order.priority
-
-        # Calculate order velocity (sum of line velocities)
-        order_velocity = 0.0
-        for line in order.lines:
-            p_idx = self.state.product_id_to_idx.get(line.product_id)
-            if p_idx is not None and self._product_velocity is not None:
-                order_velocity += self._product_velocity[p_idx]
-
-        # Return (priority, -velocity) so high velocity = earlier processing
-        return (priority, -order_velocity)
-
-    return sorted(orders, key=order_sort_key)
-```
-
-**Implementation Steps:**
-1. Add `_product_velocity: np.ndarray` attribute to `AllocationAgent`
-2. Add `set_product_velocity(velocity: np.ndarray)` method
-3. Call from Orchestrator after POS engine initialization
-4. Update `_prioritize_orders()` to use velocity as secondary sort
-
-### Phase 2: ABC-Prioritized MRP (MEDIUM PRIORITY)
-
-**File:** `src/prism_sim/simulation/mrp.py`
-
-**Current Behavior:** All products are checked for replenishment equally. Production orders are created when DOS < ROP.
-
-**Problem:** C-items trigger production orders just as readily as A-items, consuming plant capacity.
-
-**Fix:** Apply different service levels per ABC class:
-- A-items: z-score 2.33 (99% service level)
-- B-items: z-score 1.65 (95% service level)
-- C-items: z-score 1.28 (90% service level)
-
-```python
-# In MRPEngine.generate_production_orders()
-# After calculating avg_daily_demand_vec
-
-# Classify products by velocity
-velocity = np.sum(self.expected_daily_demand)  # Or from POS
-sorted_indices = np.argsort(avg_daily_demand_vec)[::-1]
-cumsum = np.cumsum(avg_daily_demand_vec[sorted_indices])
-total = np.sum(avg_daily_demand_vec)
-
-# Build ABC mask
-a_cutoff = np.searchsorted(cumsum, 0.80 * total)
-b_cutoff = np.searchsorted(cumsum, 0.95 * total)
-
-# Apply class-specific ROP multipliers
-rop_multiplier = np.ones(self.state.n_products)
-for i, idx in enumerate(sorted_indices):
-    if i < a_cutoff:
-        rop_multiplier[idx] = 1.2  # A-items: order earlier
-    elif i < b_cutoff:
-        rop_multiplier[idx] = 1.0  # B-items: standard
-    else:
-        rop_multiplier[idx] = 0.8  # C-items: order later
-```
-
-**Implementation Steps:**
-1. Add ABC classification method `_classify_products_abc()`
-2. Store ABC class per product: `self._abc_class: np.ndarray`
-3. Apply class-specific ROP multipliers in `generate_production_orders()`
-4. Add config parameters for ABC thresholds and multipliers
-
-### Phase 3: ABC-Aware Replenishment (MEDIUM PRIORITY)
-
-**File:** `src/prism_sim/agents/replenishment.py`
-
-**Current Behavior:** ABC segmentation exists (z-scores A=2.33, B=1.65, C=1.28) but is applied to individual nodes, not products.
-
-**Problem:** The segmentation is per-node, not per-product. A high-velocity product at a low-velocity store gets the store's z-score.
-
-**Fix:** Apply product-level ABC classification to safety stock calculations.
-
-```python
-# In MinMaxReplenisher._compute_targets()
-# Use product ABC class for z-score, not node ABC class
-
-# Current (node-based):
-z_score = self.z_scores_vec[node_idx]
-
-# Proposed (product-based):
-product_z_scores = self._get_product_z_scores()  # [n_products]
-z_score = product_z_scores  # Use for safety stock calc
-```
-
-### Phase 4: Production Capacity Reservation (LOW PRIORITY)
-
-**File:** `src/prism_sim/simulation/transform.py`
-
-**Current Behavior:** Production orders processed by due date. No capacity reservation.
-
-**Problem:** When plant capacity is constrained, C-item orders might consume capacity needed for A-items.
-
-**Fix:** Reserve capacity for A-items before processing C-items.
-
-```python
-# In TransformEngine.process_production_orders()
-# Split orders by ABC class, process A first
-
-a_orders = [o for o in orders if self._get_abc_class(o.product_id) == 'A']
-b_orders = [o for o in orders if self._get_abc_class(o.product_id) == 'B']
-c_orders = [o for o in orders if self._get_abc_class(o.product_id) == 'C']
-
-# Process in priority order
-for order_batch in [a_orders, b_orders, c_orders]:
-    sorted_batch = sorted(order_batch, key=lambda o: o.due_day)
-    for order in sorted_batch:
-        # ... existing processing logic
-```
+  Status:
+   * All phases (1-4) completed.
+   * Logic implemented and verified with 90-day simulation.
+   * Service Level at 90 days: ~85% (Needs tuning, down from 91% baseline but ABC logic is active).
+   * Ready for parameter tuning.
 
 ## Configuration Parameters
 

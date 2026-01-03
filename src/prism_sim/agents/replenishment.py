@@ -235,13 +235,22 @@ class MinMaxReplenisher:
         Logic:
         - Sort products by total volume (descending)
         - Calculate cumulative percentage of volume
-        - A: Top 80% volume -> Target z_score_A
-        - B: Next 15% volume -> Target z_score_B
-        - C: Bottom 5% volume -> Target z_score_C
+        - A: Top X% volume (default 80%) -> Target z_score_A
+        - B: Next Y% volume (default 15%) -> Target z_score_B
+        - C: Bottom Z% volume (default 5%) -> Target z_score_C
         """
         total_volume = np.sum(self.product_volume_history)
         if total_volume <= 0:
             return
+
+        # Get thresholds from config
+        abc_config = (
+            self.config.get("simulation_parameters", {})
+            .get("agents", {})
+            .get("abc_prioritization", {})
+        )
+        thresh_a = abc_config.get("a_threshold_pct", 0.80)
+        thresh_b = abc_config.get("b_threshold_pct", 0.95)
 
         # Sort indices by volume descending
         sorted_indices = np.argsort(self.product_volume_history)[::-1]
@@ -253,9 +262,9 @@ class MinMaxReplenisher:
             cumulative_vol += vol
             pct = cumulative_vol / total_volume
 
-            if pct <= 0.80:
+            if pct <= thresh_a:
                 self.z_scores_vec[p_idx] = self.z_score_A
-            elif pct <= 0.95:
+            elif pct <= thresh_b:
                 self.z_scores_vec[p_idx] = self.z_score_B
             else:
                 self.z_scores_vec[p_idx] = self.z_score_C

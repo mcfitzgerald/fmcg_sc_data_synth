@@ -142,6 +142,66 @@ class TransformEngine:
         during production scheduling, breaking the SLOB accumulation pattern.
         """
         self._base_demand = base_demand
+        self._classify_products_abc()
+
+    def _classify_products_abc(self) -> None:
+        """
+        Classify products into A/B/C based on base demand velocity.
+        Used for production capacity reservation (Phase 4).
+        """
+        if self._base_demand is None:
+            return
+
+        # Get config
+        abc_config = (
+            self.config.get("simulation_parameters", {})
+            .get("agents", {})
+            .get("abc_prioritization", {})
+        )
+        if not abc_config.get("enabled", True):
+            self._product_abc_class = {}
+            return
+
+        thresh_a = abc_config.get("a_threshold_pct", 0.80)
+        thresh_b = abc_config.get("b_threshold_pct", 0.95)
+
+        # Calculate network-wide velocity per product
+        velocity = np.sum(self._base_demand, axis=0)
+        total_volume = np.sum(velocity)
+        
+        if total_volume == 0:
+            return
+
+        # Sort descending
+        sorted_indices = np.argsort(velocity)[::-1]
+        cumulative = np.cumsum(velocity[sorted_indices])
+
+        # Determine cutoffs
+        idx_a = np.searchsorted(cumulative, total_volume * thresh_a, side='right')
+        idx_b = np.searchsorted(cumulative, total_volume * thresh_b, side='right')
+
+        self._product_abc_class = {}
+        for i, p_idx in enumerate(sorted_indices):
+            p_id = self.state.product_idx_to_id[p_idx]
+            if i < idx_a:
+                self._product_abc_class[p_id] = 'A'
+            elif i < idx_b:
+                self._product_abc_class[p_id] = 'B'
+            else:
+                self._product_abc_class[p_id] = 'C'
+
+    def _get_abc_priority(self, product_id: str) -> int:
+        """Return sort priority for product (A=1, B=2, C=3)."""
+        if not hasattr(self, "_product_abc_class"):
+            return 2  # Default to B (Standard)
+        
+        cls = self._product_abc_class.get(product_id, 'B')
+        if cls == 'A':
+            return 1
+        elif cls == 'B':
+            return 2
+        else:
+            return 3
 
     def process_production_orders(
         self, orders: list[ProductionOrder], current_day: int
@@ -163,8 +223,13 @@ class TransformEngine:
         for plant_state in self._plant_states.values():
             plant_state.remaining_capacity_hours = plant_state.max_capacity_hours
 
-        # Sort orders by due date (priority)
-        sorted_orders = sorted(orders, key=lambda o: o.due_day)
+        # Sort orders by:
+        # 1. ABC Priority (A=1 first) -> Reserve capacity for high runners
+        # 2. Due Date (Earliest first)
+        sorted_orders = sorted(orders, key=lambda o: (
+            self._get_abc_priority(o.product_id),
+            o.due_day
+        ))
 
         for order in sorted_orders:
             if order.status == ProductionOrderStatus.COMPLETE:

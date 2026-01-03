@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.19.5] - 2026-01-03
+
+### Status
+- **365-Day Validation:** Run completed. Service Level (71%) and SLOB (78%) indicate a regression from baseline.
+- **Root Cause:** Identified ABC misalignment between Replenisher (Zipf-aware) and MRP (Zipf-blind config).
+- **Plan:** Created `docs/planning/alignment_and_param_fix.md` to address the architecture gap before further tuning.
+
+## [0.19.4] - 2026-01-03
+
+### Added
+- **ABC Prioritization (Phase 3 & 4):** Completed remaining phases of the ABC prioritization plan.
+  - **ABC-Aware Replenishment (Phase 3):** `MinMaxReplenisher` now uses config-driven thresholds (80/95%) for dynamic ABC classification, ensuring consistency with MRP logic.
+  - **Production Capacity Reservation (Phase 4):** `TransformEngine` now reserves capacity for A-items by classifying products based on expected demand and prioritizing A-item production orders before C-items.
+  - **Configuration:** Updated `simulation_config.json` with `abc_prioritization` block enabled by default.
+
+### Changed
+- **Replenishment:** Updated `replenishment.py` to read ABC thresholds from config.
+- **Transform:** Updated `transform.py` to sort production orders by ABC priority (A > B > C) then due date.
+
 ## [0.19.3] - 2026-01-03
 
 ### Added

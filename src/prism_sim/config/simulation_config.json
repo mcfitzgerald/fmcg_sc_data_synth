@@ -15,6 +15,17 @@
       "weeks_per_year": 52
     },
     "agents": {
+      "abc_prioritization": {
+        "enabled": true,
+        "a_threshold_pct": 0.80,
+        "b_threshold_pct": 0.95,
+        "a_rop_multiplier": 1.2,
+        "b_rop_multiplier": 1.0,
+        "c_rop_multiplier": 0.8,
+        "a_allocation_priority": 1,
+        "b_allocation_priority": 2,
+        "c_allocation_priority": 3
+      },
       "replenishment": {
         "target_days_supply": 21.0,
         "reorder_point_days": 14.0,
