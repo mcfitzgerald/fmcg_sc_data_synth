@@ -5,7 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.18.0] - 2026-01-03
+## [0.18.2] - 2026-01-02
+
+### Fixed
+- **Order Signal Collapse:** Fixed demand signal attenuation at Customer DCs (RET-DC, etc.) by switching `Replenisher` to use a 7-day average of **Inflow Demand** (orders received) for all nodes, replacing the collapsing exponential smoothing logic.
+- **Phantom Ingredient Replenishment:** Explicitly masked `ProductCategory.INGREDIENT` in `MinMaxReplenisher` to prevent Stores and DCs from ordering millions of units of raw materials (chemicals, packaging).
+- **Sporadic Demand:** Increased store order cycle from 1 day to 3 days to consolidate demand signals and prevent "zero-demand" days from crashing safety stock calculations.
+
+### Changed
+- **Reverted v0.18.0 Band-aids:** Removed "Expected Throughput Floor" and "Flow-based Minimum Order" logic in favor of fixing the root cause (ingredient filtering + inflow demand).
+- **Configuration:** Restored baseline inventory initialization days (21d Stores, 28d RDCs, 21d DCs).
+
+## [0.18.0] - 2026-01-02
 
 ### Bug Fixes: Plant Shipment Routing & SLOB Calculation
 

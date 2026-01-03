@@ -602,6 +602,8 @@ Orchestrator
 
 | Version | Key Changes |
 |---------|-------------|
+| 0.18.2 | **Order Signal Stabilization** - Fixed order collapse by using 7-day inflow average for all nodes; Masked ingredients in Replenisher to prevent phantom orders; Reverted v0.18.0 band-aids |
+| 0.18.0 | **Service Level Fix Attempt (Partially Reverted)** - Plant shipment routing fix; SLOB calculation fix; (Reverted: throughput floors) |
 | 0.17.0 | **Physics Overhaul** - Full Safety Stock formula ($SS = z \sqrt{\bar{L}\sigma_D^2 + \bar{D}^2\sigma_L^2}$); Dynamic ABC Segmentation; Zero mypy errors; config-driven order cycles and scale factors |
 | 0.16.0 | **Variance-Aware Safety Stock** - Implemented dynamic ROP ($ROP = \mu_L + z\sigma_L$) replacing static days-of-supply; (s,S) policies now use Inventory Position (IP) to prevent double-ordering; System stable with Zipfian demand (76% SL) |
 | 0.15.9 | **Service Level Phase 2 (Demand Signal Fix)** - Inflow-based demand for customer DCs (orders received vs shipped); Daily DC ordering (5d→1d); Higher DC buffers (21/14 days); MRP order signal; Awaiting 365-day validation |

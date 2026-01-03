@@ -9,6 +9,7 @@ from prism_sim.network.core import (
     OrderType,
     StoreFormat,
 )
+from prism_sim.product.core import ProductCategory
 from prism_sim.simulation.state import StateManager
 from prism_sim.simulation.world import World
 
@@ -174,6 +175,14 @@ class MinMaxReplenisher:
         self.z_score_C = float(segmentation.get("C", 1.28))
 
         self.z_scores_vec = np.full(self.state.n_products, self.z_score_B)
+
+        # Vectorized Ingredient Mask (True = Ingredient, skip in Replenishment)
+        self.ingredient_mask = np.zeros(self.state.n_products, dtype=bool)
+        for p_id, product in self.world.products.items():
+            if product.category == ProductCategory.INGREDIENT:
+                p_idx = self.state.product_id_to_idx.get(p_id)
+                if p_idx is not None:
+                    self.ingredient_mask[p_idx] = True
 
     def record_lead_time(self, target_id: str, source_id: str, lead_time_days: float) -> None:
         """
@@ -538,14 +547,13 @@ class MinMaxReplenisher:
         week = (day // 7) + 1
 
         # Order staggering: Stores order daily to improve service level
-        # v0.15.8: Reduced from 3-day to 1-day cycle for better service level
-        # With higher target/ROP (14/10 days), daily ordering is sustainable
+        # v0.15.8: Increased to 3-day cycle to consolidate store signals for DCs
         params = (
             self.config.get("simulation_parameters", {})
             .get("agents", {})
             .get("replenishment", {})
         )
-        order_cycle_days = int(params.get("order_cycle_days", 1))
+        order_cycle_days = int(params.get("order_cycle_days", 3))
 
         # Identify active promos for this week
         active_promos = []
@@ -612,24 +620,26 @@ class MinMaxReplenisher:
         in_transit_inv = in_transit_matrix[target_idx_arr, :]
         inventory_position = on_hand_inv + in_transit_inv  # IP = On-Hand + In-Transit
 
-        # v0.15.9: Use inflow-based demand for customer DCs (orders received)
-        # This prevents demand signal attenuation when DCs are short on inventory.
-        # Previously used outflow (what was shipped), but that's constrained by
-        # inventory - causing under-ordering when DCs are low.
+        # v0.18.2: Use inflow-based demand for ALL nodes (7-day avg)
+        # This replaces exponential smoothing which collapses on sparse signals.
         inflow_demand = self.get_inflow_demand()
+        
+        # For Day 1-7, inflow_demand might be low, so we blend with POS demand for stores
+        pos_demand = self.smoothed_demand
+        
         avg_demand = np.zeros((len(target_indices), self.state.n_products))
 
         for i, t_idx in enumerate(target_indices):
             if t_idx in self._customer_dc_indices:
                 # Customer DC: use max of inflow and expected throughput
                 # v0.18.0: Expected throughput floor prevents cold-start under-ordering
-                # when stores haven't placed orders yet (Days 1-7)
                 inflow_signal = inflow_demand[t_idx, :]
                 expected = self._expected_throughput.get(t_idx, inflow_signal)
                 avg_demand[i, :] = np.maximum(inflow_signal, expected)
             else:
-                # Store: use POS-based demand (consumer sales)
-                avg_demand[i, :] = self.smoothed_demand[t_idx, :]
+                # Store: use max of 7-day inflow and current smoothed POS
+                # This ensures we respond to POS spikes but don't drop to 0 on non-ordering days
+                avg_demand[i, :] = np.maximum(inflow_demand[t_idx, :], pos_demand[t_idx, :])
 
         # Avoid division by zero or negative targets
         avg_demand = np.maximum(avg_demand, self.min_demand_floor)
@@ -727,24 +737,10 @@ class MinMaxReplenisher:
 
         # Use vectorized min_qty
         order_qty = np.where(needs_order, np.maximum(raw_qty, min_qty), 0.0)
-
-        # v0.18.0: Flow-based minimum for customer DCs
-        # Even if IP >= ROP, customer DCs should order to maintain expected throughput
-        # This prevents (s,S) from stopping orders when inventory is slightly above ROP
-        for i, t_idx in enumerate(target_indices):
-            if t_idx in self._customer_dc_indices and t_idx in self._expected_throughput:
-                expected = self._expected_throughput[t_idx]
-                # Minimum order = expected throughput * lead time (replenish consumed)
-                # Only if below target (don't order if fully stocked)
-                lead_time = float(replenishment_params.get("lead_time_days", 3.0))
-                min_flow_order = expected * lead_time
-                below_target = inventory_position[i, :] < target_stock[i, :]
-                # Apply flow minimum where current order is zero but below target
-                order_qty[i, :] = np.where(
-                    (order_qty[i, :] == 0) & below_target,
-                    np.maximum(min_flow_order, min_qty[i]),
-                    order_qty[i, :],
-                )
+        
+        # v0.18.1: Explicitly zero out Ingredient orders in Replenisher
+        # Sourcing/Procurement of ingredients is handled by MRPEngine
+        order_qty[:, self.ingredient_mask] = 0.0
 
         # 6. Apply Batching
         batched_qty = np.ceil(order_qty / batch_sz) * batch_sz
