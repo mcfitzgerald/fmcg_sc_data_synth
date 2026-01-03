@@ -387,7 +387,7 @@ class MinMaxReplenisher:
         # Map each Customer DC to a row index
         sorted_dc_indices = sorted(list(self._customer_dc_indices))
         self.dc_idx_to_echelon_row = {idx: i for i, idx in enumerate(sorted_dc_indices)}
-        
+
         n_rows = len(sorted_dc_indices)
         n_cols = self.state.n_nodes
         self.echelon_matrix = np.zeros((n_rows, n_cols), dtype=np.float32)
@@ -400,10 +400,10 @@ class MinMaxReplenisher:
         # Populate matrix
         for i, dc_idx in enumerate(sorted_dc_indices):
             dc_id = self.state.node_idx_to_id[dc_idx]
-            
+
             # 1. Include the DC itself
             self.echelon_matrix[i, dc_idx] = 1.0
-            
+
             # 2. Include all downstream stores
             children = downstream_map.get(dc_id, [])
             for child_id in children:
@@ -669,10 +669,10 @@ class MinMaxReplenisher:
         # v0.18.2: Use inflow-based demand for ALL nodes (7-day avg)
         # This replaces exponential smoothing which collapses on sparse signals.
         inflow_demand = self.get_inflow_demand()
-        
+
         # For Day 1-7, inflow_demand might be low, so we blend with POS demand for stores
         pos_demand = self.smoothed_demand
-        
+
         avg_demand = np.zeros((len(target_indices), self.state.n_products))
 
         for i, t_idx in enumerate(target_indices):
@@ -848,7 +848,7 @@ class MinMaxReplenisher:
 
         # Use vectorized min_qty
         order_qty = np.where(needs_order, np.maximum(raw_qty, min_qty), 0.0)
-        
+
         # v0.18.1: Explicitly zero out Ingredient orders in Replenisher
         # Sourcing/Procurement of ingredients is handled by MRPEngine
         order_qty[:, self.ingredient_mask] = 0.0

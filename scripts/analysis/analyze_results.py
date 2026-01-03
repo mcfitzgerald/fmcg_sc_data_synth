@@ -207,19 +207,18 @@ def main():
             print(f"JSON report saved to {args.output}")
         else:
             print(output)
+    elif args.output:
+        import sys
+        from io import StringIO
+        old_stdout = sys.stdout
+        sys.stdout = StringIO()
+        print_report(stats)
+        output = sys.stdout.getvalue()
+        sys.stdout = old_stdout
+        Path(args.output).write_text(output)
+        print(f"Report saved to {args.output}")
     else:
-        if args.output:
-            import sys
-            from io import StringIO
-            old_stdout = sys.stdout
-            sys.stdout = StringIO()
-            print_report(stats)
-            output = sys.stdout.getvalue()
-            sys.stdout = old_stdout
-            Path(args.output).write_text(output)
-            print(f"Report saved to {args.output}")
-        else:
-            print_report(stats)
+        print_report(stats)
 
 
 if __name__ == "__main__":

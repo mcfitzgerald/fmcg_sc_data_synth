@@ -86,7 +86,6 @@ def get_product_category(product_id: str) -> str:
 
 def analyze_service_level_trend(orders: pd.DataFrame, shipments: pd.DataFrame) -> pd.DataFrame:
     """Calculate daily and weekly service level trends."""
-
     # Aggregate orders by day and target
     daily_orders = orders.groupby(["day", "target_id", "product_id"])["quantity"].sum().reset_index()
     daily_orders.columns = ["day", "target_id", "product_id", "ordered"]
@@ -120,7 +119,6 @@ def analyze_service_level_trend(orders: pd.DataFrame, shipments: pd.DataFrame) -
 
 def analyze_service_by_echelon(orders: pd.DataFrame, shipments: pd.DataFrame) -> pd.DataFrame:
     """Analyze service level by supply chain echelon."""
-
     # Add echelon classification
     orders["echelon"] = orders["target_id"].apply(classify_node)
     shipments["echelon"] = shipments["target_id"].apply(classify_node)
@@ -141,7 +139,6 @@ def analyze_service_by_echelon(orders: pd.DataFrame, shipments: pd.DataFrame) ->
 
 def analyze_service_by_product(orders: pd.DataFrame, shipments: pd.DataFrame) -> pd.DataFrame:
     """Analyze service level by product category."""
-
     orders["category"] = orders["product_id"].apply(get_product_category)
     shipments["category"] = shipments["product_id"].apply(get_product_category)
 
@@ -160,7 +157,6 @@ def analyze_service_by_product(orders: pd.DataFrame, shipments: pd.DataFrame) ->
 
 def analyze_worst_performers(orders: pd.DataFrame, shipments: pd.DataFrame, top_n: int = 20) -> dict:
     """Identify worst performing nodes and products."""
-
     # By target node
     order_by_node = orders.groupby("target_id")["quantity"].sum()
     ship_by_node = shipments.groupby("target_id")["quantity"].sum()
@@ -193,7 +189,6 @@ def analyze_worst_performers(orders: pd.DataFrame, shipments: pd.DataFrame, top_
 
 def analyze_inventory_availability(inventory: pd.DataFrame, orders: pd.DataFrame) -> pd.DataFrame:
     """Compare inventory levels against demand over time."""
-
     # Filter to stores only
     store_inv = inventory[inventory["node_id"].str.startswith("STORE-")].copy()
     store_orders = orders[orders["target_id"].str.startswith("STORE-")].copy()
@@ -215,7 +210,6 @@ def analyze_inventory_availability(inventory: pd.DataFrame, orders: pd.DataFrame
 
 def analyze_service_degradation_phases(daily_sl: pd.DataFrame) -> dict:
     """Identify phases of service level degradation."""
-
     # Split into quarters
     max_day = daily_sl["day"].max()
     q1 = daily_sl[daily_sl["day"] <= max_day * 0.25]["service_level"].mean()
@@ -251,7 +245,6 @@ def print_diagnostic_report(
     phases: dict,
 ) -> None:
     """Print comprehensive diagnostic report."""
-
     print("=" * 70)
     print("         SERVICE LEVEL DIAGNOSTIC REPORT")
     print("=" * 70)

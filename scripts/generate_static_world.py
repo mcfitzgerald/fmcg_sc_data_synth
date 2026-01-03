@@ -1,7 +1,7 @@
 """Script to generate the static world (Level 0-4) for Deep NAM expansion."""
 
-import sys
 import json
+import sys
 from pathlib import Path
 
 # Add project root to path
@@ -9,14 +9,13 @@ sys.path.append(str(Path(__file__).parent.parent / "src"))
 
 from prism_sim.generators.hierarchy import ProductGenerator
 from prism_sim.generators.network import NetworkGenerator
-from prism_sim.product.core import Product, ProductCategory
 from prism_sim.writers.static_writer import StaticWriter
 
 
 def main() -> None:
     # 0. Load Config
     config_path = Path("src/prism_sim/config/world_definition.json")
-    with open(config_path, "r") as f:
+    with open(config_path) as f:
         world_config = json.load(f)
 
     output_dir = Path("data/output/static_world")
@@ -31,7 +30,7 @@ def main() -> None:
     print("Generating Products...")
     counts = world_config.get("topology", {}).get("target_counts", {})
     n_skus = counts.get("skus", 50)
-    
+
     finished_goods = prod_gen.generate_products(n_skus=n_skus)
 
     # 3. Ingredients (Procedural)

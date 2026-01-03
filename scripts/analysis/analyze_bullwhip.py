@@ -2,9 +2,9 @@
 """Bullwhip effect analysis script for Prism Sim results."""
 
 import argparse
-import pandas as pd
-import numpy as np
 from pathlib import Path
+
+import pandas as pd
 
 
 def load_data(results_dir: Path) -> dict:
@@ -64,7 +64,7 @@ def analyze_echelon_variance(data: dict) -> None:
     print("\n" + "=" * 70)
     print("BULLWHIP RATIOS")
     print("=" * 70)
-    print(f"\nVariance amplification (CV ratios):")
+    print("\nVariance amplification (CV ratios):")
     print(f"  RDC/Store:   {rdc_cv/store_cv:.2f}x")
     print(f"  Plant/RDC:   {plant_cv/rdc_cv:.2f}x")
     print(f"  Plant/Store: {plant_cv/store_cv:.2f}x (total)")
@@ -85,7 +85,7 @@ def analyze_production_pattern(data: dict) -> None:
 
     prod_daily = batches.groupby("day_produced")["quantity"].sum()
 
-    print(f"\nDaily Production Statistics:")
+    print("\nDaily Production Statistics:")
     print(f"  Mean: {prod_daily.mean():>12,.0f}")
     print(f"  Std:  {prod_daily.std():>12,.0f}")
     print(f"  CV:   {prod_daily.std()/prod_daily.mean():>12.3f}")
@@ -109,7 +109,7 @@ def analyze_order_batching(data: dict) -> None:
     print("=" * 70)
 
     order_sizes = orders.groupby(["day", "target_id"])["quantity"].sum()
-    print(f"\nOrder Size Distribution:")
+    print("\nOrder Size Distribution:")
     print(f"  Mean:   {order_sizes.mean():>12,.0f}")
     print(f"  Std:    {order_sizes.std():>12,.0f}")
     print(f"  Min:    {order_sizes.min():>12,.0f}")

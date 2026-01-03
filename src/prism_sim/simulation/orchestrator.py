@@ -77,6 +77,13 @@ class Orchestrator:
             base_demand_matrix=base_demand_matrix,
         )
         self.allocator = AllocationAgent(self.state, self.config)
+
+        # v0.19.3: Set product velocity for ABC prioritization (Phase 1)
+        # Sum base demand across all nodes to get total network velocity per SKU
+        # This allows the Allocator to prioritize A-items (high velocity) when scarce
+        product_velocity = np.sum(base_demand_matrix, axis=0)
+        self.allocator.set_product_velocity(product_velocity)
+
         self.logistics = LogisticsEngine(self.world, self.state, self.config)
 
         # 4. Initialize Manufacturing Engines (Milestone 5)

@@ -90,7 +90,6 @@ def is_finished_good(product_id: str) -> bool:
 
 def analyze_inventory_by_echelon(inventory: pd.DataFrame) -> pd.DataFrame:
     """Analyze inventory distribution across echelons."""
-
     # Get latest day snapshot
     latest_day = inventory["day"].max()
     latest_inv = inventory[inventory["day"] == latest_day].copy()
@@ -122,7 +121,6 @@ def analyze_inventory_by_echelon(inventory: pd.DataFrame) -> pd.DataFrame:
 
 def analyze_inventory_trend_by_echelon(inventory: pd.DataFrame) -> pd.DataFrame:
     """Track inventory levels over time by echelon."""
-
     # Filter to finished goods
     fg_inv = inventory[inventory["product_id"].apply(is_finished_good)].copy()
     fg_inv["echelon"] = fg_inv["node_id"].apply(classify_node)
@@ -135,7 +133,6 @@ def analyze_inventory_trend_by_echelon(inventory: pd.DataFrame) -> pd.DataFrame:
 
 def analyze_days_of_supply(inventory: pd.DataFrame, shipments: pd.DataFrame) -> pd.DataFrame:
     """Calculate days of supply by product at each echelon."""
-
     # Get latest inventory
     latest_day = inventory["day"].max()
     latest_inv = inventory[inventory["day"] == latest_day].copy()
@@ -168,7 +165,6 @@ def analyze_days_of_supply(inventory: pd.DataFrame, shipments: pd.DataFrame) -> 
 
 def analyze_inventory_velocity(inventory: pd.DataFrame, shipments: pd.DataFrame) -> pd.DataFrame:
     """Calculate inventory turnover velocity by product."""
-
     # Get first and last day inventory
     first_day = inventory["day"].min()
     last_day = inventory["day"].max()
@@ -207,7 +203,6 @@ def analyze_inventory_velocity(inventory: pd.DataFrame, shipments: pd.DataFrame)
 
 def identify_slob_products(dos_by_prod: pd.DataFrame, threshold_days: int = 60) -> pd.DataFrame:
     """Identify products with SLOB (>threshold DOS)."""
-
     # Focus on MFG_RDC since that's where SLOB typically sits
     rdc_dos = dos_by_prod[dos_by_prod["echelon"] == "MFG_RDC"].copy()
 
@@ -219,7 +214,6 @@ def identify_slob_products(dos_by_prod: pd.DataFrame, threshold_days: int = 60) 
 
 def analyze_inventory_imbalance(echelon_inv: pd.DataFrame) -> dict:
     """Analyze inventory imbalance between echelons."""
-
     total = echelon_inv["inventory"].sum()
 
     # Calculate ideal distribution (rough heuristic)
@@ -254,7 +248,6 @@ def analyze_inventory_imbalance(echelon_inv: pd.DataFrame) -> dict:
 
 def analyze_production_vs_demand(batches: pd.DataFrame, shipments: pd.DataFrame) -> dict:
     """Compare production output to demand signal."""
-
     # Total production
     total_produced = batches["quantity"].sum()
     prod_days = batches["day_produced"].max() - batches["day_produced"].min() + 1
@@ -286,7 +279,6 @@ def print_diagnostic_report(
     inv_trend: pd.DataFrame,
 ) -> None:
     """Print comprehensive SLOB diagnostic report."""
-
     print("=" * 70)
     print("         SLOB (SLOW/OBSOLETE) INVENTORY DIAGNOSTIC REPORT")
     print("=" * 70)
