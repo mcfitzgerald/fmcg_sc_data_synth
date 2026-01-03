@@ -19,9 +19,9 @@
         "enabled": true,
         "a_threshold_pct": 0.80,
         "b_threshold_pct": 0.95,
-        "a_rop_multiplier": 1.2,
+        "a_rop_multiplier": 1.5,
         "b_rop_multiplier": 1.0,
-        "c_rop_multiplier": 0.8,
+        "c_rop_multiplier": 0.5,
         "a_allocation_priority": 1,
         "b_allocation_priority": 2,
         "c_allocation_priority": 3
@@ -45,7 +45,7 @@
         "segmentation": {
           "A": 2.33,
           "B": 1.65,
-          "C": 1.28
+          "C": 1.0
         },
         "echelon_safety_multiplier": 1.3,
         "push_allocation_enabled": true,
