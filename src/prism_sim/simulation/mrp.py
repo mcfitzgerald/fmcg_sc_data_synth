@@ -92,6 +92,11 @@ class MRPEngine:
         # Production Order counter for unique IDs
         self._po_counter = 0
 
+        # Phase 2: ABC Prioritization
+        # Classify products and build ROP multiplier vector
+        self.abc_rop_multiplier = np.ones(self.state.n_products, dtype=np.float64)
+        self._classify_products_abc()
+
     def _build_policy_vectors(self, mrp_config: dict[str, Any]) -> None:
         """Pre-calculate ROP and Target vectors for all products."""
         policies = mrp_config.get("inventory_policies", {})
@@ -162,6 +167,56 @@ class MRPEngine:
 
             # Expected demand = base per store * number of stores
             self.expected_daily_demand[p_idx] = base_demand * n_stores
+
+    def _classify_products_abc(self) -> None:
+        """
+        Classify products into A/B/C categories based on expected demand volume.
+        
+        Phase 2 ABC Prioritization:
+        - A-items (Top 80% volume): 1.2x ROP multiplier (Prioritize availability)
+        - B-items (Next 15% volume): 1.0x ROP multiplier (Standard)
+        - C-items (Bottom 5% volume): 0.8x ROP multiplier (Deprioritize/Just-in-Time)
+        """
+        # Get abc config or use defaults
+        abc_config = (
+            self.config.get("simulation_parameters", {})
+            .get("agents", {})
+            .get("abc_prioritization", {})
+        )
+        enabled = abc_config.get("enabled", True)
+        
+        if not enabled:
+            return
+
+        # Multipliers
+        mult_a = abc_config.get("a_rop_multiplier", 1.2)
+        mult_b = abc_config.get("b_rop_multiplier", 1.0)
+        mult_c = abc_config.get("c_rop_multiplier", 0.8)
+
+        # Thresholds
+        thresh_a = abc_config.get("a_threshold_pct", 0.80)
+        thresh_b = abc_config.get("b_threshold_pct", 0.95)
+
+        # Calculate total volume and sort indices
+        total_volume = np.sum(self.expected_daily_demand)
+        if total_volume == 0:
+            return
+
+        sorted_indices = np.argsort(self.expected_daily_demand)[::-1]
+        cumulative_volume = np.cumsum(self.expected_daily_demand[sorted_indices])
+        
+        # Determine cutoffs
+        # side='right' ensures boundary items are included in the higher priority category
+        idx_a = np.searchsorted(cumulative_volume, total_volume * thresh_a, side='right')
+        idx_b = np.searchsorted(cumulative_volume, total_volume * thresh_b, side='right')
+
+        # Apply multipliers
+        # A-items
+        self.abc_rop_multiplier[sorted_indices[:idx_a]] = mult_a
+        # B-items
+        self.abc_rop_multiplier[sorted_indices[idx_a:idx_b]] = mult_b
+        # C-items
+        self.abc_rop_multiplier[sorted_indices[idx_b:]] = mult_c
 
     def _cache_node_info(self) -> None:
         """Cache RDC and Plant node IDs for efficient lookups.
@@ -307,7 +362,11 @@ class MRPEngine:
                 dos_position = float("inf")
 
             # Check if we need to order
-            if dos_position < self.rop_vector[p_idx]:
+            # v0.19.3: Apply ABC multiplier to ROP (Phase 2)
+            # A-items get higher ROP (earlier ordering), C-items get lower
+            effective_rop = self.rop_vector[p_idx] * self.abc_rop_multiplier[p_idx]
+            
+            if dos_position < effective_rop:
                 # Calculate quantity needed to reach target days supply
                 target_inventory = avg_daily_demand * self.target_vector[p_idx]
                 net_requirement = target_inventory - inventory_position

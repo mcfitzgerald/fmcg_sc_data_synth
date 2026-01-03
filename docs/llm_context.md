@@ -616,6 +616,8 @@ Orchestrator
 
 | Version | Key Changes |
 |---------|-------------|
+| 0.19.3 | **ABC Prioritization (Phase 1 & 2)** - Implemented Pareto-based logic for Allocation (A-items first) and MRP (ROP multipliers 1.2x/0.8x) to fix product mix issues; Configurable thresholds/multipliers |
+| 0.19.2 | **Signal Flow Optimization** - Daily DC ordering, Push Allocation, Demand-Proportional MRP batches; 90-day Service Level >90% achieved |
 | 0.19.1 | **MEIO Bug Fixes** - Fixed Customer DC IP calculation (use Local IP not Echelon IP); MRP uses POS demand as floor; Added diagnostic scripts (`diagnose_service_level.py`, `diagnose_slob.py`); Root cause identified: negative feedback spiral |
 | 0.19.0 | **Echelon Inventory Logic (MEIO)** - Customer DCs use aggregated downstream demand + inventory position; Config for store_batch_size_cases and lead_time_history_len |
 | 0.18.2 | **Order Signal Stabilization** - Fixed order collapse by using 7-day inflow average for all nodes; Masked ingredients in Replenisher to prevent phantom orders; Reverted v0.18.0 band-aids |
