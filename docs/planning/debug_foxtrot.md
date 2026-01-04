@@ -153,12 +153,36 @@ Instead of DOS-triggered ordering, use rate-based:
 | Baseline (broken) | 93% | 88% | 50% | 60% |
 | Floor=70% | - | - | 57% | 71% |
 | Floor=100% | - | - | 58% | 75% |
+| **Rate-Based Production (v0.19.9)** | 93% | - | **67.5%** | 88% |
 
-The fixes improve 365-day service level from 50% to 58%, but still far from the 85%+ target.
+The rate-based production (Option C) improved 365-day service level from 50% to 67.5% (+17.5pp).
 
-## Next Steps
+## v0.19.9 Implementation (2026-01-03)
 
-1. Add diagnostic logging to trace demand/order/production flow
-2. Implement anticipatory planning (Option A or C)
-3. Consider longer warm-start period or dynamic warm-start adjustment
-4. Validate with 365-day simulation after each change
+### What Was Implemented
+1. **Rate-based production mode**: Production always runs at expected demand rate (424K/day)
+2. **Catch-up mode**: If DOS < ROP, produce EXTRA to recover deficit
+3. **Throttle mode**: Only reduce production if DOS > 45 days
+4. **Diagnostic logging**: MRPDiagnostics dataclass tracks signal flow
+
+### Key Findings from Diagnostics
+
+1. **Rate-based working**: Day 30 shows `Prod[gen=424,540]` - exactly at expected rate
+2. **Production output**: ~412K/day (97% of expected) - not bottlenecked
+3. **Ingredient ordering**: Not needed (210M units on hand = 397 days supply)
+4. **Real bottleneck**: Product mix mismatch (SLOB at 70%)
+
+### Root Cause of Remaining Gap
+
+The remaining 17.5pp gap (67.5% → 85%+) is NOT due to production rate. It's due to:
+
+1. **Product Mix Mismatch**: Rate-based uses fixed expected mix, but actual demand varies
+2. **SLOB Accumulation**: 70% of inventory is slow-moving (wrong products stocked)
+3. **Distribution Flow**: Goods produced but not flowing to stores efficiently
+
+### Next Steps for v0.19.10+
+
+1. **Dynamic Mix Adjustment**: Use actual demand signal for product mix, not just fixed expected
+2. **Seasonal Adjustment**: Adjust expected demand for known seasonality (±12%)
+3. **Flow Optimization**: Investigate RDC → Store distribution bottlenecks
+4. **ABC Production Scheduling**: Stronger prioritization for A-items in TransformEngine

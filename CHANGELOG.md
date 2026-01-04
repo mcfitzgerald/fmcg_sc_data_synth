@@ -5,7 +5,43 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.19.8] - 2026-01-03 (In Progress)
+## [0.19.9] - 2026-01-03
+
+### Added
+- **Rate-Based Production (Option C):** Implemented anticipatory production mode that always produces at expected demand rate, preventing the low-equilibrium trap.
+  - `rate_based_production`: Config toggle for new production mode (default: true)
+  - `rate_based_min_batch`: Lower min batch (100 vs 1000) to capture C-items
+  - `inventory_cap_dos`: Only throttle production if DOS > 45 days
+  - Catch-up mode: If DOS < ROP, produce EXTRA to recover deficit
+- **MRP Diagnostics:** Added `MRPDiagnostics` dataclass for debugging signal flow.
+  - Tracks demand signals, production orders, inventory position, DOS
+  - Logs to `prism_sim.mrp.diagnostics` logger at INFO level
+
+### Fixed
+- **Low-Equilibrium Trap:** Rate-based production prevents the system from stabilizing at low production levels when demand signals collapse.
+- **C-Item Production:** Lower min batch (100) prevents filtering out slow-moving products entirely.
+
+### Changed
+- **MRPEngine:** Added `_generate_rate_based_orders()` method for Option C logic.
+- **Config:** Added `rate_based_production`, `rate_based_min_batch`, `inventory_cap_dos`, `diagnostics_enabled` to `mrp_thresholds`.
+
+### Results
+| Metric | v0.19.8 | v0.19.9 | Target |
+|--------|---------|---------|--------|
+| 30-day Service Level | 93% | 93% | >90% |
+| 365-day Service Level | 50-58% | **67.5%** | >85% |
+| OEE | 60-75% | **88%** | 75-85% |
+| SLOB | - | 70% | <30% |
+
+### Analysis
+Rate-based production improved 365-day SL by +17.5pp. The remaining gap to 85%+ is due to:
+1. **Product Mix Mismatch:** Fixed expected mix doesn't match actual demand variations
+2. **SLOB at 70%:** Wrong products being stocked (C-items accumulating)
+3. **Distribution Flow:** Goods produced but not flowing to stores efficiently
+
+See `docs/planning/debug_foxtrot.md` for detailed analysis.
+
+## [0.19.8] - 2026-01-03
 
 ### Fixed
 - **MRP Starvation Loop (Partial):** Decoupled ingredient ordering from historical production flow.
@@ -21,11 +57,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Production smoothing cap now floors at expected production (was: could degrade with history).
 - **Orchestrator:** Added `auditor.record_plant_shipments_out` for push shipments (Mass Balance fix).
 - **Config:** Tuned `production_floor_pct` (0.3 → 0.5) and `min_production_cap_pct` (0.5 → 0.7).
-
-### Status
-- **30-day:** 93% service level (stable)
-- **365-day:** 50-58% service level (improved from 49%, but still degrading)
-- **Root Cause Analysis:** See `docs/planning/debug_foxtrot.md` - hypothesis is insufficient demand anticipation in planning horizons.
 
 ## [0.19.7] - 2026-01-03
 

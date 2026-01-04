@@ -7,6 +7,8 @@ This module monitors RDC inventory levels and generates Production Orders
 for Plants when stock falls below reorder points.
 """
 
+import logging
+from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
@@ -22,6 +24,55 @@ from prism_sim.network.core import (
 from prism_sim.product.core import ProductCategory
 from prism_sim.simulation.state import StateManager
 from prism_sim.simulation.world import World
+
+# Diagnostic logger for MRP signal tracing
+mrp_logger = logging.getLogger("prism_sim.mrp.diagnostics")
+
+
+@dataclass
+class MRPDiagnostics:
+    """Diagnostic snapshot of MRP state for debugging starvation issues."""
+
+    day: int = 0
+    # Demand signals
+    expected_daily_demand: float = 0.0
+    actual_demand_signal: float = 0.0
+    pos_demand_total: float = 0.0
+    demand_signal_ratio: float = 0.0  # actual / expected
+    # Production
+    production_orders_generated: float = 0.0
+    production_floor_applied: bool = False
+    smoothing_cap_applied: bool = False
+    rate_based_mode: bool = False
+    # Inventory position
+    total_rdc_inventory: float = 0.0
+    total_in_transit: float = 0.0
+    total_in_production: float = 0.0
+    avg_dos: float = 0.0
+    # Ingredients
+    ingredient_orders_generated: float = 0.0
+    total_backlog: float = 0.0
+    backlog_vs_expected_ratio: float = 0.0
+    # Detailed breakdown by product (top 5)
+    top_products: list[dict[str, Any]] = field(default_factory=list)
+
+    def log(self) -> None:
+        """Log diagnostics at INFO level."""
+        mrp_logger.info(
+            f"Day {self.day}: "
+            f"Demand[exp={self.expected_daily_demand:,.0f} "
+            f"act={self.actual_demand_signal:,.0f} "
+            f"ratio={self.demand_signal_ratio:.1%}] "
+            f"Prod[gen={self.production_orders_generated:,.0f} "
+            f"floor={self.production_floor_applied} "
+            f"cap={self.smoothing_cap_applied} "
+            f"rate={self.rate_based_mode}] "
+            f"Inv[rdc={self.total_rdc_inventory:,.0f} "
+            f"transit={self.total_in_transit:,.0f} "
+            f"dos={self.avg_dos:.1f}d] "
+            f"Ing[orders={self.ingredient_orders_generated:,.0f} "
+            f"backlog_ratio={self.backlog_vs_expected_ratio:.1%}]"
+        )
 
 
 class MRPEngine:
@@ -62,6 +113,19 @@ class MRPEngine:
         )
         self.production_floor_pct = mrp_thresholds.get("production_floor_pct", 0.3)
         self.min_production_cap_pct = mrp_thresholds.get("min_production_cap_pct", 0.5)
+
+        # v0.19.9: Rate-based production parameters (Option C fix)
+        # When enabled, production always runs at expected demand rate.
+        # DOS only modulates ABOVE baseline (catch-up mode), never below.
+        self.rate_based_production = mrp_thresholds.get(
+            "rate_based_production", False
+        )
+        # Only throttle production if DOS exceeds this many days
+        self.inventory_cap_dos = mrp_thresholds.get("inventory_cap_dos", 45.0)
+
+        # Diagnostics storage
+        self._diagnostics: MRPDiagnostics | None = None
+        self._diagnostics_enabled = mrp_thresholds.get("diagnostics_enabled", True)
 
         # Pre-calculate Policy Vectors
         self._build_policy_vectors(mrp_config)
@@ -197,7 +261,7 @@ class MRPEngine:
     def _classify_products_abc(self) -> None:
         """
         Classify products into A/B/C categories based on expected demand volume.
-        
+
         Phase 2 ABC Prioritization:
         - A-items (Top 80% volume): 1.2x ROP multiplier (Prioritize availability)
         - B-items (Next 15% volume): 1.0x ROP multiplier (Standard)
@@ -232,7 +296,7 @@ class MRPEngine:
         cumulative_volume = np.cumsum(self.expected_daily_demand[sorted_indices])
 
         # Determine cutoffs
-        # side='right' ensures boundary items are included in the higher priority category
+        # side='right' ensures boundary items are in higher priority category
         idx_a = np.searchsorted(
             cumulative_volume, total_volume * thresh_a, side='right'
         )
@@ -252,13 +316,6 @@ class MRPEngine:
         n_a = idx_a
         n_b = idx_b - idx_a
         n_c = len(sorted_indices) - idx_b
-
-        # Filter out zero-demand items from count (usually ingredients)
-        # We only care about products with demand
-        active_indices = [
-            i for i in sorted_indices if self.expected_daily_demand[i] > 0
-        ]
-        n_active = len(active_indices)
 
         # Recalculate counts for active items only for clearer logging
         # (This is just for logging display, the multipliers are already applied)
@@ -381,11 +438,20 @@ class MRPEngine:
         """
         Generate Production Orders based on RDC inventory and demand signals.
 
+        v0.19.9: Added rate-based production mode (Option C).
+        When enabled, production always runs at expected demand rate.
+        DOS only modulates ABOVE baseline (catch-up mode), never below.
+
         v0.19.1: Added POS demand as a floor to prevent demand signal collapse.
         When the order-based demand signal declines (because downstream is starving),
         we use actual consumer demand (POS) to maintain production levels.
         """
         production_orders: list[ProductionOrder] = []
+
+        # Initialize diagnostics
+        diag = MRPDiagnostics(day=current_day) if self._diagnostics_enabled else None
+        floor_applied = False
+        cap_applied = False
 
         # 1. Update Demand History with daily shipment volume (The "Lumpy" Signal)
         self._update_demand_history(current_day, rdc_shipments)
@@ -394,34 +460,28 @@ class MRPEngine:
         avg_daily_demand_vec = np.mean(self.demand_history, axis=0)
 
         # v0.19.1: Use POS demand as floor for demand signal
-        # This is the TRUE consumer demand, not constrained by inventory availability
-        # Sum POS across all nodes to get network-wide demand per product
+        pos_demand_total = 0.0
         if pos_demand is not None:
             pos_demand_by_product = np.sum(pos_demand, axis=0)
-            # Use maximum of order-based signal and POS demand
+            pos_demand_total = float(np.sum(pos_demand_by_product))
             avg_daily_demand_vec = np.maximum(
                 avg_daily_demand_vec, pos_demand_by_product
             )
 
         # v0.15.6: Calculate demand velocity (week-over-week trend)
-        # Detect declining trends before full collapse
         week1_avg = np.mean(self.demand_history[:7], axis=0)
         week2_avg = np.mean(self.demand_history[7:], axis=0)
         self._week1_demand_sum = float(np.sum(week1_avg))
         self._week2_demand_sum = float(np.sum(week2_avg))
 
         # C.1 FIX: Fallback to prevent death spiral
-        # v0.15.6: Raised threshold from 10% to 40% AND added velocity check
-        # When shipment signal is low OR declining rapidly, use expected demand floor
         total_signal = np.sum(avg_daily_demand_vec)
         expected_total = np.sum(self.expected_daily_demand)
 
         use_fallback = False
         if expected_total > 0:
-            # Condition 1: Signal below threshold of expected
             if total_signal < expected_total * self.demand_signal_collapse_pct:
                 use_fallback = True
-            # Condition 2: Velocity declining - week1 < threshold of week2 (rapid decline)
             elif (
                 self._week2_demand_sum > 0
                 and self._week1_demand_sum
@@ -430,7 +490,6 @@ class MRPEngine:
                 use_fallback = True
 
         if use_fallback:
-            # Signal has collapsed or declining - use maximum of actual signal and expected
             avg_daily_demand_vec = np.maximum(
                 avg_daily_demand_vec, self.expected_daily_demand
             )
@@ -440,153 +499,271 @@ class MRPEngine:
         in_production_qty: dict[str, float] = {}
         for po in active_production_orders:
             if po.status != ProductionOrderStatus.COMPLETE:
-                # Only count if due within horizon
                 if po.due_day <= current_day + lookahead_horizon:
-                    # Count remaining qty
                     remaining = po.quantity_cases - po.produced_quantity
                     in_production_qty[po.product_id] = (
                         in_production_qty.get(po.product_id, 0.0) + remaining
                     )
 
-        # 2. Calculate In-Transit qty per product (to RDCs)
+        # Calculate In-Transit qty per product (to RDCs)
         in_transit_qty: dict[str, float] = {}
         for shipment in self.state.active_shipments:
-            # Only count shipments heading to an RDC
             if shipment.target_id in self._rdc_ids:
                 for line in shipment.lines:
                     in_transit_qty[line.product_id] = (
                         in_transit_qty.get(line.product_id, 0.0) + line.quantity
                     )
 
-        # 3. Process each finished product
-        for product_id in self._finished_product_ids:
-            p_idx = self.state.product_id_to_idx.get(product_id)
-            if p_idx is None:
-                continue
+        # Collect inventory diagnostics
+        total_rdc_inv = 0.0
+        total_in_transit = sum(in_transit_qty.values())
+        total_in_prod = sum(in_production_qty.values())
+        for rdc_id in self._rdc_ids:
+            for product_id in self._finished_product_ids:
+                total_rdc_inv += self.state.get_inventory(rdc_id, product_id)
 
-            # Calculate total Inventory Position
-            inventory_position = self._calculate_inventory_position(
-                product_id, in_transit_qty, in_production_qty
+        # ================================================================
+        # v0.19.9: RATE-BASED PRODUCTION (Option C)
+        # ================================================================
+        if self.rate_based_production:
+            production_orders = self._generate_rate_based_orders(
+                current_day,
+                avg_daily_demand_vec,
+                in_transit_qty,
+                in_production_qty,
+                total_rdc_inv,
             )
+            if diag:
+                diag.rate_based_mode = True
 
-            # Use Moving Average Demand
-            avg_daily_demand = max(float(avg_daily_demand_vec[p_idx]), 1.0)
+        else:
+            # ================================================================
+            # LEGACY DOS-TRIGGERED PRODUCTION (with floors)
+            # ================================================================
+            for product_id in self._finished_product_ids:
+                p_idx = self.state.product_id_to_idx.get(product_id)
+                if p_idx is None:
+                    continue
 
-            # Calculate days of supply based on Inventory Position
-            if avg_daily_demand > 0:
-                dos_position = inventory_position / avg_daily_demand
-            else:
-                dos_position = float("inf")
+                inventory_position = self._calculate_inventory_position(
+                    product_id, in_transit_qty, in_production_qty
+                )
+                avg_daily_demand = max(float(avg_daily_demand_vec[p_idx]), 1.0)
 
-            # Check if we need to order
-            # v0.19.3: Apply ABC multiplier to ROP (Phase 2)
-            # A-items get higher ROP (earlier ordering), C-items get lower
-            effective_rop = self.rop_vector[p_idx] * self.abc_rop_multiplier[p_idx]
+                if avg_daily_demand > 0:
+                    dos_position = inventory_position / avg_daily_demand
+                else:
+                    dos_position = float("inf")
 
-            if dos_position < effective_rop:
-                # Calculate quantity needed to reach target days supply
-                target_inventory = avg_daily_demand * self.target_vector[p_idx]
-                net_requirement = target_inventory - inventory_position
+                # v0.19.3: Apply ABC multiplier to ROP
+                effective_rop = self.rop_vector[p_idx] * self.abc_rop_multiplier[p_idx]
 
-                if net_requirement > 0:
-                    # v0.19.2: Use demand-proportional minimum batch size
-                    # instead of fixed minimum to prevent SLOB accumulation.
-                    # Min batch = max of:
-                    #   1. Net requirement (what we actually need)
-                    #   2. 7 days of demand (cover lead time)
-                    #   3. Absolute floor of 1000 cases (avoid tiny batches)
-                    demand_based_min = avg_daily_demand * 7.0  # 7 days coverage
+                if dos_position < effective_rop:
+                    target_inventory = avg_daily_demand * self.target_vector[p_idx]
+                    net_requirement = target_inventory - inventory_position
 
-                    mfg_config = self.config.get(
-                        "simulation_parameters", {}
-                    ).get("manufacturing", {})
-                    absolute_min = float(
-                        mfg_config.get("min_batch_size_absolute", 1000.0)
-                    )  # Minimum viable batch
-                    order_qty = max(
-                        net_requirement, demand_based_min, absolute_min
-                    )
+                    if net_requirement > 0:
+                        demand_based_min = avg_daily_demand * 7.0
+                        mfg_config = self.config.get(
+                            "simulation_parameters", {}
+                        ).get("manufacturing", {})
+                        absolute_min = float(
+                            mfg_config.get("min_batch_size_absolute", 1000.0)
+                        )
+                        order_qty = max(
+                            net_requirement, demand_based_min, absolute_min
+                        )
 
-                    # Assign to a plant (simple round-robin for now)
-                    plant_id = self._select_plant(product_id)
-
-                    # Create Production Order
-                    po = ProductionOrder(
-                        id=self._generate_po_id(current_day),
-                        plant_id=plant_id,
-                        product_id=product_id,
-                        quantity_cases=order_qty,
-                        creation_day=current_day,
-                        due_day=current_day + self.production_lead_time,
-                        status=ProductionOrderStatus.PLANNED,
-                        planned_start_day=current_day + 1,
-                    )
-
-                    production_orders.append(po)
-
-        # v0.15.6: Minimum production floor - never drop below configured % of expected
-        # This prevents complete production shutdown when demand signal dampens
-        total_orders_today = sum(po.quantity_cases for po in production_orders)
-        expected_production = np.sum(self.expected_daily_demand)
-        min_production_floor = expected_production * self.production_floor_pct
-
-        if total_orders_today < min_production_floor and expected_production > 0:
-            # Production is too low - boost up to minimum floor
-            # Create additional orders to fill the gap
-            shortfall = min_production_floor - total_orders_today
-            # Distribute shortfall across existing orders or create new ones
-            if production_orders:
-                # Scale up existing orders proportionally
-                scale_factor = min_production_floor / max(total_orders_today, 1.0)
-                for po in production_orders:
-                    po.quantity_cases = po.quantity_cases * scale_factor
-                total_orders_today = min_production_floor
-            else:
-                # No orders exist - create minimum orders for top products
-                # Select top products by expected demand
-                top_products = np.argsort(self.expected_daily_demand)[-10:][::-1]
-                qty_per_product = shortfall / len(top_products)
-                for p_idx in top_products:
-                    if self.expected_daily_demand[p_idx] > 0:
-                        product_id = self.state.product_idx_to_id[p_idx]
                         plant_id = self._select_plant(product_id)
                         po = ProductionOrder(
                             id=self._generate_po_id(current_day),
                             plant_id=plant_id,
                             product_id=product_id,
-                            quantity_cases=qty_per_product,
+                            quantity_cases=order_qty,
                             creation_day=current_day,
                             due_day=current_day + self.production_lead_time,
                             status=ProductionOrderStatus.PLANNED,
                             planned_start_day=current_day + 1,
                         )
                         production_orders.append(po)
-                total_orders_today = sum(po.quantity_cases for po in production_orders)
+
+            # v0.15.6: Minimum production floor
+            total_orders_today = sum(po.quantity_cases for po in production_orders)
+            expected_production = np.sum(self.expected_daily_demand)
+            min_production_floor = expected_production * self.production_floor_pct
+
+            if total_orders_today < min_production_floor and expected_production > 0:
+                floor_applied = True
+                shortfall = min_production_floor - total_orders_today
+                if production_orders:
+                    scale_factor = min_production_floor / max(total_orders_today, 1.0)
+                    for po in production_orders:
+                        po.quantity_cases = po.quantity_cases * scale_factor
+                    total_orders_today = min_production_floor
+                else:
+                    top_products = np.argsort(self.expected_daily_demand)[-10:][::-1]
+                    qty_per_product = shortfall / len(top_products)
+                    for p_idx in top_products:
+                        if self.expected_daily_demand[p_idx] > 0:
+                            product_id = self.state.product_idx_to_id[p_idx]
+                            plant_id = self._select_plant(product_id)
+                            po = ProductionOrder(
+                                id=self._generate_po_id(current_day),
+                                plant_id=plant_id,
+                                product_id=product_id,
+                                quantity_cases=qty_per_product,
+                                creation_day=current_day,
+                                due_day=current_day + self.production_lead_time,
+                                status=ProductionOrderStatus.PLANNED,
+                                planned_start_day=current_day + 1,
+                            )
+                            production_orders.append(po)
+                    total_orders_today = sum(
+                        po.quantity_cases for po in production_orders
+                    )
 
         # C.5 FIX: Smooth production orders to reduce volatility
-        # v0.19.8: Use max(history, expected) as baseline to prevent feedback loop.
-        # Previously, using only avg_recent created a death spiral where low
-        # production → lower cap → even lower production.
         avg_recent = np.mean(self.production_order_history)
         expected_production = np.sum(self.expected_daily_demand)
-
-        # Use the higher of recent history or expected as the baseline
-        # This ensures we can always scale up to meet expected demand
         smoothing_baseline = max(avg_recent, expected_production)
 
+        total_orders_today = sum(po.quantity_cases for po in production_orders)
         if smoothing_baseline > 0 and total_orders_today > smoothing_baseline * 1.5:
-            # Scale down all orders proportionally (prevent bullwhip spikes)
+            cap_applied = True
             scale_factor = (smoothing_baseline * 1.5) / total_orders_today
             for po in production_orders:
                 po.quantity_cases = float(po.quantity_cases * scale_factor)
 
-        # Update production history with ACTUAL (post-scaled) total
+        # Update production history
         actual_total = sum(po.quantity_cases for po in production_orders)
         self.production_order_history[self._prod_hist_ptr] = actual_total
-        # v0.15.6: Extended history from 7 to 14 days
         self._prod_hist_ptr = (self._prod_hist_ptr + 1) % 14
 
+        # Collect and log diagnostics
+        if diag:
+            diag.expected_daily_demand = expected_total
+            diag.actual_demand_signal = total_signal
+            diag.pos_demand_total = pos_demand_total
+            diag.demand_signal_ratio = (
+                total_signal / expected_total if expected_total > 0 else 0.0
+            )
+            diag.production_orders_generated = actual_total
+            diag.production_floor_applied = floor_applied
+            diag.smoothing_cap_applied = cap_applied
+            diag.total_rdc_inventory = total_rdc_inv
+            diag.total_in_transit = total_in_transit
+            diag.total_in_production = total_in_prod
+            diag.avg_dos = (
+                total_rdc_inv / expected_total if expected_total > 0 else 0.0
+            )
+            self._diagnostics = diag
+            diag.log()
+
         return production_orders
+
+    def _generate_rate_based_orders(
+        self,
+        current_day: int,
+        avg_daily_demand_vec: np.ndarray,
+        in_transit_qty: dict[str, float],
+        in_production_qty: dict[str, float],
+        total_rdc_inv: float,
+    ) -> list[ProductionOrder]:
+        """
+        v0.19.9: Rate-based production logic (Option C).
+
+        Key insight: Always produce at expected demand rate. DOS only modulates
+        ABOVE baseline (catch-up mode when inventory is low), never below.
+        This prevents the low-equilibrium trap where the system stabilizes at
+        low production because demand signals have collapsed.
+
+        Production logic:
+        1. BASELINE: Always produce at expected_daily_demand rate
+        2. CATCH-UP: If DOS < ROP, produce EXTRA to recover deficit
+        3. THROTTLE: Only reduce below baseline if DOS > inventory_cap_dos
+        """
+        production_orders: list[ProductionOrder] = []
+
+        for product_id in self._finished_product_ids:
+            p_idx = self.state.product_id_to_idx.get(product_id)
+            if p_idx is None:
+                continue
+
+            expected_demand = float(self.expected_daily_demand[p_idx])
+            if expected_demand <= 0:
+                continue
+
+            # Calculate inventory position and DOS
+            inventory_position = self._calculate_inventory_position(
+                product_id, in_transit_qty, in_production_qty
+            )
+            avg_daily_demand = max(float(avg_daily_demand_vec[p_idx]), 1.0)
+
+            if avg_daily_demand > 0:
+                dos_position = inventory_position / avg_daily_demand
+            else:
+                dos_position = float("inf")
+
+            # Apply ABC multiplier to ROP
+            effective_rop = self.rop_vector[p_idx] * self.abc_rop_multiplier[p_idx]
+
+            # ============================================================
+            # RATE-BASED LOGIC
+            # ============================================================
+
+            # BASELINE: Always produce at least expected_demand
+            baseline_qty = expected_demand
+
+            # CATCH-UP: If below ROP, add extra to reach target
+            catch_up_qty = 0.0
+            if dos_position < effective_rop:
+                target_inventory = avg_daily_demand * self.target_vector[p_idx]
+                deficit = target_inventory - inventory_position
+                if deficit > 0:
+                    # Spread catch-up over production_lead_time days
+                    catch_up_qty = deficit / max(self.production_lead_time, 1)
+
+            # THROTTLE: Only reduce if inventory is excessively high
+            throttle_factor = 1.0
+            if dos_position > self.inventory_cap_dos:
+                # Reduce production proportionally to excess
+                # At 2x cap, production goes to 50%; at 3x cap, to 33%, etc.
+                excess_ratio = dos_position / self.inventory_cap_dos
+                throttle_factor = 1.0 / excess_ratio
+
+            # Calculate final order quantity
+            order_qty = (baseline_qty + catch_up_qty) * throttle_factor
+
+            # Apply minimum batch size
+            # v0.19.9: For rate-based production, use a lower minimum to avoid
+            # filtering out C-items entirely. C-items with Zipfian distribution
+            # average ~450 cases/day, so use 100 as the floor.
+            mfg_config = self.config.get(
+                "simulation_parameters", {}
+            ).get("manufacturing", {})
+            # Use a lower min batch for rate-based mode to capture C-items
+            absolute_min = float(mfg_config.get("rate_based_min_batch", 100.0))
+
+            # Only create order if meaningful quantity
+            if order_qty >= absolute_min:
+                plant_id = self._select_plant(product_id)
+                po = ProductionOrder(
+                    id=self._generate_po_id(current_day),
+                    plant_id=plant_id,
+                    product_id=product_id,
+                    quantity_cases=order_qty,
+                    creation_day=current_day,
+                    due_day=current_day + self.production_lead_time,
+                    status=ProductionOrderStatus.PLANNED,
+                    planned_start_day=current_day + 1,
+                )
+                production_orders.append(po)
+
+        return production_orders
+
+    def get_diagnostics(self) -> MRPDiagnostics | None:
+        """Return the most recent diagnostics snapshot."""
+        return self._diagnostics
 
     def _update_demand_history(self, day: int, shipments: list[Shipment]) -> None:
         """Update demand history with actual shipment quantities (FIX 3.3)."""
@@ -663,6 +840,8 @@ class MRPEngine:
         2. Calculate Ingredient Requirement (Req = Production @ R)
         3. Check Inventory Position vs ROP
         4. Generate Orders
+
+        v0.19.9: Enhanced diagnostics for ingredient ordering.
         """
         purchase_orders: list[Order] = []
         if not self._plant_ids:
@@ -687,6 +866,7 @@ class MRPEngine:
                     production_by_product[p_idx] += remaining
 
         total_backlog = np.sum(production_by_product)
+        expected_daily = np.sum(self.expected_daily_demand)
 
         # 2. Determine target daily production rate
         # v0.19.8: Always order ingredients for at least expected demand.
@@ -795,6 +975,17 @@ class MRPEngine:
                         status="OPEN",
                     )
                     purchase_orders.append(purchase_order)
+
+        # Update diagnostics with ingredient ordering info
+        if self._diagnostics:
+            total_ing_orders = sum(
+                line.quantity for po in purchase_orders for line in po.lines
+            )
+            self._diagnostics.ingredient_orders_generated = total_ing_orders
+            self._diagnostics.total_backlog = total_backlog
+            self._diagnostics.backlog_vs_expected_ratio = (
+                total_backlog / expected_daily if expected_daily > 0 else 0.0
+            )
 
         return purchase_orders
 

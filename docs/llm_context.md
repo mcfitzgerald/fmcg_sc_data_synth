@@ -2,7 +2,7 @@
 
 > **System Prompt Context:** This document contains the critical architectural, functional, and physical constraints of the Prism Sim project. Use this as primary context when reasoning about code changes, bug fixes, or feature expansions.
 
-**Version:** 0.19.2 | **Last Updated:** 2026-01-03
+**Version:** 0.19.9 | **Last Updated:** 2026-01-03
 
 ---
 
@@ -340,34 +340,46 @@ Every decision impacts the balance between:
 
 ## 15. Known Issues & Current State
 
-### Service Level Degradation (v0.19.2 - PARTIAL FIX)
-**Status:** 90-DAY FIXED, 365-DAY NEEDS ABC PRIORITIZATION
+### Service Level Degradation (v0.19.9 - RATE-BASED PRODUCTION FIX)
+**Status:** PRODUCTION STARVATION FIXED, PRODUCT MIX OPTIMIZATION NEEDED
 
-**Current State (v0.19.2):**
-| Metric | 90-day | 365-day | Target |
+**Current State (v0.19.9):**
+| Metric | 30-day | 365-day | Target |
 |--------|--------|---------|--------|
-| Service Level | **91.84%** ✅ | 76% | >90% |
-| SLOB | 54% | 73% | <30% |
-| Inventory Turns | 6.12x ✅ | 4.69x | 6-14x |
+| Service Level | **93%** ✅ | **67.5%** | >85% |
+| OEE | **88%** ✅ | **88%** ✅ | 75-85% |
+| SLOB | - | 70% | <30% |
+| Inventory Turns | 8.0x ✅ | 6.2x | 6-14x |
 
-**Root Cause (365-day degradation):** Product mix problem, not flow problem.
-- Demand is highly concentrated: Top 10 SKUs = 60% of volume
-- A-items (16 SKUs, 80% demand) stock out → low service level
-- C-items (47 SKUs, 5% demand) accumulate → high SLOB
-- System drifts from good equilibrium to bad equilibrium over time
+**Root Cause (365-day degradation):** Product mix mismatch, not production rate.
+- Rate-based production generates correct total quantity (424K/day)
+- But product MIX doesn't match actual demand variations
+- A-items stock out during demand spikes
+- C-items accumulate as SLOB (70%)
 
-**Fixes Implemented (v0.19.2):**
-1. **Daily Ordering for Customer DCs** - improved signal flow
-2. **Increased DC/Store Targets** (35/21 days) - provides buffer
-3. **Echelon Safety Multiplier** (1.3x) - helps throughput
-4. **Push Allocation from RDCs** - moves inventory downstream
-5. **Demand-Proportional MRP Batches** - reduces SLOB slightly
+**Fixes Implemented (v0.19.9):**
+1. **Rate-Based Production (Option C)** - Production always runs at expected demand rate, preventing low-equilibrium trap
+2. **Lower Min Batch (100 vs 1000)** - Captures C-items in production schedule
+3. **Throttle Only When DOS > 45 days** - Prevents SLOB explosion
+4. **MRP Diagnostics** - `MRPDiagnostics` dataclass for signal tracing
 
-**Next Steps:** See `docs/planning/abc_prioritization.md` for detailed plan:
-1. **ABC-Prioritized Allocation** - prioritize A-items when inventory is scarce
-2. **ABC-Prioritized MRP** - weight production toward high-velocity SKUs
-3. **ABC-Aware Replenishment** - different service levels per ABC class
-4. **Production Capacity Reservation** - reserve capacity for A-items
+**Key Config Parameters (v0.19.9):**
+```json
+{
+  "mrp_thresholds": {
+    "rate_based_production": true,
+    "rate_based_min_batch": 100.0,
+    "inventory_cap_dos": 45.0,
+    "diagnostics_enabled": true
+  }
+}
+```
+
+**Next Steps:** See `docs/planning/mix_opt.md` for detailed plan:
+1. **Dynamic Mix Adjustment** - Use actual demand signal for product mix, not fixed expected
+2. **Seasonal Adjustment** - Apply known seasonality (±12%) to expected demand
+3. **ABC Capacity Reservation** - Reserve 80% of capacity for A-items in TransformEngine
+4. **Demand-Driven Production by ABC** - Different strategies per product class
 
 **Diagnostic Scripts:**
 ```bash
@@ -616,6 +628,9 @@ Orchestrator
 
 | Version | Key Changes |
 |---------|-------------|
+| 0.19.9 | **Rate-Based Production (Option C)** - MRP produces at expected demand rate regardless of DOS signals; Prevents low-equilibrium trap; MRPDiagnostics for signal tracing; 365-day SL improved 50%→67.5%; Next: product mix optimization (see `docs/planning/mix_opt.md`) |
+| 0.19.8 | **Starvation Loop Fixes** - Decoupled ingredient ordering from historical production; Warm-started history buffers; Smoothing cap uses max(history, expected) |
+| 0.19.7 | **ABC Alignment Tuning** - Tuned ROP multipliers and allocation priorities |
 | 0.19.6 | **Hardcode Refactoring** - Introduced `OrderPriority` and `ABCClass` enums; Moved logic parameters (`min_history_days`, `min_batch_size_absolute`, `default_store_count`) to config; Strict type safety enforcement |
 | 0.19.3 | **ABC Prioritization (Phase 1 & 2)** - Implemented Pareto-based logic for Allocation (A-items first) and MRP (ROP multipliers 1.2x/0.8x) to fix product mix issues; Configurable thresholds/multipliers |
 | 0.19.2 | **Signal Flow Optimization** - Daily DC ordering, Push Allocation, Demand-Proportional MRP batches; 90-day Service Level >90% achieved |
