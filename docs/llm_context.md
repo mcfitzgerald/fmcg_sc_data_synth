@@ -2,7 +2,7 @@
 
 > **System Prompt Context:** This document contains the critical architectural, functional, and physical constraints of the Prism Sim project. Use this as primary context when reasoning about code changes, bug fixes, or feature expansions.
 
-**Version:** 0.19.9 | **Last Updated:** 2026-01-03
+**Version:** 0.19.11 | **Last Updated:** 2026-01-04
 
 ---
 
@@ -340,46 +340,56 @@ Every decision impacts the balance between:
 
 ## 15. Known Issues & Current State
 
-### Service Level Degradation (v0.19.9 - RATE-BASED PRODUCTION FIX)
-**Status:** PRODUCTION STARVATION FIXED, PRODUCT MIX OPTIMIZATION NEEDED
+### Distribution Bottleneck (v0.19.11 - SLOB FIXED, DISTRIBUTION INVESTIGATION NEEDED)
+**Status:** SLOB TARGET ACHIEVED ✅, SERVICE LEVEL INVESTIGATION NEEDED
 
-**Current State (v0.19.9):**
+**Current State (v0.19.11):**
 | Metric | 30-day | 365-day | Target |
 |--------|--------|---------|--------|
-| Service Level | **93%** ✅ | **67.5%** | >85% |
+| Service Level | **92.5%** ✅ | **64.5%** ❌ | >85% |
 | OEE | **88%** ✅ | **88%** ✅ | 75-85% |
-| SLOB | - | 70% | <30% |
-| Inventory Turns | 8.0x ✅ | 6.2x | 6-14x |
+| **SLOB** | 0% | **28.6%** ✅ | <30% |
+| Inventory Turns | 8.0x ✅ | 7.9x ✅ | 6-14x |
+| Cash-to-Cash | - | 33 days ✅ | Lower is better |
 
-**Root Cause (365-day degradation):** Product mix mismatch, not production rate.
-- Rate-based production generates correct total quantity (424K/day)
-- But product MIX doesn't match actual demand variations
-- A-items stock out during demand spikes
-- C-items accumulate as SLOB (70%)
+**Root Cause (365-day SL degradation):** Distribution bottleneck, NOT production.
+- Production is adequate: A-items produced at 130-150% of demand when low
+- Total capacity is sufficient (OEE 85%+)
+- **Goods are produced but not reaching stores**
+- Inventory stuck at RDCs instead of flowing downstream
 
-**Fixes Implemented (v0.19.9):**
-1. **Rate-Based Production (Option C)** - Production always runs at expected demand rate, preventing low-equilibrium trap
-2. **Lower Min Batch (100 vs 1000)** - Captures C-items in production schedule
-3. **Throttle Only When DOS > 45 days** - Prevents SLOB explosion
-4. **MRP Diagnostics** - `MRPDiagnostics` dataclass for signal tracing
+**Fixes Implemented (v0.19.11):**
+1. **POS-Driven Production (Closed-Loop)** - Uses actual consumer demand as primary signal, not expected demand
+2. **ABC Class Tracking** - `abc_class` array (0=A, 1=B, 2=C) for differentiated production response
+3. **ABC Response Dynamics** - A-items: fast catch-up (130%); C-items: aggressive reduction (30% when overstocked)
 
-**Key Config Parameters (v0.19.9):**
+**Key Config Parameters (v0.19.11):**
 ```json
 {
   "mrp_thresholds": {
     "rate_based_production": true,
     "rate_based_min_batch": 100.0,
     "inventory_cap_dos": 45.0,
-    "diagnostics_enabled": true
+    "abc_production_enabled": true,
+    "a_production_buffer": 1.10,
+    "c_production_factor": 0.6,
+    "c_demand_factor": 0.8
   }
 }
 ```
 
-**Next Steps:** See `docs/planning/mix_opt.md` for detailed plan:
-1. **Dynamic Mix Adjustment** - Use actual demand signal for product mix, not fixed expected
-2. **Seasonal Adjustment** - Apply known seasonality (±12%) to expected demand
-3. **ABC Capacity Reservation** - Reserve 80% of capacity for A-items in TransformEngine
-4. **Demand-Driven Production by ABC** - Different strategies per product class
+**Key Finding:** Service level remains stuck at ~64-66% regardless of production tuning. Extensive experimentation confirmed:
+- 150% A-item production → SL still ~66%
+- 80% production floor → SL still ~66%
+- Hybrid approaches → SL still ~66%
+
+**This proves the bottleneck is distribution, not production.**
+
+**Next Steps:** See `docs/planning/distribution_diagnosis.md` for investigation plan:
+1. **Inventory Distribution Analysis** - Are RDCs holding while stores deplete?
+2. **Replenishment Signal Investigation** - Are DCs/stores ordering enough?
+3. **Push Allocation Deep Dive** - Is push logic reaching A-items?
+4. **Logistics Flow Check** - Are FTL minimums blocking store deliveries?
 
 **Diagnostic Scripts:**
 ```bash
@@ -628,6 +638,8 @@ Orchestrator
 
 | Version | Key Changes |
 |---------|-------------|
+| 0.19.11 | **POS-Driven Production (Closed-Loop)** - Uses actual consumer demand (POS) as primary signal, not expected demand; ABC class tracking for differentiated response dynamics; **SLOB target achieved: 28.6% (<30%)**; SL at 64.5% proves distribution is the bottleneck, not production; Next: distribution diagnosis (see `docs/planning/distribution_diagnosis.md`) |
+| 0.19.10 | **ABC-Differentiated Production** - Experimental version superseded by v0.19.11; SL 71.7% but SLOB worsened to 76% |
 | 0.19.9 | **Rate-Based Production (Option C)** - MRP produces at expected demand rate regardless of DOS signals; Prevents low-equilibrium trap; MRPDiagnostics for signal tracing; 365-day SL improved 50%→67.5%; Next: product mix optimization (see `docs/planning/mix_opt.md`) |
 | 0.19.8 | **Starvation Loop Fixes** - Decoupled ingredient ordering from historical production; Warm-started history buffers; Smoothing cap uses max(history, expected) |
 | 0.19.7 | **ABC Alignment Tuning** - Tuned ROP multipliers and allocation priorities |

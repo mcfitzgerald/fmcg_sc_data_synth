@@ -175,7 +175,22 @@ class MRPEngine:
         # Phase 2: ABC Prioritization
         # Classify products and build ROP multiplier vector
         self.abc_rop_multiplier = np.ones(self.state.n_products, dtype=np.float64)
+        # v0.19.10: Track ABC class per product for production differentiation
+        # 0 = A-item, 1 = B-item, 2 = C-item
+        self.abc_class = np.full(self.state.n_products, 2, dtype=np.int8)  # Default C
         self._classify_products_abc()
+
+        # v0.19.10: ABC Production Strategy parameters
+        # Differentiate production by ABC class to fix product mix mismatch
+        self.abc_production_enabled = mrp_thresholds.get(
+            "abc_production_enabled", True
+        )
+        # A-items: buffer above max(expected, actual) to never stockout
+        self.a_production_buffer = mrp_thresholds.get("a_production_buffer", 1.1)
+        # C-items: produce at reduced rate to minimize SLOB
+        self.c_production_factor = mrp_thresholds.get("c_production_factor", 0.6)
+        # C-items: when using actual demand, apply this factor
+        self.c_demand_factor = mrp_thresholds.get("c_demand_factor", 0.8)
 
     def _build_policy_vectors(self, mrp_config: dict[str, Any]) -> None:
         """Pre-calculate ROP and Target vectors for all products."""
@@ -304,13 +319,16 @@ class MRPEngine:
             cumulative_volume, total_volume * thresh_b, side='right'
         )
 
-        # Apply multipliers
-        # A-items
+        # Apply multipliers and track class
+        # A-items (class 0)
         self.abc_rop_multiplier[sorted_indices[:idx_a]] = mult_a
-        # B-items
+        self.abc_class[sorted_indices[:idx_a]] = 0
+        # B-items (class 1)
         self.abc_rop_multiplier[sorted_indices[idx_a:idx_b]] = mult_b
-        # C-items
+        self.abc_class[sorted_indices[idx_a:idx_b]] = 1
+        # C-items (class 2)
         self.abc_rop_multiplier[sorted_indices[idx_b:]] = mult_c
+        self.abc_class[sorted_indices[idx_b:]] = 2
 
         # Log Alignment Verification
         n_a = idx_a
@@ -524,14 +542,21 @@ class MRPEngine:
 
         # ================================================================
         # v0.19.9: RATE-BASED PRODUCTION (Option C)
+        # v0.19.11: POS-driven production (physically correct approach)
         # ================================================================
         if self.rate_based_production:
+            # v0.19.11: Pass POS demand directly for closed-loop control
+            pos_demand_vec = None
+            if pos_demand is not None:
+                pos_demand_vec = np.sum(pos_demand, axis=0)
+
             production_orders = self._generate_rate_based_orders(
                 current_day,
                 avg_daily_demand_vec,
                 in_transit_qty,
                 in_production_qty,
                 total_rdc_inv,
+                pos_demand_vec,
             )
             if diag:
                 diag.rate_based_mode = True
@@ -668,19 +693,22 @@ class MRPEngine:
         in_transit_qty: dict[str, float],
         in_production_qty: dict[str, float],
         total_rdc_inv: float,
+        pos_demand_vec: np.ndarray | None = None,
     ) -> list[ProductionOrder]:
         """
-        v0.19.9: Rate-based production logic (Option C).
+        v0.19.11: POS-driven production (physically correct approach).
 
-        Key insight: Always produce at expected demand rate. DOS only modulates
-        ABOVE baseline (catch-up mode when inventory is low), never below.
-        This prevents the low-equilibrium trap where the system stabilizes at
-        low production because demand signals have collapsed.
+        Key insight: Production should TRACK actual consumer demand (POS),
+        not expected demand or derived signals. This creates a closed-loop
+        system that self-corrects based on actual inventory and demand.
+
+        Physics principle: At steady state, Production = Demand.
+        ABC differentiation is in RESPONSE DYNAMICS, not baseline rates.
 
         Production logic:
-        1. BASELINE: Always produce at expected_daily_demand rate
-        2. CATCH-UP: If DOS < ROP, produce EXTRA to recover deficit
-        3. THROTTLE: Only reduce below baseline if DOS > inventory_cap_dos
+        1. PRIMARY SIGNAL: Use POS demand (actual consumer sales)
+        2. INVENTORY FEEDBACK: Adjust based on actual DOS
+        3. ABC RESPONSE: Different catch-up/draw-down speeds per class
         """
         production_orders: list[ProductionOrder] = []
 
@@ -689,50 +717,101 @@ class MRPEngine:
             if p_idx is None:
                 continue
 
+            # Get expected demand as fallback
             expected_demand = float(self.expected_daily_demand[p_idx])
             if expected_demand <= 0:
                 continue
 
-            # Calculate inventory position and DOS
+            # ============================================================
+            # v0.19.11: PRIMARY SIGNAL - Use POS demand (actual consumer sales)
+            # ============================================================
+            # POS demand is the TRUE demand signal - what consumers actually bought
+            # This is more reliable than order-based signals which collapse during starvation
+            if pos_demand_vec is not None:
+                pos_demand = float(pos_demand_vec[p_idx])
+            else:
+                # Fallback to avg demand if POS not available
+                pos_demand = float(avg_daily_demand_vec[p_idx])
+
+            # Use POS demand as the baseline, with expected as floor
+            # When stores stockout, POS drops but we still need to produce
+            # Use a higher floor (70% of expected) to prevent starvation
+            actual_demand = max(pos_demand, expected_demand * 0.7)
+
+            # Calculate inventory position and DOS based on POS demand
             inventory_position = self._calculate_inventory_position(
                 product_id, in_transit_qty, in_production_qty
             )
-            avg_daily_demand = max(float(avg_daily_demand_vec[p_idx]), 1.0)
 
-            if avg_daily_demand > 0:
-                dos_position = inventory_position / avg_daily_demand
+            # DOS calculated against actual POS demand (not derived signals)
+            if actual_demand > 0:
+                dos_position = inventory_position / actual_demand
             else:
                 dos_position = float("inf")
 
-            # Apply ABC multiplier to ROP
-            effective_rop = self.rop_vector[p_idx] * self.abc_rop_multiplier[p_idx]
+            abc = self.abc_class[p_idx]
 
             # ============================================================
-            # RATE-BASED LOGIC
+            # v0.19.11: CLOSED-LOOP CONTROL
+            # Production = Demand + Inventory Correction
+            # ABC determines HOW FAST we correct, not baseline rate
             # ============================================================
 
-            # BASELINE: Always produce at least expected_demand
-            baseline_qty = expected_demand
+            if abc == 0:  # A-item: Fast response, high service target
+                # Target DOS for A-items: 14-21 days
+                target_dos = 17.0
+                if dos_position < 10:
+                    # Critical low - aggressive catch-up (130% of demand)
+                    production_qty = actual_demand * 1.3
+                elif dos_position < target_dos:
+                    # Below target - moderate catch-up (115% of demand)
+                    production_qty = actual_demand * 1.15
+                elif dos_position < 30:
+                    # At/above target - maintain (100% of demand)
+                    production_qty = actual_demand
+                else:
+                    # Overstocked - slight reduction (90% of demand)
+                    production_qty = actual_demand * 0.9
 
-            # CATCH-UP: If below ROP, add extra to reach target
-            catch_up_qty = 0.0
-            if dos_position < effective_rop:
-                target_inventory = avg_daily_demand * self.target_vector[p_idx]
-                deficit = target_inventory - inventory_position
-                if deficit > 0:
-                    # Spread catch-up over production_lead_time days
-                    catch_up_qty = deficit / max(self.production_lead_time, 1)
+            elif abc == 1:  # B-item: Balanced response
+                # Target DOS for B-items: 21 days
+                target_dos = 21.0
+                if dos_position < 14:
+                    # Low - catch-up (110% of demand)
+                    production_qty = actual_demand * 1.1
+                elif dos_position < 35:
+                    # Normal - match demand
+                    production_qty = actual_demand
+                else:
+                    # High - reduce (85% of demand)
+                    production_qty = actual_demand * 0.85
 
-            # THROTTLE: Only reduce if inventory is excessively high
-            throttle_factor = 1.0
-            if dos_position > self.inventory_cap_dos:
-                # Reduce production proportionally to excess
-                # At 2x cap, production goes to 50%; at 3x cap, to 33%, etc.
-                excess_ratio = dos_position / self.inventory_cap_dos
-                throttle_factor = 1.0 / excess_ratio
+            else:  # C-item: Slow response, let inventory self-correct
+                # Target DOS for C-items: 28 days (we can afford more buffer)
+                target_dos = 28.0
+                if dos_position < 14:
+                    # Low - match demand (no aggressive catch-up for C)
+                    production_qty = actual_demand
+                elif dos_position < 45:
+                    # Normal - slight underproduce (90%)
+                    production_qty = actual_demand * 0.9
+                elif dos_position < 90:
+                    # High - reduce significantly (60%)
+                    production_qty = actual_demand * 0.6
+                else:
+                    # Very high (SLOB territory) - minimal production (30%)
+                    production_qty = actual_demand * 0.3
 
-            # Calculate final order quantity
-            order_qty = (baseline_qty + catch_up_qty) * throttle_factor
+            # ============================================================
+            # SAFETY BOUNDS
+            # ============================================================
+            # Floor: Never produce less than 20% of expected (prevent total stockout)
+            production_qty = max(production_qty, expected_demand * 0.2)
+
+            # Cap: Never produce more than 150% of expected (prevent runaway)
+            production_qty = min(production_qty, expected_demand * 1.5)
+
+            order_qty = production_qty
 
             # Apply minimum batch size
             # v0.19.9: For rate-based production, use a lower minimum to avoid

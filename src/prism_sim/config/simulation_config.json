@@ -191,7 +191,11 @@
         "rate_based_production": true,
         "rate_based_min_batch": 100.0,
         "inventory_cap_dos": 45.0,
-        "diagnostics_enabled": true
+        "diagnostics_enabled": true,
+        "abc_production_enabled": true,
+        "a_production_buffer": 1.10,
+        "c_production_factor": 0.6,
+        "c_demand_factor": 0.8
       },
       "inventory_policies": {
         "DEFAULT": { "reorder_point_days": 7.0, "target_days_supply": 14.0 },

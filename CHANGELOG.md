@@ -5,6 +5,62 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.19.11] - 2026-01-03
+
+### Added
+- **POS-Driven Production (Physically Correct Approach):** Replaced open-loop expected-based production with closed-loop POS-driven production.
+  - Uses actual consumer demand (POS) as the primary signal
+  - Inventory feedback loop: production adjusts based on actual DOS
+  - ABC differentiation in response dynamics, not baseline rates
+- **ABC Class Tracking:** Added `abc_class` array to MRPEngine (0=A, 1=B, 2=C) for production decisions.
+
+### Changed
+- **`_generate_rate_based_orders()`:** Complete rewrite for closed-loop control:
+  - A-items: Fast response (130% catch-up when low, 90% when high)
+  - B-items: Balanced response (110% catch-up, 85% when high)
+  - C-items: Slow response, aggressive reduction when overstocked (down to 30%)
+  - Production tracks actual demand, not expected demand
+- **`generate_production_orders()`:** Now passes POS demand vector to rate-based orders.
+
+### Results
+| Metric | v0.19.9 | v0.19.11 | Target |
+|--------|---------|----------|--------|
+| 30-day Service Level | 93% | 92.5% | >90% |
+| 365-day Service Level | 67.5% | 64.5% | >85% |
+| **SLOB** | 70% | **28.6%** | <30% ✓ |
+| Inventory Turns | 4.8x | 7.9x | Higher ✓ |
+| Cash-to-Cash | 68 days | 33 days | Lower ✓ |
+
+### Analysis
+**SLOB target achieved!** The POS-driven approach dramatically reduced SLOB from 70% to 28.6% (<30% target).
+
+However, 365-day service level dropped from 67.5% to 64.5%. Extensive experimentation revealed:
+
+1. **Production is NOT the bottleneck for service level.** Even with 150% A-item production, SL stays at ~66%. This proves the remaining SL gap is a **distribution problem**, not a production problem.
+
+2. **The physics is correct.** POS-driven production creates a self-correcting system:
+   - C-items: Production drops when DOS > threshold → SLOB decreases
+   - A-items: Production increases when DOS < threshold → should improve SL
+   - But goods aren't reaching stores (distribution bottleneck)
+
+3. **Tradeoff confirmed:**
+   - Aggressive C-item reduction → SLOB ↓↓↓, but SL slightly ↓
+   - Aggressive A-item boost → SL barely changes (stuck at ~66%)
+   - Proves distribution flow is the constraint
+
+**Next Steps for 85%+ SL:**
+The service level improvement requires fixing **distribution**, not production:
+- RDC-to-store replenishment tuning
+- Push allocation parameters
+- Potentially reduce initial inventory priming at RDCs
+- Check if goods are stuck at RDCs instead of flowing to stores
+
+See `docs/planning/mix_opt.md` for the original analysis.
+
+## [0.19.10] - 2026-01-03 (Superseded by v0.19.11)
+
+Experimental version with ABC-differentiated production. Improved SL to 71.7% but SLOB worsened to 76%. Replaced by POS-driven approach in v0.19.11.
+
 ## [0.19.9] - 2026-01-03
 
 ### Added
