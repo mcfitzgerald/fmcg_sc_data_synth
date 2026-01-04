@@ -7,7 +7,7 @@ using NumPy vectorization.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from faker import Faker
@@ -51,6 +51,7 @@ class StaticDataPool:
         self,
         seed: int = 42,
         pool_sizes: dict[str, int] | None = None,
+        config: dict[str, Any] | None = None,
     ) -> None:
         """
         Initialize the static data pool with pre-generated Faker data.
@@ -58,9 +59,11 @@ class StaticDataPool:
         Args:
             seed: Random seed for reproducibility
             pool_sizes: Optional dict overriding default pool sizes
+            config: Simulation configuration for city data paths
         """
         self.seed = seed
         self._rng: Generator = np.random.default_rng(seed)
+        self.config = config or {}
 
         # Merge custom sizes with defaults
         sizes = {**DEFAULT_POOL_SIZES, **(pool_sizes or {})}
@@ -74,7 +77,10 @@ class StaticDataPool:
         self.companies: list[str] = self._generate_pool(
             self._faker.company, sizes["companies"]
         )
-        self.cities: list[str] = self._generate_pool(self._faker.city, sizes["cities"])
+        
+        # v0.19.12: Load curated GIS cities instead of faking them
+        self.cities: list[dict[str, Any]] = self._load_gis_cities()
+        
         self.emails: list[str] = self._generate_pool(self._faker.email, sizes["emails"])
         self.addresses: list[str] = self._generate_pool(
             self._faker.street_address, sizes["addresses"]
@@ -89,17 +95,33 @@ class StaticDataPool:
             self._faker.last_name, sizes["last_names"]
         )
 
-        # Store pool arrays for vectorized indexing
-        self._pool_arrays: dict[str, list[str]] = {
-            "names": self.names,
-            "companies": self.companies,
-            "cities": self.cities,
-            "emails": self.emails,
-            "addresses": self.addresses,
-            "phone_numbers": self.phone_numbers,
-            "first_names": self.first_names,
-            "last_names": self.last_names,
-        }
+    def _load_gis_cities(self) -> list[dict[str, Any]]:
+        """Load curated US cities with lat/lon from config-defined CSV."""
+        import csv
+        from pathlib import Path
+
+        # Default path if config missing
+        geo_params = self.config.get("simulation_parameters", {}).get("geospatial", {})
+        csv_path = geo_params.get("city_data_path", "data/static/us_cities.csv")
+        
+        cities = []
+        path = Path(csv_path)
+        if not path.exists():
+            # Fallback to faked names if file missing (prevents crash)
+            fake_cities = self._generate_pool(self._faker.city, 100)
+            return [{"city": c, "state": "US", "lat": 0.0, "lon": 0.0} for c in fake_cities]
+
+        with open(path, encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                cities.append({
+                    "city": row["city"],
+                    "state": row["state"],
+                    "lat": float(row["lat"]),
+                    "lon": float(row["lon"]),
+                    "region": row.get("region", "Unknown")
+                })
+        return cities
 
     def _generate_pool(
         self,
@@ -142,6 +164,18 @@ class StaticDataPool:
 
         return pool
 
+    def sample_cities(self, n: int, replace: bool = True) -> list[dict[str, Any]]:
+        """Sample n city objects (with lat/lon) from the curated GIS pool."""
+        if n == 0:
+            return []
+
+        pool_size = len(self.cities)
+        if not replace and n > pool_size:
+            replace = True
+
+        indices = self._rng.choice(pool_size, size=n, replace=replace)
+        return [self.cities[i] for i in indices]
+
     def _sample_from_pool(
         self,
         pool: list[str],
@@ -178,10 +212,6 @@ class StaticDataPool:
     def sample_companies(self, n: int, replace: bool = True) -> list[str]:
         """Sample n company names from the pre-generated pool."""
         return self._sample_from_pool(self.companies, n, replace)
-
-    def sample_cities(self, n: int, replace: bool = True) -> list[str]:
-        """Sample n city names from the pre-generated pool."""
-        return self._sample_from_pool(self.cities, n, replace)
 
     def sample_emails(self, n: int, replace: bool = True) -> list[str]:
         """Sample n email addresses from the pre-generated pool."""

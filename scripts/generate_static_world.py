@@ -13,10 +13,19 @@ from prism_sim.writers.static_writer import StaticWriter
 
 
 def main() -> None:
-    # 0. Load Config
-    config_path = Path("src/prism_sim/config/world_definition.json")
-    with open(config_path) as f:
+    # 0. Load Configs
+    world_config_path = Path("src/prism_sim/config/world_definition.json")
+    sim_config_path = Path("src/prism_sim/config/simulation_config.json")
+    
+    with open(world_config_path) as f:
         world_config = json.load(f)
+        
+    with open(sim_config_path) as f:
+        sim_config = json.load(f)
+        
+    # Merge simulation parameters into world config for generators
+    # This allows geospatial paths and jitter to be available
+    world_config.update(sim_config)
 
     output_dir = Path("data/output/static_world")
     print(f"Generating static world to {output_dir}...")

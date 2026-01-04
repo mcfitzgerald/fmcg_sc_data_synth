@@ -367,6 +367,12 @@
         }
       ]
     },
+    "geospatial": {
+      "city_data_path": "data/static/us_cities.csv",
+      "metropolitan_jitter": 0.05,
+      "avg_truck_speed_kmh": 80.0,
+      "base_handling_days": 1.0
+    },
     "writer": {
       "output_format": "csv",
       "streaming": false,

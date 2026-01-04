@@ -140,14 +140,75 @@ class Orchestrator:
         # 8. Finished Goods Mask for Metrics (excludes ingredients from inventory turns)
         self._fg_product_mask = self._build_finished_goods_mask()
 
+        # v0.19.12: Calculate RDC Demand Shares for production routing
+        self.rdc_demand_shares = self._calculate_rdc_demand_shares()
+
+    def _calculate_rdc_demand_shares(self) -> dict[str, float]:
+        """
+        Calculate the share of global POS demand served by each RDC.
+        Used to route production proportional to demand (physics-based flow).
+        """
+        rdc_demand = {}
+        total_network_demand = 0.0
+        
+        # Get RDC IDs
+        rdc_ids = [n_id for n_id, n in self.world.nodes.items() 
+                   if n.type == NodeType.DC and n_id.startswith("RDC-")]
+        
+        # Build downstream map: source_id -> [target_ids]
+        downstream_map: dict[str, list[str]] = {}
+        for link in self.world.links.values():
+            downstream_map.setdefault(link.source_id, []).append(link.target_id)
+            
+        base_demand_matrix = self.pos_engine.get_base_demand_matrix()
+        
+        for rdc_id in rdc_ids:
+            # Recursive demand aggregation
+            # RDC -> DCs -> Stores
+            # RDC -> Stores
+            rdc_total = 0.0
+            visited = set()
+            stack = [rdc_id]
+            
+            while stack:
+                current = stack.pop()
+                if current in visited: continue
+                visited.add(current)
+                
+                children = downstream_map.get(current, [])
+                for child_id in children:
+                    child_node = self.world.nodes.get(child_id)
+                    if child_node:
+                        if child_node.type == NodeType.STORE:
+                            # Aggregate POS demand
+                            idx = self.state.node_id_to_idx.get(child_id)
+                            if idx is not None:
+                                rdc_total += np.sum(base_demand_matrix[idx, :])
+                        else:
+                            # Keep traversing logistics layer
+                            stack.append(child_id)
+            
+            rdc_demand[rdc_id] = rdc_total
+            total_network_demand += rdc_total
+            
+        # Convert to shares
+        shares = {}
+        if total_network_demand > 0:
+            for rdc_id, demand in rdc_demand.items():
+                shares[rdc_id] = demand / total_network_demand
+        else:
+            # Fallback to even split if no demand (shouldn't happen with GIS)
+            even = 1.0 / len(rdc_ids) if rdc_ids else 0.0
+            shares = {rid: even for rid in rdc_ids}
+            
+        return shares
+
     def _initialize_inventory(self) -> None:
         """
         Seed initial inventory across the network (Priming).
 
-        v0.16.0: Uses demand-proportional priming for Stores and Customer DCs.
-        Each SKU gets inventory proportional to its expected demand (including
-        Zipfian popularity weights), preventing immediate stockouts on popular
-        SKUs when using concentrated demand distributions.
+        v0.19.12: RDCs only initialize with inventory if they have downstream
+        demand. Demand-proportional priming is used for all nodes.
         """
         # Get manufacturing config for plant initial inventory
         sim_params = self.config.get("simulation_parameters", {})
@@ -165,20 +226,14 @@ class Orchestrator:
         customer_dc_days = init_config.get("customer_dc_days_supply", 21.0)
 
         # Get per-SKU demand matrix for demand-proportional priming
-        # This includes Zipfian popularity, channel segment, and store format weights
         base_demand_matrix = self.pos_engine.get_base_demand_matrix()
-
-        # Also get scalar average for RDC priming and logging
         avg_demand = self.pos_engine.get_average_demand_estimate()
-        print(f"Orchestrator: Priming inventory with base_demand={avg_demand:.2f}")
 
         # Seed finished goods at RDCs and Stores
         for node_id, node in self.world.nodes.items():
             if node.type == NodeType.STORE:
                 node_idx = self.state.node_id_to_idx.get(node_id)
                 if node_idx is not None:
-                    # v0.16.0: Demand-proportional priming per SKU
-                    # inventory = base_demand_for_that_sku * days_supply
                     node_demand = base_demand_matrix[node_idx, :]
                     sku_levels = node_demand * store_days
                     self.state.perceived_inventory[node_idx, :] = sku_levels
@@ -188,21 +243,33 @@ class Orchestrator:
                 node_idx = self.state.node_id_to_idx.get(node_id)
                 if node_idx is not None:
                     if node_id.startswith("RDC-"):
-                        # Manufacturer RDCs: aggregate downstream demand per SKU
+                        # Aggregate downstream demand per SKU
                         rdc_downstream_demand = np.zeros(self.state.n_products)
+                        
+                        # Use recursive discovery for RDC downstream demand
+                        downstream_map: dict[str, list[str]] = {}
                         for link in self.world.links.values():
-                            if link.source_id == node_id:
-                                t_idx = self.state.node_id_to_idx.get(link.target_id)
-                                if t_idx is not None:
-                                    rdc_downstream_demand += (
-                                        base_demand_matrix[t_idx, :]
-                                    )
+                            downstream_map.setdefault(link.source_id, []).append(link.target_id)
+                            
+                        visited = set()
+                        stack = [node_id]
+                        while stack:
+                            current = stack.pop()
+                            if current in visited: continue
+                            visited.add(current)
+                            for child_id in downstream_map.get(current, []):
+                                child_node = self.world.nodes.get(child_id)
+                                if child_node:
+                                    if child_node.type == NodeType.STORE:
+                                        t_idx = self.state.node_id_to_idx.get(child_id)
+                                        if t_idx is not None:
+                                            rdc_downstream_demand += base_demand_matrix[t_idx, :]
+                                    else:
+                                        stack.append(child_id)
 
-                        # Fallback to uniform if no downstream found
+                        # Skip priming if no demand (Ghost RDC fix)
                         if rdc_downstream_demand.sum() == 0:
-                            rdc_downstream_demand = np.full(
-                                self.state.n_products, avg_demand * rdc_multiplier
-                            )
+                            continue
 
                         # RDC inventory = downstream demand x rdc_days_supply
                         rdc_sku_levels = rdc_downstream_demand * rdc_days
@@ -226,11 +293,9 @@ class Orchestrator:
                                             base_demand_matrix[t_idx, :]
                                         )
 
-                        # Fallback to uniform if no downstream stores
+                        # Skip priming if no demand
                         if downstream_demand.sum() == 0:
-                            downstream_demand = np.full(
-                                self.state.n_products, avg_demand
-                            )
+                            continue
 
                         # DC inventory = aggregated downstream demand x days supply
                         dc_levels = downstream_demand * customer_dc_days
@@ -241,15 +306,13 @@ class Orchestrator:
             elif node.type == NodeType.PLANT:
                 node_idx = self.state.node_id_to_idx.get(node_id)
                 if node_idx is not None:
-                    # Initialize ALL ingredients to prevent cold start starvation
                     for product in self.world.products.values():
                         if product.category == ProductCategory.INGREDIENT:
-                            # Use config override if present, else robust default (5M units)
-                            # 5M units covers ~20 days of production at 230k run rate
                             qty = initial_plant_inv.get(product.id, 5000000.0)
                             self.state.update_inventory(node_id, product.id, qty)
 
     def _build_finished_goods_mask(self) -> np.ndarray:
+
         """
         Build a boolean mask for finished goods products (excludes ingredients).
 
@@ -755,10 +818,13 @@ class Orchestrator:
                 # Don't ship held/rejected batches
                 continue
 
-            # Distribute batch quantity evenly across RDCs
-            qty_per_rdc = batch.quantity_cases / len(rdc_ids)
+            # Distribute batch quantity based on demand shares
+            # v0.19.12: Demand-proportional routing (physics-based flow)
+            for rdc_id, share in self.rdc_demand_shares.items():
+                if share <= 0: continue
+                
+                qty_for_rdc = batch.quantity_cases * share
 
-            for rdc_id in rdc_ids:
                 # Find the link from plant to RDC
                 link = self._find_link(batch.plant_id, rdc_id)
                 lead_time = link.lead_time_days if link else default_lead_time
@@ -770,17 +836,14 @@ class Orchestrator:
                     target_id=rdc_id,
                     creation_day=current_day,
                     arrival_day=current_day + int(lead_time),
-                    lines=[OrderLine(batch.product_id, qty_per_rdc)],
+                    lines=[OrderLine(batch.product_id, qty_for_rdc)],
                     status=ShipmentStatus.IN_TRANSIT,
                 )
 
-                # Deduct from plant inventory (both perceived and actual)
-                plant_idx = self.state.node_id_to_idx.get(batch.plant_id)
-                prod_idx = self.state.product_id_to_idx.get(batch.product_id)
-                if plant_idx is not None and prod_idx is not None:
-                    self.state.update_inventory(
-                        batch.plant_id, batch.product_id, -qty_per_rdc
-                    )
+                # Deduct from plant inventory
+                self.state.update_inventory(
+                    batch.plant_id, batch.product_id, -qty_for_rdc
+                )
 
                 shipments.append(shipment)
 

@@ -5,6 +5,36 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.19.12] - 2026-01-04
+
+### Fixed
+- **Structural Distribution Bottleneck ("The Ghost RDC"):** Identified and fixed a critical topology flaw where `RDC-WE` had 0 downstream customers due to preferential attachment logic, creating a "black hole" for 25% of production.
+- **Geospatial Linking:** Replaced random preferential attachment with **Physics-Based Geospatial Linking**.
+  - Implemented `us_cities.csv` lookup for 100+ real US cities with lat/lon coordinates.
+  - Links are now created based on **Haversine Distance** (nearest neighbor logic).
+  - Suppliers, Plants, RDCs, DCs, and Stores now have physical coordinates.
+- **Demand-Proportional Routing:** Updated `Orchestrator` to route production to RDCs based on their **Actual Demand Share** (POS aggregate) rather than an even 25/25/25/25 split. This ensures `RDC-SO` (50% demand) gets 50% of supply.
+- **Inventory Priming:** RDCs with zero demand (if any) now initialize with zero inventory, preventing dead stock accumulation.
+
+### Added
+- **"Super Lean" GIS Layer:**
+  - `StaticDataPool`: Loads curated city data.
+  - `Node`: Added `lat` and `lon` fields.
+  - `NetworkGenerator`: Implemented "Metropolitan Jitter" to spread 4,500 stores realistically across 100 metro areas.
+
+### Results (365-day Simulation)
+| Metric | v0.19.11 | v0.19.12 (GIS Fix) | Change |
+|--------|----------|-------------------|--------|
+| **Service Level** | 64.5% | **70.69%** | +6.19pp |
+| **SLOB** | 28.6% | **1.0%** | -27.6pp (Hyper-Lean) |
+| **Turns** | 7.9x | **19.16x** | +11.3x (Too Fast) |
+| **OEE** | ~85% | **65.0%** | -20pp (Starved) |
+
+### Analysis
+The structural fix worked: flow is now physically correct, and the "Black Hole" is gone. However, the system is now **Hyper-Lean**. Because Haversine lead times are much shorter (1-2 days vs 3-5 random), the `MinMaxReplenisher` automatically slashed safety stocks. The system now runs with near-zero buffers (19x turns!), causing immediate stockouts on demand spikes.
+
+**Next Steps:** Re-calibrate inventory policies (increase `z-score` and `min_safety_days`) to account for the new, faster physics.
+
 ## [0.19.11] - 2026-01-03
 
 ### Added

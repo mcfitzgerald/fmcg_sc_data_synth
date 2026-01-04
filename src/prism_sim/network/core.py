@@ -37,6 +37,8 @@ class Node:
     name: str
     type: NodeType
     location: str  # e.g., "Chicago, IL"
+    lat: float = 0.0
+    lon: float = 0.0
 
     # Capacity constraints
     throughput_capacity: float = float("inf")  # Units per day

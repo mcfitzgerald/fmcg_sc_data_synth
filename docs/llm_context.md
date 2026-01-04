@@ -16,27 +16,20 @@
 
 ---
 
-## 2. The "Physics" Laws (Non-Negotiable Invariants)
+## Physics Laws (Non-Negotiable)
 
-Any code change must preserve these. Violations indicate bugs:
+The simulation enforces these constraints - violations indicate bugs:
+1. **Mass Balance:** Input (kg) = Output (kg) + Scrap. (Verified by `PhysicsAuditor`)
+2. **Kinematic Consistency:** Travel time = Distance / Speed. Teleportation is banned.
+   - **v0.19.12+:** Distances are real Haversine calculations between lat/lon coordinates.
+3. **Little's Law:** Inventory = Throughput × Flow Time.
+4. **Capacity Constraints:** Cannot produce more than Rate × Time.
+5. **Inventory Positivity:** Cannot ship what you don't have.
+6. **Geospatial Coherence:**
+   - Topology is distance-based (Nearest Neighbor).
+   - Production routing is Demand-Proportional (Supply follows Demand).
 
-| Law | Formula | Enforcement Location |
-|-----|---------|---------------------|
-| **Mass Balance** | $I_t = I_{t-1} + Receipts - Shipments - Consumed + Produced$ | `monitor.py:PhysicsAuditor` |
-| **Little's Law** | $WIP = Throughput \times CycleTime$ | Implicit in logistics/transform |
-| **Capacity Constraints** | $Production \leq Rate \times Time \times OEE$ | `transform.py` |
-| **Inventory Positivity** | $Inventory \geq 0$ (cannot ship/consume what you don't have) | `state.py`, `allocation.py`, `transform.py`, `orchestrator.py` |
-| **Kinematic Consistency** | $TransitTime = Distance / Speed$ (no teleporting) | `logistics.py` |
-
-**Inventory Positivity Enforcement (v0.12.2):**
-- `orchestrator.py`: Demand consumption constrained to `min(demand, available_actual)`
-- `allocation.py`: Fill ratios calculated from `actual_inventory` (not perceived)
-- `transform.py`: Material consumption constrained to `min(required, available_actual)`
-- `state.py`: Floor guards `np.maximum(0, ...)` on all inventory updates
-
----
-
-## 3. File-to-Concept Map (Where to Find Things)
+## Engineering Standards
 
 ### Core Simulation Loop
 | Concept | File | Key Classes/Functions |

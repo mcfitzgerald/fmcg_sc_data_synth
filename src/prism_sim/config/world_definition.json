@@ -13,6 +13,20 @@
       "suppliers": 50,
       "skus": 50
     },
+    "fixed_nodes": {
+      "rdcs": [
+        {"id": "RDC-NE", "name": "Northeast DC", "city": "Allentown, PA", "lat": 40.6084, "lon": -75.4902},
+        {"id": "RDC-MW", "name": "Midwest DC", "city": "Chicago, IL", "lat": 41.8781, "lon": -87.6298},
+        {"id": "RDC-SO", "name": "South DC", "city": "Memphis, TN", "lat": 35.1495, "lon": -90.0490},
+        {"id": "RDC-WE", "name": "West DC", "city": "Reno, NV", "lat": 39.5296, "lon": -119.8138}
+      ],
+      "plants": [
+        {"id": "PLANT-OH", "name": "Ohio Plant", "city": "Columbus, OH", "lat": 39.9612, "lon": -82.9988},
+        {"id": "PLANT-TX", "name": "Texas Plant", "city": "Dallas, TX", "lat": 32.7767, "lon": -96.7970},
+        {"id": "PLANT-GA", "name": "Georgia Plant", "city": "Atlanta, GA", "lat": 33.7490, "lon": -84.3880},
+        {"id": "PLANT-CA", "name": "California Plant", "city": "Sacramento, CA", "lat": 38.5816, "lon": -121.4944}
+      ]
+    },
     "channels": {
       "B2M_LARGE": {
         "accounts": 15,
