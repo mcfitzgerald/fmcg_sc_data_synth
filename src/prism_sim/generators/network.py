@@ -246,7 +246,8 @@ class NetworkGenerator:
         # Helper for physics-based link
         def add_geo_link(s_node: Node, t_node: Node):
             dist = self._haversine(s_node.lat, s_node.lon, t_node.lat, t_node.lon)
-            lt = (dist / speed) + handling
+            # Convert driving hours to days: (km / km/h) / 24 hours/day + handling
+            lt = (dist / speed / 24) + handling
             links.append(Link(
                 id=f"L-{s_node.id}-{t_node.id}",
                 source_id=s_node.id,

@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.19.13] - 2026-01-04
+
+### Fixed
+- **Critical Lead Time Formula Bug:** Fixed `network.py:add_geo_link()` where `dist / speed` produced hours but was used as days. Formula now correctly converts: `(dist / speed / 24) + handling`.
+  - Before: 9,411 km / 80 km/h = **117.6 hours treated as 117.6 days!**
+  - After: 9,411 km / 80 km/h / 24 = **4.9 days + 1 day handling = 5.9 days**
+- **Documented `us_cities.csv` dependency:** File must exist at `data/static/us_cities.csv`. Fallback to (0,0) coordinates causes 9,000+ km distances.
+
+### Results (365-day Simulation)
+| Metric | v0.19.12 (Broken) | v0.19.13 (Fixed) | Change |
+|--------|-------------------|------------------|--------|
+| **Service Level** | 39.28% | **82.70%** | **+43pp** |
+| **Inventory Turns** | 31.69x | **8.71x** | Normalized |
+| **OEE** | 30.8% | **86.8%** | **+56pp** |
+| **SLOB** | 0.0% | 65.3% | Expected |
+
+### Root Cause Analysis
+The v0.19.12 GIS overhaul had two bugs:
+1. **Missing `us_cities.csv`:** When deleted, fallback sets all non-fixed nodes to (0,0) coordinates (Atlantic Ocean), creating 9,000+ km distances.
+2. **Lead time formula:** `dist / speed` gives hours, not days. This caused 110+ day lead times instead of 1-2 days.
+
+Result: Shipments took 3+ months to arrive, starving the entire network.
+
 ## [0.19.12] - 2026-01-04
 
 ### Fixed
