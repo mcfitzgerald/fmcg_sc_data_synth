@@ -275,12 +275,14 @@ class MRPEngine:
 
     def _classify_products_abc(self) -> None:
         """
-        Classify products into A/B/C categories based on expected demand volume.
+        Classify products into A/B/C categories within each category.
 
         Phase 2 ABC Prioritization:
-        - A-items (Top 80% volume): 1.2x ROP multiplier (Prioritize availability)
-        - B-items (Next 15% volume): 1.0x ROP multiplier (Standard)
-        - C-items (Bottom 5% volume): 0.8x ROP multiplier (Deprioritize/Just-in-Time)
+        - Classify products separately within each category (ORAL, WASH, HOME)
+          to ensure every category has A/B/C items.
+        - A-items (Top 80% volume): 1.2x ROP multiplier
+        - B-items (Next 15% volume): 1.0x ROP multiplier
+        - C-items (Bottom 5% volume): 0.8x ROP multiplier
         """
         # Get abc config or use defaults
         abc_config = (
@@ -302,54 +304,77 @@ class MRPEngine:
         thresh_a = abc_config.get("a_threshold_pct", 0.80)
         thresh_b = abc_config.get("b_threshold_pct", 0.95)
 
-        # Calculate total volume and sort indices
-        total_volume = np.sum(self.expected_daily_demand)
-        if total_volume == 0:
-            return
+        # Iterate by category to ensure per-category ABC
+        # This prevents high-volume categories (Oral Care) from dominating A-class
+        categories = set(p.category for p in self.world.products.values())
 
-        sorted_indices = np.argsort(self.expected_daily_demand)[::-1]
-        cumulative_volume = np.cumsum(self.expected_daily_demand[sorted_indices])
+        total_a, total_b, total_c = 0, 0, 0
 
-        # Determine cutoffs
-        # side='right' ensures boundary items are in higher priority category
-        idx_a = np.searchsorted(
-            cumulative_volume, total_volume * thresh_a, side='right'
-        )
-        idx_b = np.searchsorted(
-            cumulative_volume, total_volume * thresh_b, side='right'
-        )
+        for category in categories:
+            if category == ProductCategory.INGREDIENT:
+                continue
 
-        # Apply multipliers and track class
-        # A-items (class 0)
-        self.abc_rop_multiplier[sorted_indices[:idx_a]] = mult_a
-        self.abc_class[sorted_indices[:idx_a]] = 0
-        # B-items (class 1)
-        self.abc_rop_multiplier[sorted_indices[idx_a:idx_b]] = mult_b
-        self.abc_class[sorted_indices[idx_a:idx_b]] = 1
-        # C-items (class 2)
-        self.abc_rop_multiplier[sorted_indices[idx_b:]] = mult_c
-        self.abc_class[sorted_indices[idx_b:]] = 2
+            # Find all products in this category
+            cat_p_indices = []
+            cat_demands = []
+
+            for p_id, product in self.world.products.items():
+                if product.category == category:
+                    p_idx = self.state.product_id_to_idx.get(p_id)
+                    if p_idx is not None:
+                        cat_p_indices.append(p_idx)
+                        cat_demands.append(self.expected_daily_demand[p_idx])
+
+            if not cat_p_indices:
+                continue
+
+            cat_p_indices = np.array(cat_p_indices)
+            cat_demands = np.array(cat_demands)
+
+            cat_total_volume = np.sum(cat_demands)
+            if cat_total_volume == 0:
+                continue
+
+            # Sort within category
+            sorted_local_indices = np.argsort(cat_demands)[::-1]
+            sorted_global_indices = cat_p_indices[sorted_local_indices]
+
+            cumulative_volume = np.cumsum(cat_demands[sorted_local_indices])
+
+            # Determine cutoffs
+            idx_a = np.searchsorted(
+                cumulative_volume, cat_total_volume * thresh_a, side='right'
+            )
+            idx_b = np.searchsorted(
+                cumulative_volume, cat_total_volume * thresh_b, side='right'
+            )
+
+            # Apply multipliers and track class
+            # A-items
+            a_indices = sorted_global_indices[:idx_a]
+            self.abc_rop_multiplier[a_indices] = mult_a
+            self.abc_class[a_indices] = 0
+            total_a += len(a_indices)
+
+            # B-items
+            b_indices = sorted_global_indices[idx_a:idx_b]
+            self.abc_rop_multiplier[b_indices] = mult_b
+            self.abc_class[b_indices] = 1
+            total_b += len(b_indices)
+
+            # C-items
+            c_indices = sorted_global_indices[idx_b:]
+            self.abc_rop_multiplier[c_indices] = mult_c
+            self.abc_class[c_indices] = 2
+            total_c += len(c_indices)
 
         # Log Alignment Verification
-        n_a = idx_a
-        n_b = idx_b - idx_a
-        n_c = len(sorted_indices) - idx_b
-
-        # Recalculate counts for active items only for clearer logging
-        # (This is just for logging display, the multipliers are already applied)
         print(
-            f"MRPEngine: Initialized ABC Classification "
-            f"(Total Vol: {total_volume:,.0f})"
+            "MRPEngine: Initialized Category-Level ABC Classification"
         )
-        print(
-            f"  A-Items (Top {thresh_a*100:.0f}%): {n_a} SKUs "
-            f"(Multiplier {mult_a}x)"
-        )
-        print(
-            f"  B-Items (Next {(thresh_b-thresh_a)*100:.0f}%): {n_b} SKUs "
-            f"(Multiplier {mult_b}x)"
-        )
-        print(f"  C-Items (Tail): {n_c} SKUs (Multiplier {mult_c}x)")
+        print(f"  A-Items: {total_a} SKUs (Multiplier {mult_a}x)")
+        print(f"  B-Items: {total_b} SKUs (Multiplier {mult_b}x)")
+        print(f"  C-Items: {total_c} SKUs (Multiplier {mult_c}x)")
 
     def _calculate_max_daily_capacity(self) -> float:
         """
@@ -446,7 +471,7 @@ class MRPEngine:
             + in_production_qty.get(product_id, 0.0)
         )
 
-    def generate_production_orders(
+    def generate_production_orders(  # noqa: PLR0912, PLR0915
         self,
         current_day: int,
         rdc_shipments: list[Shipment],  # FIX 3: Accept Shipments instead of Orders
@@ -686,7 +711,7 @@ class MRPEngine:
 
         return production_orders
 
-    def _generate_rate_based_orders(
+    def _generate_rate_based_orders(  # noqa: PLR0912, PLR0913, PLR0915
         self,
         current_day: int,
         avg_daily_demand_vec: np.ndarray,
@@ -726,7 +751,7 @@ class MRPEngine:
             # v0.19.11: PRIMARY SIGNAL - Use POS demand (actual consumer sales)
             # ============================================================
             # POS demand is the TRUE demand signal - what consumers actually bought
-            # This is more reliable than order-based signals which collapse during starvation
+            # This is more reliable than order-based signals which collapse
             if pos_demand_vec is not None:
                 pos_demand = float(pos_demand_vec[p_idx])
             else:
@@ -759,14 +784,14 @@ class MRPEngine:
 
             if abc == 0:  # A-item: Fast response, high service target
                 # Target DOS for A-items: 14-21 days
-                target_dos = 17.0
-                if dos_position < 10:
+                target_dos = 17.0  # noqa: PLR2004
+                if dos_position < 10:  # noqa: PLR2004
                     # Critical low - aggressive catch-up (130% of demand)
                     production_qty = actual_demand * 1.3
                 elif dos_position < target_dos:
                     # Below target - moderate catch-up (115% of demand)
                     production_qty = actual_demand * 1.15
-                elif dos_position < 30:
+                elif dos_position < 30:  # noqa: PLR2004
                     # At/above target - maintain (100% of demand)
                     production_qty = actual_demand
                 else:
@@ -775,11 +800,11 @@ class MRPEngine:
 
             elif abc == 1:  # B-item: Balanced response
                 # Target DOS for B-items: 21 days
-                target_dos = 21.0
-                if dos_position < 14:
+                target_dos = 21.0  # noqa: PLR2004
+                if dos_position < 14:  # noqa: PLR2004
                     # Low - catch-up (110% of demand)
                     production_qty = actual_demand * 1.1
-                elif dos_position < 35:
+                elif dos_position < 35:  # noqa: PLR2004
                     # Normal - match demand
                     production_qty = actual_demand
                 else:
@@ -788,14 +813,14 @@ class MRPEngine:
 
             else:  # C-item: Slow response, let inventory self-correct
                 # Target DOS for C-items: 28 days (we can afford more buffer)
-                target_dos = 28.0
-                if dos_position < 14:
+                target_dos = 28.0  # noqa: PLR2004
+                if dos_position < 14:  # noqa: PLR2004
                     # Low - match demand (no aggressive catch-up for C)
                     production_qty = actual_demand
-                elif dos_position < 45:
+                elif dos_position < 45:  # noqa: PLR2004
                     # Normal - slight underproduce (90%)
                     production_qty = actual_demand * 0.9
-                elif dos_position < 90:
+                elif dos_position < 90:  # noqa: PLR2004
                     # High - reduce significantly (60%)
                     production_qty = actual_demand * 0.6
                 else:
@@ -805,11 +830,23 @@ class MRPEngine:
             # ============================================================
             # SAFETY BOUNDS
             # ============================================================
-            # Floor: Never produce less than 20% of expected (prevent total stockout)
-            production_qty = max(production_qty, expected_demand * 0.2)
+            # Floor: Differentiated by ABC class (Phase 2.5)
+            # A-items: 50% floor (maintain availability)
+            # B-items: 30% floor
+            # C-items: 10% floor (minimize SLOB risk)
+            abc_floors = {0: 0.5, 1: 0.3, 2: 0.1}
+            floor_pct = abc_floors.get(abc, 0.1)
+            production_qty = max(production_qty, expected_demand * floor_pct)
 
             # Cap: Never produce more than 150% of expected (prevent runaway)
             production_qty = min(production_qty, expected_demand * 1.5)
+
+            # SLOB Throttling Override (Phase 2.2)
+            # Regardless of ABC class, if we are in deep SLOB territory, throttle HARD.
+            if dos_position > 60.0:  # noqa: PLR2004
+                production_qty = min(production_qty, actual_demand * 0.5)
+            elif dos_position > 45.0:  # noqa: PLR2004
+                production_qty = min(production_qty, actual_demand * 0.7)
 
             order_qty = production_qty
 

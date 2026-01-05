@@ -62,12 +62,18 @@ class Orchestrator:
         # Initialize POS Engine first to get demand estimates for priming
         self.pos_engine = POSEngine(self.world, self.state, self.config)
 
-        self._initialize_inventory()
-
         # Get equilibrium demand estimate for warm start
         # This prevents Day 1-2 bullwhip cascade from cold start
         warm_start_demand = self.pos_engine.get_average_demand_estimate()
         base_demand_matrix = self.pos_engine.get_base_demand_matrix()
+
+        # Initialize Manufacturing Engines (Milestone 5)
+        # MOVED UP: Initialize MRP Engine EARLY to get ABC classification for inventory priming
+        self.mrp_engine = MRPEngine(
+            self.world, self.state, self.config, base_demand_matrix
+        )
+
+        self._initialize_inventory()
 
         self.replenisher = MinMaxReplenisher(
             self.world,
@@ -86,10 +92,6 @@ class Orchestrator:
 
         self.logistics = LogisticsEngine(self.world, self.state, self.config)
 
-        # 4. Initialize Manufacturing Engines (Milestone 5)
-        self.mrp_engine = MRPEngine(
-            self.world, self.state, self.config, base_demand_matrix
-        )
         self.transform_engine = TransformEngine(self.world, self.state, self.config)
 
         # v0.19.2: Pass base demand to transform engine for production prioritization
@@ -150,18 +152,18 @@ class Orchestrator:
         """
         rdc_demand = {}
         total_network_demand = 0.0
-        
+
         # Get RDC IDs
-        rdc_ids = [n_id for n_id, n in self.world.nodes.items() 
+        rdc_ids = [n_id for n_id, n in self.world.nodes.items()
                    if n.type == NodeType.DC and n_id.startswith("RDC-")]
-        
+
         # Build downstream map: source_id -> [target_ids]
         downstream_map: dict[str, list[str]] = {}
         for link in self.world.links.values():
             downstream_map.setdefault(link.source_id, []).append(link.target_id)
-            
+
         base_demand_matrix = self.pos_engine.get_base_demand_matrix()
-        
+
         for rdc_id in rdc_ids:
             # Recursive demand aggregation
             # RDC -> DCs -> Stores
@@ -169,12 +171,13 @@ class Orchestrator:
             rdc_total = 0.0
             visited = set()
             stack = [rdc_id]
-            
+
             while stack:
                 current = stack.pop()
-                if current in visited: continue
+                if current in visited:
+                    continue
                 visited.add(current)
-                
+
                 children = downstream_map.get(current, [])
                 for child_id in children:
                     child_node = self.world.nodes.get(child_id)
@@ -187,10 +190,10 @@ class Orchestrator:
                         else:
                             # Keep traversing logistics layer
                             stack.append(child_id)
-            
+
             rdc_demand[rdc_id] = rdc_total
             total_network_demand += rdc_total
-            
+
         # Convert to shares
         shares = {}
         if total_network_demand > 0:
@@ -200,10 +203,10 @@ class Orchestrator:
             # Fallback to even split if no demand (shouldn't happen with GIS)
             even = 1.0 / len(rdc_ids) if rdc_ids else 0.0
             shares = {rid: even for rid in rdc_ids}
-            
+
         return shares
 
-    def _initialize_inventory(self) -> None:
+    def _initialize_inventory(self) -> None:  # noqa: PLR0912, PLR0915
         """
         Seed initial inventory across the network (Priming).
 
@@ -220,14 +223,19 @@ class Orchestrator:
         init_config = inv_config.get("initialization", {})
 
         # Defaults if config missing
-        store_days = init_config.get("store_days_supply", 14.0)
+        store_days_default = init_config.get("store_days_supply", 14.0)
         rdc_days = init_config.get("rdc_days_supply", 21.0)
-        rdc_multiplier = init_config.get("rdc_store_multiplier", 1500.0)
         customer_dc_days = init_config.get("customer_dc_days_supply", 21.0)
 
         # Get per-SKU demand matrix for demand-proportional priming
         base_demand_matrix = self.pos_engine.get_base_demand_matrix()
-        avg_demand = self.pos_engine.get_average_demand_estimate()
+
+        # Phase 2.3: Target DOS by ABC class
+        abc_target_dos = {
+            0: 21.0,   # A-items: 3 weeks
+            1: 14.0,   # B-items: 2 weeks
+            2: 7.0,    # C-items: 1 week
+        }
 
         # Seed finished goods at RDCs and Stores
         for node_id, node in self.world.nodes.items():
@@ -235,7 +243,17 @@ class Orchestrator:
                 node_idx = self.state.node_id_to_idx.get(node_id)
                 if node_idx is not None:
                     node_demand = base_demand_matrix[node_idx, :]
-                    sku_levels = node_demand * store_days
+
+                    # Apply ABC-based priming
+                    # Vectorized operation: Create a vector of days supply based on product ABC class
+                    store_days_vec = np.array([
+                        abc_target_dos.get(
+                            self.mrp_engine.abc_class[p_idx], store_days_default
+                        )
+                        for p_idx in range(self.state.n_products)
+                    ])
+
+                    sku_levels = node_demand * store_days_vec
                     self.state.perceived_inventory[node_idx, :] = sku_levels
                     self.state.actual_inventory[node_idx, :] = sku_levels
 
@@ -245,17 +263,18 @@ class Orchestrator:
                     if node_id.startswith("RDC-"):
                         # Aggregate downstream demand per SKU
                         rdc_downstream_demand = np.zeros(self.state.n_products)
-                        
+
                         # Use recursive discovery for RDC downstream demand
                         downstream_map: dict[str, list[str]] = {}
                         for link in self.world.links.values():
                             downstream_map.setdefault(link.source_id, []).append(link.target_id)
-                            
+
                         visited = set()
                         stack = [node_id]
                         while stack:
                             current = stack.pop()
-                            if current in visited: continue
+                            if current in visited:
+                                continue
                             visited.add(current)
                             for child_id in downstream_map.get(current, []):
                                 child_node = self.world.nodes.get(child_id)
@@ -312,7 +331,6 @@ class Orchestrator:
                             self.state.update_inventory(node_id, product.id, qty)
 
     def _build_finished_goods_mask(self) -> np.ndarray:
-
         """
         Build a boolean mask for finished goods products (excludes ingredients).
 
@@ -821,8 +839,9 @@ class Orchestrator:
             # Distribute batch quantity based on demand shares
             # v0.19.12: Demand-proportional routing (physics-based flow)
             for rdc_id, share in self.rdc_demand_shares.items():
-                if share <= 0: continue
-                
+                if share <= 0:
+                    continue
+
                 qty_for_rdc = batch.quantity_cases * share
 
                 # Find the link from plant to RDC
@@ -869,7 +888,7 @@ class Orchestrator:
                         order.target_id, line.product_id, line.quantity
                     )
 
-    def _push_excess_rdc_inventory(self, day: int) -> list[Shipment]:
+    def _push_excess_rdc_inventory(self, day: int) -> list[Shipment]:  # noqa: PLR0912, PLR0915
         """
         Push excess RDC inventory to Customer DCs when DOS > threshold.
 
@@ -976,7 +995,7 @@ class Orchestrator:
 
             # Skip if no significant excess
             total_excess = np.sum(excess_inventory)
-            if total_excess < 100:  # Min threshold to avoid tiny pushes
+            if total_excess < 100:  # noqa: PLR2004 (Min threshold)
                 continue
 
             # Distribute excess proportionally to downstream DCs based on their
@@ -1008,7 +1027,7 @@ class Orchestrator:
                 lines = []
                 for p_idx in range(self.state.n_products):
                     qty = dc_push_qty[p_idx]
-                    if qty >= 10:  # Min 10 cases per product
+                    if qty >= 10:  # noqa: PLR2004 (Min 10 cases)
                         p_id = self.state.product_idx_to_id[p_idx]
                         lines.append(OrderLine(p_id, qty))
 

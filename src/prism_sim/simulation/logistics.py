@@ -151,7 +151,43 @@ class LogisticsEngine:
             if route_orders:
                 earliest_order_day = min(o.creation_day for o in route_orders)
 
-            # Bin Packing Loop
+            # --- OPTIMIZATION: Single Truck Fast-Path ---
+            # Most store orders (LTL) fit in one truck. Pre-calc totals to skip bin packing.
+            route_weight = 0.0
+            route_volume = 0.0
+            valid_lines = []
+            
+            for line in lines_for_packing:
+                p = self.world.products.get(line.product_id)
+                if p:
+                    # Use epsilon to prevent zero-division later if needed, but mainly for aggregation here
+                    w = max(p.weight_kg, self.epsilon_weight) * line.quantity
+                    v = max(p.volume_m3, self.epsilon_volume) * line.quantity
+                    route_weight += w
+                    route_volume += v
+                    valid_lines.append(line)
+
+            # If everything fits in one truck, ship it immediately
+            if route_weight <= self.max_weight_kg and route_volume <= self.max_volume_m3:
+                shipment = self._new_shipment(
+                    source_id, target_id, current_day, arrival_day, shipment_counter, earliest_order_day
+                )
+                shipment_counter += 1
+                
+                # Bulk add lines
+                shipment.lines = valid_lines
+                shipment.total_weight_kg = route_weight
+                shipment.total_volume_m3 = route_volume
+                
+                # Emissions
+                dist = link.distance_km if link else 0.0
+                shipment.emissions_kg = self._calculate_emissions(shipment, dist)
+                
+                new_shipments.append(shipment)
+                continue
+            # --------------------------------------------
+
+            # Bin Packing Loop (Complex path for multi-truck routes)
             current_shipment = self._new_shipment(
                 source_id, target_id, current_day, arrival_day, shipment_counter, earliest_order_day
             )
