@@ -5,6 +5,37 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.19.16] - 2026-01-05
+
+### Performance Optimizations & Death Spiral Diagnosis
+
+This release adds performance optimizations and documents the root cause of the "death spiral" issue affecting 365-day runs.
+
+### Added
+- **Changeover Time Multiplier:** New config option `changeover_time_multiplier` (default 0.1) scales recipe changeover times. Addresses changeover starvation where 500 SKUs × 0.5h = 250h changeover needed per plant vs 18h available.
+- **Production Order Grouping:** Transform engine now sorts orders by (plant, ABC priority, product_id, due_day) to minimize changeover events by processing same products consecutively.
+- **Forward Fix Plan:** Created `docs/planning/forward_fix.md` documenting root causes and proper solutions for death spiral and order explosion issues.
+
+### Performance
+- **Lead Time Stats Caching:** Added dirty-link tracking to replenishment agent, reducing np.std() calls from 55k to only changed links.
+- **Incremental In-Transit Tensor:** StateManager now tracks shipments incrementally instead of recomputing from scratch.
+- **Batch Arrival Processing:** Orchestrator processes arrivals in batch with single numpy update instead of per-shipment loops.
+- **Product Attribute Caching:** LogisticsEngine pre-computes product weight/volume/cases_per_pallet as numpy arrays, avoiding 6M+ dict lookups per day.
+- **Volume Caching:** Product.volume_m3 is now cached on creation instead of computed per-access.
+
+### Changed
+- `production_rate_multiplier`: 15.0 → 25.0 (bandaid for capacity gap)
+- `changeover_time_multiplier`: 0.1 (new, reduces 30min changeover to 3min)
+- `min_order_qty`: 50 → 100 cases
+- `order_cycle_days`: 3 → 5 days
+- `store_batch_size_cases`: 50 → 100 cases
+
+### Known Issues
+- **Order Explosion:** 316M+ orders generated on day 1 due to structural demand-production mismatch. See `forward_fix.md` for proper solution (order aggregation).
+- **Memory Blowup:** 365-day runs still exhaust memory. Root cause is order explosion, not simulation logic.
+
+---
+
 ## [0.19.15] - 2026-01-05
 
 ### Phase 2: Demand-Production Alignment & Performance Optimization

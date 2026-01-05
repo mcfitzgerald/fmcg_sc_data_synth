@@ -1,5 +1,7 @@
 from typing import Any
 
+import numpy as np
+
 from prism_sim.network.core import (
     CustomerChannel,
     Link,
@@ -60,6 +62,24 @@ class LogisticsEngine:
         # Track FTL vs LTL shipments for metrics
         self.ftl_shipment_count = 0
         self.ltl_shipment_count = 0
+
+        # PERF: Cache product attributes as numpy arrays for fast lookup
+        # Avoids 6M+ dict lookups per day
+        self._build_product_cache()
+
+    def _build_product_cache(self) -> None:
+        """Pre-compute product attributes for vectorized lookups."""
+        n_products = len(self.state.product_id_to_idx)
+        self._product_weight = np.zeros(n_products, dtype=np.float32)
+        self._product_volume = np.zeros(n_products, dtype=np.float32)
+        self._product_cases_per_pallet = np.ones(n_products, dtype=np.float32)
+
+        for p_id, p_idx in self.state.product_id_to_idx.items():
+            product = self.world.products.get(p_id)
+            if product:
+                self._product_weight[p_idx] = max(product.weight_kg, self.epsilon_weight)
+                self._product_volume[p_idx] = max(product.volume_m3, self.epsilon_volume)
+                self._product_cases_per_pallet[p_idx] = max(product.cases_per_pallet, 1)
 
     def _build_route_map(self) -> None:
         for link in self.world.links.values():
@@ -153,18 +173,16 @@ class LogisticsEngine:
 
             # --- OPTIMIZATION: Single Truck Fast-Path ---
             # Most store orders (LTL) fit in one truck. Pre-calc totals to skip bin packing.
+            # PERF: Use cached product arrays instead of dict lookups
             route_weight = 0.0
             route_volume = 0.0
             valid_lines = []
-            
+
             for line in lines_for_packing:
-                p = self.world.products.get(line.product_id)
-                if p:
-                    # Use epsilon to prevent zero-division later if needed, but mainly for aggregation here
-                    w = max(p.weight_kg, self.epsilon_weight) * line.quantity
-                    v = max(p.volume_m3, self.epsilon_volume) * line.quantity
-                    route_weight += w
-                    route_volume += v
+                p_idx = self.state.product_id_to_idx.get(line.product_id)
+                if p_idx is not None:
+                    route_weight += self._product_weight[p_idx] * line.quantity
+                    route_volume += self._product_volume[p_idx] * line.quantity
                     valid_lines.append(line)
 
             # If everything fits in one truck, ship it immediately
@@ -188,16 +206,19 @@ class LogisticsEngine:
             # --------------------------------------------
 
             # Bin Packing Loop (Complex path for multi-truck routes)
+            # PERF: Use cached product arrays instead of dict lookups
             current_shipment = self._new_shipment(
                 source_id, target_id, current_day, arrival_day, shipment_counter, earliest_order_day
             )
             shipment_counter += 1
 
             for line in lines_for_packing:
-                product = self.world.products.get(line.product_id)
-                if not product:
+                p_idx = self.state.product_id_to_idx.get(line.product_id)
+                if p_idx is None:
                     continue
 
+                unit_weight = self._product_weight[p_idx]
+                unit_vol = self._product_volume[p_idx]
                 remaining_qty = line.quantity
 
                 while remaining_qty > 1e-9:
@@ -223,10 +244,6 @@ class LogisticsEngine:
                         weight_space = self.max_weight_kg
                         vol_space = self.max_volume_m3
 
-                    # How much fits?
-                    unit_weight = max(product.weight_kg, self.epsilon_weight)
-                    unit_vol = max(product.volume_m3, self.epsilon_volume)
-
                     max_by_weight = weight_space / unit_weight
                     max_by_vol = vol_space / unit_vol
 
@@ -235,11 +252,8 @@ class LogisticsEngine:
                     if fit_qty < 1e-9:
                         if not current_shipment.lines:
                             # Item exceeds empty truck dimensions?
-                            # Forcing 1 unit if it's just a float issue,
-                            # but if it's physically too big, error.
-                            # Assuming standard pallets fit.
                             raise ValueError(
-                                f"Product {product.id} exceeds truck capacity"
+                                f"Product {line.product_id} exceeds truck capacity"
                             )
                         else:
                             # Full
@@ -256,7 +270,7 @@ class LogisticsEngine:
                             continue
 
                     # Add to shipment
-                    current_shipment.lines.append(OrderLine(product.id, fit_qty))
+                    current_shipment.lines.append(OrderLine(line.product_id, fit_qty))
                     current_shipment.total_weight_kg += fit_qty * unit_weight
                     current_shipment.total_volume_m3 += fit_qty * unit_vol
                     remaining_qty -= fit_qty
@@ -323,12 +337,12 @@ class LogisticsEngine:
         return dict(res) if res is not None else {}
 
     def _calculate_pallets(self, order: Order) -> float:
-        """Calculate total pallets for an order."""
+        """Calculate total pallets for an order using cached product attributes."""
         pallets = 0.0
         for line in order.lines:
-            product = self.world.products.get(line.product_id)
-            if product and product.cases_per_pallet > 0:
-                pallets += line.quantity / product.cases_per_pallet
+            p_idx = self.state.product_id_to_idx.get(line.product_id)
+            if p_idx is not None:
+                pallets += line.quantity / self._product_cases_per_pallet[p_idx]
         return pallets
 
     def get_staged_inventory(self) -> dict[str, float]:

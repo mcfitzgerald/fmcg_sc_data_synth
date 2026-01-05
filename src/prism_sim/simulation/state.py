@@ -61,6 +61,12 @@ class StateManager:
         # Discrete State (Levels 10-11)
         self.active_shipments: list[Shipment] = []
 
+        # PERF: Cached in-transit tensor - updated incrementally instead of
+        # recomputing from all shipments each time. Shape [n_nodes, n_products].
+        self._in_transit_tensor = np.zeros(
+            (self.n_nodes, self.n_products), dtype=np.float64
+        )
+
     @property
     def inventory(self) -> np.ndarray:
         """Alias for perceived_inventory (System View)."""
@@ -128,9 +134,90 @@ class StateManager:
         np.maximum(self.perceived_inventory, 0, out=self.perceived_inventory)
         np.maximum(self.actual_inventory, 0, out=self.actual_inventory)
 
+    def add_shipment(self, shipment: Shipment) -> None:
+        """
+        PERF: Add a shipment and update the in-transit tensor incrementally.
+        Use this instead of directly appending to active_shipments.
+        """
+        self.active_shipments.append(shipment)
+
+        # Update in-transit tensor
+        target_idx = self.node_id_to_idx.get(shipment.target_id)
+        if target_idx is not None:
+            for line in shipment.lines:
+                p_idx = self.product_id_to_idx.get(line.product_id)
+                if p_idx is not None:
+                    self._in_transit_tensor[target_idx, p_idx] += line.quantity
+
+    def remove_shipment(self, shipment: Shipment) -> None:
+        """
+        PERF: Remove a shipment and update the in-transit tensor incrementally.
+        Use this when shipments arrive instead of filtering active_shipments.
+        """
+        # Update in-transit tensor (subtract quantities)
+        target_idx = self.node_id_to_idx.get(shipment.target_id)
+        if target_idx is not None:
+            for line in shipment.lines:
+                p_idx = self.product_id_to_idx.get(line.product_id)
+                if p_idx is not None:
+                    self._in_transit_tensor[target_idx, p_idx] -= line.quantity
+
+        # Remove from active list (O(n) but unavoidable for list)
+        if shipment in self.active_shipments:
+            self.active_shipments.remove(shipment)
+
+    def add_shipments_batch(self, shipments: list[Shipment]) -> None:
+        """
+        PERF: Add multiple shipments and update in-transit tensor in batch.
+        More efficient than calling add_shipment() repeatedly.
+        """
+        if not shipments:
+            return
+
+        # Build delta tensor for all shipments
+        delta = np.zeros((self.n_nodes, self.n_products), dtype=np.float64)
+
+        for shipment in shipments:
+            self.active_shipments.append(shipment)
+            target_idx = self.node_id_to_idx.get(shipment.target_id)
+            if target_idx is not None:
+                for line in shipment.lines:
+                    p_idx = self.product_id_to_idx.get(line.product_id)
+                    if p_idx is not None:
+                        delta[target_idx, p_idx] += line.quantity
+
+        self._in_transit_tensor += delta
+
+    def remove_arrived_shipments(self, arrived: list[Shipment]) -> None:
+        """
+        PERF: Remove multiple arrived shipments and update in-transit tensor.
+        More efficient than calling remove_shipment() repeatedly.
+        """
+        if not arrived:
+            return
+
+        # Build delta tensor for all arrived shipments
+        delta = np.zeros((self.n_nodes, self.n_products), dtype=np.float64)
+        arrived_set = set(id(s) for s in arrived)
+
+        for shipment in arrived:
+            target_idx = self.node_id_to_idx.get(shipment.target_id)
+            if target_idx is not None:
+                for line in shipment.lines:
+                    p_idx = self.product_id_to_idx.get(line.product_id)
+                    if p_idx is not None:
+                        delta[target_idx, p_idx] += line.quantity
+
+        self._in_transit_tensor -= delta
+
+        # Filter active_shipments list (O(n) but only done once per batch)
+        self.active_shipments = [
+            s for s in self.active_shipments if id(s) not in arrived_set
+        ]
+
     def get_in_transit_by_target(self) -> np.ndarray:
         """
-        Calculate in-transit inventory per target node and product.
+        PERF: Return cached in-transit tensor (O(1) instead of O(N*M)).
 
         Returns the quantity currently in transit TO each node, aggregated
         across all active shipments. Used for Inventory Position calculation
@@ -145,16 +232,4 @@ class StateManager:
         Returns:
             np.ndarray: Shape [n_nodes, n_products] - in-transit qty per target
         """
-        in_transit = np.zeros((self.n_nodes, self.n_products), dtype=np.float64)
-
-        for shipment in self.active_shipments:
-            target_idx = self.node_id_to_idx.get(shipment.target_id)
-            if target_idx is None:
-                continue
-
-            for line in shipment.lines:
-                p_idx = self.product_id_to_idx.get(line.product_id)
-                if p_idx is not None:
-                    in_transit[target_idx, p_idx] += line.quantity
-
-        return in_transit
+        return self._in_transit_tensor.copy()

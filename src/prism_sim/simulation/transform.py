@@ -68,6 +68,16 @@ class TransformEngine:
         self.default_yield_percent = mfg_config.get("default_yield_percent", 98.5)
         self.recall_batch_trigger_day = mfg_config.get("recall_batch_trigger_day", 30)
 
+        # Production rate multiplier - scales run_rate to match capacity/demand ratio
+        # Default 1.0 means use recipe run_rate as-is
+        # Higher values simulate multiple production lines or faster equipment
+        self.rate_multiplier = mfg_config.get("production_rate_multiplier", 1.0)
+
+        # Changeover time multiplier - scales recipe changeover times
+        # Default 0.1 (6 min for 1h changeover) represents modern high-speed lines
+        # with automated changeover. Recipe default of 0.5h becomes 3 minutes.
+        self.changeover_multiplier = mfg_config.get("changeover_time_multiplier", 0.1)
+
         # Recall Scenario Config
         self.recall_scenario = mfg_config.get("recall_scenario", {})
         self.recall_product_id = self.recall_scenario.get("product_id", "SKU-DET-001")
@@ -225,10 +235,14 @@ class TransformEngine:
             plant_state.remaining_capacity_hours = plant_state.max_capacity_hours
 
         # Sort orders by:
-        # 1. ABC Priority (A=1 first) -> Reserve capacity for high runners
-        # 2. Due Date (Earliest first)
+        # 1. Plant ID -> Process each plant's orders together
+        # 2. ABC Priority (A=1 first) -> Reserve capacity for high runners
+        # 3. Product ID -> Group same products to minimize changeovers
+        # 4. Due Date (Earliest first)
         sorted_orders = sorted(orders, key=lambda o: (
+            o.plant_id,
             self._get_abc_priority(o.product_id),
+            o.product_id,
             o.due_day
         ))
 
@@ -276,16 +290,19 @@ class TransformEngine:
             order.status = ProductionOrderStatus.COMPLETE
             return None
 
-        # Calculate production time needed for remaining
-        production_time_hours = remaining_qty / recipe.run_rate_cases_per_hour
+        # Apply production rate multiplier (simulates multiple lines or faster equipment)
+        effective_run_rate = recipe.run_rate_cases_per_hour * self.rate_multiplier
 
-        # Check for changeover penalty
+        # Calculate production time needed for remaining
+        production_time_hours = remaining_qty / effective_run_rate
+
+        # Check for changeover penalty (scaled by multiplier)
         changeover_time = 0.0
         if (
             plant_state.last_product_id is not None
             and plant_state.last_product_id != order.product_id
         ):
-            changeover_time = recipe.changeover_time_hours
+            changeover_time = recipe.changeover_time_hours * self.changeover_multiplier
 
         # How much can we actually produce today?
         available_time = plant_state.remaining_capacity_hours
@@ -297,7 +314,7 @@ class TransformEngine:
 
         max_qty_today = min(
             remaining_qty,
-            available_time_for_prod * recipe.run_rate_cases_per_hour,
+            available_time_for_prod * effective_run_rate,
         )
 
         if max_qty_today <= 0:
@@ -332,7 +349,7 @@ class TransformEngine:
         order.produced_quantity += actual_qty
 
         # Update plant state
-        time_used = changeover_time + (actual_qty / recipe.run_rate_cases_per_hour)
+        time_used = changeover_time + (actual_qty / effective_run_rate)
         plant_state.remaining_capacity_hours -= time_used
         plant_state.last_product_id = order.product_id
 

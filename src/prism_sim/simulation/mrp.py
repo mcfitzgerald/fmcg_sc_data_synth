@@ -830,23 +830,24 @@ class MRPEngine:
             # ============================================================
             # SAFETY BOUNDS
             # ============================================================
-            # Floor: Differentiated by ABC class (Phase 2.5)
-            # A-items: 50% floor (maintain availability)
-            # B-items: 30% floor
-            # C-items: 10% floor (minimize SLOB risk)
-            abc_floors = {0: 0.5, 1: 0.3, 2: 0.1}
-            floor_pct = abc_floors.get(abc, 0.1)
+            # Floor: Differentiated by ABC class
+            # PERF FIX: Raised floors to prevent production starvation
+            # A-items: 90% floor (critical availability)
+            # B-items: 80% floor
+            # C-items: 70% floor
+            abc_floors = {0: 0.9, 1: 0.8, 2: 0.7}
+            floor_pct = abc_floors.get(abc, 0.7)
             production_qty = max(production_qty, expected_demand * floor_pct)
 
             # Cap: Never produce more than 150% of expected (prevent runaway)
             production_qty = min(production_qty, expected_demand * 1.5)
 
-            # SLOB Throttling Override (Phase 2.2)
-            # Regardless of ABC class, if we are in deep SLOB territory, throttle HARD.
-            if dos_position > 60.0:  # noqa: PLR2004
-                production_qty = min(production_qty, actual_demand * 0.5)
-            elif dos_position > 45.0:  # noqa: PLR2004
+            # SLOB Throttling Override - RELAXED to prevent starvation
+            # Only throttle in extreme SLOB territory (90+ DOS = 3 months inventory)
+            if dos_position > 90.0:  # noqa: PLR2004
                 production_qty = min(production_qty, actual_demand * 0.7)
+            elif dos_position > 75.0:  # noqa: PLR2004
+                production_qty = min(production_qty, actual_demand * 0.85)
 
             order_qty = production_qty
 

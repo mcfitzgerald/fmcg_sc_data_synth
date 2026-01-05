@@ -417,13 +417,15 @@ class Orchestrator:
         # 5. Logistics (Milestone 4.2)
         new_shipments = self.logistics.create_shipments(allocated_orders, day)
         self._apply_logistics_quirks_and_risks(new_shipments)
-        self.state.active_shipments.extend(new_shipments)
+        # PERF: Use batch method to update in-transit tensor incrementally
+        self.state.add_shipments_batch(new_shipments)
 
         # 6. Transit & Arrival (Milestone 4.3)
+        # PERF: Use batch removal to update in-transit tensor incrementally
         active, arrived = self.logistics.update_shipments(
             self.state.active_shipments, day
         )
-        self.state.active_shipments = active
+        self.state.remove_arrived_shipments(arrived)
 
         # 7. Process Arrivals (Receive Inventory)
         self._process_arrivals(arrived)
@@ -463,7 +465,8 @@ class Orchestrator:
         plant_shipments = self._create_plant_shipments(new_batches, day)
         self.auditor.record_plant_shipments_out(plant_shipments)
         self._apply_logistics_quirks_and_risks(plant_shipments)
-        self.state.active_shipments.extend(plant_shipments)
+        # PERF: Use batch method to update in-transit tensor incrementally
+        self.state.add_shipments_batch(plant_shipments)
 
         # 10a. v0.19.2: Push excess RDC inventory to Customer DCs
         # This breaks the negative feedback spiral where RDCs accumulate
@@ -472,7 +475,8 @@ class Orchestrator:
         if push_shipments:
             self.auditor.record_plant_shipments_out(push_shipments)
             self._apply_logistics_quirks_and_risks(push_shipments)
-            self.state.active_shipments.extend(push_shipments)
+            # PERF: Use batch method to update in-transit tensor incrementally
+            self.state.add_shipments_batch(push_shipments)
 
         # 11. Validation & Resilience
         self._apply_post_step_validation(day, arrived)
@@ -781,6 +785,18 @@ class Orchestrator:
         return "\n".join(summary)
 
     def _process_arrivals(self, arrived_shipments: list[Shipment]) -> None:
+        """
+        PERF: Batch inventory updates instead of per-line calls.
+        Reduces 3.6M update_inventory() calls to a single batch operation.
+        """
+        if not arrived_shipments:
+            return
+
+        # Build delta tensor for all arrivals
+        delta = np.zeros(
+            (self.state.n_nodes, self.state.n_products), dtype=np.float64
+        )
+
         for shipment in arrived_shipments:
             # Physics Overhaul: Record realized lead time
             if shipment.original_order_day is not None:
@@ -796,10 +812,10 @@ class Orchestrator:
             for line in shipment.lines:
                 p_idx = self.state.product_id_to_idx.get(line.product_id)
                 if p_idx is not None:
-                    # Update both perceived and actual inventory
-                    self.state.update_inventory(
-                        shipment.target_id, line.product_id, line.quantity
-                    )
+                    delta[target_idx, p_idx] += line.quantity
+
+        # Single batch update instead of 3.6M individual calls
+        self.state.update_inventory_batch(delta)
 
     def _create_plant_shipments(
         self, batches: list[Batch], current_day: int

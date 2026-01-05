@@ -73,14 +73,25 @@ class Product:
     recyclable: bool = False
     material: str | None = None
 
+    # PERF: Cached volume calculation (was 6M property calls)
+    _volume_m3_cached: float | None = None
+
     @property
     def volume_m3(self) -> float:
-        """Calculates volume in cubic meters."""
-        return (self.length_cm * self.width_cm * self.height_cm) / 1_000_000
+        """Returns cached volume in cubic meters."""
+        if self._volume_m3_cached is None:
+            self._volume_m3_cached = (
+                self.length_cm * self.width_cm * self.height_cm
+            ) / 1_000_000
+        return self._volume_m3_cached
 
     def __post_init__(self) -> None:
         if not self.id:
             raise ValueError("Product ID cannot be empty")
+        # Pre-compute volume on creation
+        self._volume_m3_cached = (
+            self.length_cm * self.width_cm * self.height_cm
+        ) / 1_000_000
 
 
 @dataclass

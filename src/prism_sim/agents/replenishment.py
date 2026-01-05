@@ -171,6 +171,17 @@ class MinMaxReplenisher:
         self.lt_ptr = np.zeros((self.state.n_nodes, self.state.n_nodes), dtype=int)
         self.lt_count = np.zeros((self.state.n_nodes, self.state.n_nodes), dtype=int)
 
+        # PERF: Cached lead time stats [n_nodes, n_nodes] - updated incrementally
+        # Avoids calling np.std() 60k+ times per day
+        self._lt_mu_cache = np.full(
+            (self.state.n_nodes, self.state.n_nodes), 3.0, dtype=np.float32
+        )
+        self._lt_sigma_cache = np.zeros(
+            (self.state.n_nodes, self.state.n_nodes), dtype=np.float32
+        )
+        # Track which specific links need cache update (not all of them)
+        self._lt_dirty_links: set[tuple[int, int]] = set()
+
         # Physics Overhaul Phase 3: ABC Segmentation
         # Track cumulative volume per product for dynamic classification
         self.product_volume_history = np.zeros(self.state.n_products, dtype=np.float64)
@@ -210,23 +221,52 @@ class MinMaxReplenisher:
         if self.lt_count[t_idx, s_idx] < self.lt_history_len:
             self.lt_count[t_idx, s_idx] += 1
 
+        # PERF: Only mark THIS specific link as dirty (not all links)
+        self._lt_dirty_links.add((t_idx, s_idx))
+
+    def _update_lt_cache(self) -> None:
+        """
+        PERF: Incremental update of lead time stats cache.
+        Only updates links that changed since last call.
+        """
+        if not self._lt_dirty_links:
+            return
+
+        # Only update stats for dirty links (not all links)
+        for t_idx, s_idx in self._lt_dirty_links:
+            count = self.lt_count[t_idx, s_idx]
+            if count >= 2:
+                history = self.lead_time_history[t_idx, s_idx, :count]
+                self._lt_mu_cache[t_idx, s_idx] = np.mean(history)
+                self._lt_sigma_cache[t_idx, s_idx] = np.std(history, ddof=1)
+
+        self._lt_dirty_links.clear()
+
     def get_lead_time_stats(self, target_id: str, source_id: str) -> tuple[float, float]:
         """
         Get Mean and StdDev of lead time for a link.
         Returns (mu_L, sigma_L).
+        PERF: Now uses cached values instead of computing each time.
         """
         t_idx = self.state.node_id_to_idx.get(target_id)
         s_idx = self.state.node_id_to_idx.get(source_id)
 
         if t_idx is None or s_idx is None:
-            return 3.0, 0.0 # Default fallback
+            return 3.0, 0.0  # Default fallback
 
-        count = self.lt_count[t_idx, s_idx]
-        if count < 2:
-            return 3.0, 0.0 # Insufficient history
+        return float(self._lt_mu_cache[t_idx, s_idx]), float(self._lt_sigma_cache[t_idx, s_idx])
 
-        history = self.lead_time_history[t_idx, s_idx, :count]
-        return float(np.mean(history)), float(np.std(history, ddof=1))
+    def get_lead_time_stats_vectorized(
+        self, target_indices: np.ndarray, source_indices: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """
+        PERF: Vectorized lead time stats lookup for multiple links.
+        Returns (mu_L_vec, sigma_L_vec) arrays.
+        """
+        return (
+            self._lt_mu_cache[target_indices, source_indices],
+            self._lt_sigma_cache[target_indices, source_indices],
+        )
 
     def _update_abc_classification(self) -> None:
         """
@@ -480,6 +520,9 @@ class MinMaxReplenisher:
         if self.history_idx % 7 == 0:
             self._update_abc_classification()
 
+        # PERF: Update lead time stats cache once per day (not per-node)
+        self._update_lt_cache()
+
     def get_demand_std(self) -> np.ndarray:
         """
         Calculate demand standard deviation per node-product.
@@ -718,23 +761,30 @@ class MinMaxReplenisher:
         full_sigma = self.get_demand_std()
         sigma = full_sigma[target_idx_arr, :]
 
-        # Physics Overhaul Phase 2: Vectorized Lead Time Stats
-        # Fetch lead time stats for each target node -> supplier link
-        # Shape: [n_targets, 1] - applies to all products for that link
+        # PERF: Vectorized Lead Time Stats Lookup
+        # Build source index array for all targets, then do single array lookup
         n_targets = len(target_indices)
-        mu_L_vec = np.zeros((n_targets, 1))
-        sigma_L_vec = np.zeros((n_targets, 1))
+        source_idx_arr = np.zeros(n_targets, dtype=np.int32)
+        has_source = np.zeros(n_targets, dtype=bool)
 
         for i, t_idx in enumerate(target_indices):
             target_id = self.state.node_idx_to_id[t_idx]
             source_id = self.store_supplier_map.get(target_id)
             if source_id:
-                mu, sigma_val = self.get_lead_time_stats(target_id, source_id)
-                mu_L_vec[i, 0] = mu
-                sigma_L_vec[i, 0] = sigma_val
-            else:
-                mu_L_vec[i, 0] = lead_time  # Fallback to config default
-                sigma_L_vec[i, 0] = 0.0
+                s_idx = self.state.node_id_to_idx.get(source_id)
+                if s_idx is not None:
+                    source_idx_arr[i] = s_idx
+                    has_source[i] = True
+
+        # Vectorized lookup from cache
+        mu_L_vec = np.full((n_targets, 1), lead_time, dtype=np.float32)
+        sigma_L_vec = np.zeros((n_targets, 1), dtype=np.float32)
+
+        if np.any(has_source):
+            valid_targets = target_idx_arr[has_source]
+            valid_sources = source_idx_arr[has_source]
+            mu_L_vec[has_source, 0] = self._lt_mu_cache[valid_targets, valid_sources]
+            sigma_L_vec[has_source, 0] = self._lt_sigma_cache[valid_targets, valid_sources]
 
         # 1. Cycle Stock = Average Demand * Mean Lead Time
         # Using realized mean lead time instead of static config
