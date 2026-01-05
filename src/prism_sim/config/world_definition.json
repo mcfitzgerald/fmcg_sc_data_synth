@@ -99,16 +99,38 @@
     }
   },
   "packaging_types": [
-    {"code": "PKG-TUBE-50", "container": "tube", "size_ml": 50, "units_per_case": 24, "segment": "trial"},
-    {"code": "PKG-TUBE-100", "container": "tube", "size_ml": 100, "units_per_case": 12, "segment": "mainstream"},
-    {"code": "PKG-TUBE-150", "container": "tube", "size_ml": 150, "units_per_case": 12, "segment": "mainstream"},
-    {"code": "PKG-TUBE-200", "container": "tube", "size_ml": 200, "units_per_case": 6, "segment": "value"},
+    {"code": "PKG-TUBE-50", "container": "tube", "size_ml": 50, "units_per_case": 72, "segment": "trial"},
+    {"code": "PKG-TUBE-75", "container": "tube", "size_ml": 75, "units_per_case": 48, "segment": "mainstream"},
+    {"code": "PKG-TUBE-100", "container": "tube", "size_ml": 100, "units_per_case": 36, "segment": "mainstream"},
+    {"code": "PKG-TUBE-125", "container": "tube", "size_ml": 125, "units_per_case": 24, "segment": "mainstream"},
+    {"code": "PKG-TUBE-150", "container": "tube", "size_ml": 150, "units_per_case": 24, "segment": "value"},
+    {"code": "PKG-TUBE-175", "container": "tube", "size_ml": 175, "units_per_case": 24, "segment": "value"},
+    {"code": "PKG-TUBE-200", "container": "tube", "size_ml": 200, "units_per_case": 12, "segment": "value"},
+    {"code": "PKG-TUBE-250", "container": "tube", "size_ml": 250, "units_per_case": 12, "segment": "value"},
+
+    {"code": "PKG-BOTL-100", "container": "bottle", "size_ml": 100, "units_per_case": 48, "segment": "trial"},
+    {"code": "PKG-BOTL-200", "container": "bottle", "size_ml": 200, "units_per_case": 24, "segment": "mainstream"},
     {"code": "PKG-BOTL-250", "container": "bottle", "size_ml": 250, "units_per_case": 24, "segment": "mainstream"},
-    {"code": "PKG-BOTL-500", "container": "bottle", "size_ml": 500, "units_per_case": 12, "segment": "mainstream"},
+    {"code": "PKG-BOTL-300", "container": "bottle", "size_ml": 300, "units_per_case": 12, "segment": "mainstream"},
+    {"code": "PKG-BOTL-400", "container": "bottle", "size_ml": 400, "units_per_case": 12, "segment": "mainstream"},
+    {"code": "PKG-BOTL-500", "container": "bottle", "size_ml": 500, "units_per_case": 12, "segment": "value"},
+    {"code": "PKG-BOTL-750", "container": "bottle", "size_ml": 750, "units_per_case": 6, "segment": "value"},
     {"code": "PKG-BOTL-1L", "container": "bottle", "size_ml": 1000, "units_per_case": 6, "segment": "value"},
-    {"code": "PKG-PUMP-500", "container": "pump", "size_ml": 500, "units_per_case": 12, "segment": "premium"},
-    {"code": "PKG-REFILL-2L", "container": "pouch", "size_ml": 2000, "units_per_case": 6, "segment": "value"},
-    {"code": "PKG-GLASS-200", "container": "glass", "size_ml": 200, "units_per_case": 12, "segment": "premium"}
+    {"code": "PKG-BOTL-1.5L", "container": "bottle", "size_ml": 1500, "units_per_case": 4, "segment": "value"},
+
+    {"code": "PKG-PUMP-250", "container": "pump", "size_ml": 250, "units_per_case": 24, "segment": "premium"},
+    {"code": "PKG-PUMP-400", "container": "pump", "size_ml": 400, "units_per_case": 12, "segment": "premium"},
+    {"code": "PKG-PUMP-500", "container": "pump", "size_ml": 500, "units_per_case": 12, "segment": "mainstream"},
+    {"code": "PKG-PUMP-750", "container": "pump", "size_ml": 750, "units_per_case": 6, "segment": "mainstream"},
+    {"code": "PKG-PUMP-1L", "container": "pump", "size_ml": 1000, "units_per_case": 6, "segment": "value"},
+
+    {"code": "PKG-POUCH-500", "container": "pouch", "size_ml": 500, "units_per_case": 24, "segment": "value"},
+    {"code": "PKG-POUCH-1L", "container": "pouch", "size_ml": 1000, "units_per_case": 12, "segment": "value"},
+    {"code": "PKG-POUCH-2L", "container": "pouch", "size_ml": 2000, "units_per_case": 6, "segment": "value"},
+
+    {"code": "PKG-GLASS-100", "container": "glass", "size_ml": 100, "units_per_case": 24, "segment": "premium"},
+    {"code": "PKG-GLASS-200", "container": "glass", "size_ml": 200, "units_per_case": 12, "segment": "premium"},
+    {"code": "PKG-GLASS-500", "container": "glass", "size_ml": 500, "units_per_case": 6, "segment": "premium"}
   ],
   "promotions": [
     {
@@ -166,6 +188,11 @@
     "ingredients_per_sku_max": 8
   },
   "generation_profiles": {
+    "variant_palettes": {
+      "ORAL_CARE": ["Original", "Mint", "Spearmint", "Whitening", "Sensitive", "Charcoal", "Herbal", "Fresh", "Cool Mint", "Baking Soda", "Gum Care", "Enamel Protect", "Deep Clean", "Arctic Fresh", "Cinnamon"],
+      "PERSONAL_WASH": ["Unscented", "Lavender", "Coconut", "Citrus", "Aloe", "Shea Butter", "Cucumber", "Rose", "Vanilla", "Ocean Breeze", "Tea Tree", "Almond", "Pomegranate", "Honey", "Charcoal"],
+      "HOME_CARE": ["Fresh", "Lemon", "Pine", "Lavender", "Unscented", "Citrus Zest", "Mountain Rain", "Ocean Mist", "Apple Blossom", "Tropical", "Spring Breeze", "Eucalyptus", "Orange", "Floral", "Clean Linen"]
+    },
     "categories": {
       "ORAL_CARE": {
         "avg_weight_kg": 1.2,

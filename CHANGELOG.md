@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.19.14] - 2026-01-04
+
+### SKU Generation Overhaul (Phase 1)
+Implemented a massive expansion of the product portfolio to support realistic long-tail demand analysis.
+
+### Added
+- **500+ SKU Scale:** Rewrote `ProductGenerator` to support target-based generation (`n_skus=500`).
+- **Zipfian Packaging:** SKU generation now uses Zipfian distribution to select packaging types, simulating "Mainstream" vs "Niche" sizes.
+- **Expanded Packaging Types:** Added 25+ new packaging definitions (Tubes, Bottles, Pumps, Pouches, Glass) with realistic dimensions and `units_per_case`.
+- **Variant Palettes:** Added configuration for category-specific scent/flavor variants (e.g., "Mint", "Lavender", "Ocean Mist").
+- **Configurable SKU Proportions:** Added `sku_proportion` to `simulation_config.json` to control SKU count per category (Oral Care 40%, Personal Wash 35%, Home Care 25%).
+
+### Changed
+- **Generator Logic:** `ProductGenerator.generate_products()` now iteratively samples unique (Brand, Pack, Variant) combinations until the target count is met, rather than exhaustive enumeration.
+- **Generation Script:** `scripts/generate_static_world.py` now accepts `--skus` and `--stores` CLI arguments.
+
+### Results
+- Generated a static world with **544 Products** (500 Finished Goods + 44 Ingredients) and **6,126 Nodes**.
+- This enables proper ABC classification testing (Phase 2) which was impossible with the previous 24-SKU dataset.
+
 ## [0.19.13] - 2026-01-04
 
 ### Fixed

@@ -333,6 +333,14 @@ Every decision impacts the balance between:
 
 ## 15. Known Issues & Current State
 
+### SKU Expansion (v0.19.14 - PHASE 1 COMPLETE)
+**Status:** 500 SKUs Generated ✅, Awaiting Phase 2 (Demand Alignment)
+
+**Current State (v0.19.14):**
+- **SKU Count:** Increased from 24 to 500+ (Target met)
+- **Hierarchy:** Realistic Brand-Pack-Variant structure with Zipfian size distribution
+- **Next Step:** Phase 2 - Align production/inventory logic to handle this new scale (ABC classification, DOS throttling).
+
 ### Distribution Bottleneck (v0.19.11 - SLOB FIXED, DISTRIBUTION INVESTIGATION NEEDED)
 **Status:** SLOB TARGET ACHIEVED ✅, SERVICE LEVEL INVESTIGATION NEEDED
 
@@ -631,6 +639,9 @@ Orchestrator
 
 | Version | Key Changes |
 |---------|-------------|
+| 0.19.14 | **SKU Generation Overhaul** - Expanded portfolio to 500+ SKUs with realistic packaging hierarchy and Zipfian distribution; Prepared ground for ABC/Long-tail analysis |
+| 0.19.13 | **GIS Lead Time Fix** - Fixed critical bug where `dist/speed` was treated as days instead of hours; Service Level recovered 39% → 82.7%; OEE 30% → 86.8% |
+| 0.19.12 | **Geospatial Physics (GIS)** - Replaced random topology with US Cities + Haversine distance; Fixed "Ghost RDC" black hole; Network now physically grounded |
 | 0.19.11 | **POS-Driven Production (Closed-Loop)** - Uses actual consumer demand (POS) as primary signal, not expected demand; ABC class tracking for differentiated response dynamics; **SLOB target achieved: 28.6% (<30%)**; SL at 64.5% proves distribution is the bottleneck, not production; Next: distribution diagnosis (see `docs/planning/distribution_diagnosis.md`) |
 | 0.19.10 | **ABC-Differentiated Production** - Experimental version superseded by v0.19.11; SL 71.7% but SLOB worsened to 76% |
 | 0.19.9 | **Rate-Based Production (Option C)** - MRP produces at expected demand rate regardless of DOS signals; Prevents low-equilibrium trap; MRPDiagnostics for signal tracing; 365-day SL improved 50%→67.5%; Next: product mix optimization (see `docs/planning/mix_opt.md`) |

@@ -96,9 +96,9 @@
         "gamma_scale": 0.1
       },
       "category_profiles": {
-        "ORAL_CARE": { "base_daily_demand": 7.0 },
-        "PERSONAL_WASH": { "base_daily_demand": 7.0 },
-        "HOME_CARE": { "base_daily_demand": 7.0 },
+        "ORAL_CARE": { "base_daily_demand": 7.0, "sku_proportion": 0.40 },
+        "PERSONAL_WASH": { "base_daily_demand": 7.0, "sku_proportion": 0.35 },
+        "HOME_CARE": { "base_daily_demand": 7.0, "sku_proportion": 0.25 },
         "INGREDIENT": { "base_daily_demand": 0.0 }
       },
       "format_scale_factors": {

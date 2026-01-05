@@ -1,5 +1,6 @@
 """Script to generate the static world (Level 0-4) for Deep NAM expansion."""
 
+import argparse
 import json
 import sys
 from pathlib import Path
@@ -13,6 +14,11 @@ from prism_sim.writers.static_writer import StaticWriter
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description="Generate static world data.")
+    parser.add_argument("--skus", type=int, default=0, help="Number of SKUs to generate (overrides config)")
+    parser.add_argument("--stores", type=int, default=0, help="Number of Stores to generate (overrides config)")
+    args = parser.parse_args()
+
     # 0. Load Configs
     world_config_path = Path("src/prism_sim/config/world_definition.json")
     sim_config_path = Path("src/prism_sim/config/simulation_config.json")
@@ -38,7 +44,7 @@ def main() -> None:
     # 2. Products
     print("Generating Products...")
     counts = world_config.get("topology", {}).get("target_counts", {})
-    n_skus = counts.get("skus", 50)
+    n_skus = args.skus if args.skus > 0 else counts.get("skus", 50)
 
     finished_goods = prod_gen.generate_products(n_skus=n_skus)
 
@@ -53,9 +59,10 @@ def main() -> None:
     recipes = prod_gen.generate_recipes(finished_goods, ingredients)
 
     # 4. Network
-    print("Generating Network (4500 stores)... this may take a moment.")
+    n_stores = args.stores if args.stores > 0 else counts.get("small_retailers", 4000) # Note: this was defaulting to 4500 in call but using small_retailers key which is 4000
+    print(f"Generating Network ({n_stores} stores)... this may take a moment.")
     nodes, links = net_gen.generate_network(
-        n_stores=counts.get("stores", 4500),
+        n_stores=n_stores,
         n_suppliers=counts.get("suppliers", 50),
         n_plants=counts.get("plants", 4),
         n_rdcs=counts.get("rdcs", 4)
