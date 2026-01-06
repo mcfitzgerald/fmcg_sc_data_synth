@@ -5,6 +5,42 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.21.0] - 2026-01-06
+
+### SKU Scale Expansion & Config Calibration
+
+This release expands the simulation to 500 SKUs (10x previous) and adds a physics-based calibration script to derive optimal configuration parameters.
+
+### Added
+
+- **Calibration Script** (`scripts/calibrate_config.py`): New tool that derives optimal simulation parameters from world definition using supply chain physics rather than guesswork.
+  - Calculates expected daily demand from store count, SKU count, and category profiles
+  - Calculates plant theoretical capacity from recipe run rates
+  - Derives `production_rate_multiplier` to achieve target OEE (default 85%)
+  - Derives inventory DOS parameters based on lead times and service level targets
+  - Run with `--apply` flag to update simulation_config.json automatically
+
+### Changed
+
+- **SKU Count**: 50 → 500 SKUs (10x scale increase)
+- **production_rate_multiplier**: 25.0 → 0.2 (calibrated for 85% OEE with 500 SKUs)
+- **store_days_supply**: 21.0 → 4.5 days (reduced initial inventory)
+- **rdc_days_supply**: 28.0 → 7.5 days
+- **customer_dc_days_supply**: 21.0 → 7.5 days
+- **rdc_store_multiplier**: 500.0 → 150.8 (scaled to store count)
+- **ltl_min_cases**: 10 → 100 (improve truck fill rate)
+
+### Technical Notes
+
+The calibration script solves the fundamental equation:
+- **OEE = Actual Production / Theoretical Capacity**
+- For target OEE of 85%, capacity should be ~1.18x demand
+- `production_rate_multiplier = (demand / target_oee) / theoretical_capacity`
+
+With 500 SKUs across 6,030 stores, daily demand is ~21M cases. The base recipe run rates provide 141M cases/day theoretical capacity, requiring a 0.2 multiplier to achieve 85% OEE.
+
+---
+
 ## [0.20.0] - 2026-01-05
 
 ### Death Spiral Fix: Root Cause Resolution

@@ -2,7 +2,7 @@
 
 > **System Prompt Context:** This document contains the critical architectural, functional, and physical constraints of the Prism Sim project. Use this as primary context when reasoning about code changes, bug fixes, or feature expansions.
 
-**Version:** 0.20.0 | **Last Updated:** 2026-01-05
+**Version:** 0.21.0 | **Last Updated:** 2026-01-06
 
 ---
 
@@ -10,7 +10,7 @@
 
 **Name:** Prism Sim
 **Type:** Discrete-Event Simulation (DES) Engine for Supply Chain Digital Twins
-**Scale:** 4,500+ nodes (3 Plants, 8 RDCs, 4,400+ Retail Stores, 10 Suppliers)
+**Scale:** 6,100+ nodes (4 Plants, 4 RDCs, 6,000+ Retail Stores, 50 Suppliers), 500 SKUs
 **Core Philosophy:** **"Supply Chain Physics"** - The simulation adheres to fundamental physical laws (Little's Law, Mass Balance, Capacity Constraints) rather than statistical approximation.
 **Goal:** Generate realistic, high-fidelity supply chain datasets exhibiting emergent behaviors (bullwhip effect, bottlenecks) for benchmarking optimization algorithms.
 
@@ -74,6 +74,12 @@ The simulation enforces these constraints - violations indicate bugs:
 |---------|------|-------------|
 | **Product/SKU generation** | `generators/hierarchy.py` | `ProductGenerator` |
 | **Network topology** | `generators/network.py` | `NetworkGenerator` |
+
+### Scripts
+| Script | Purpose |
+|--------|---------|
+| `scripts/generate_static_world.py` | Generate static world data (products, recipes, nodes, links) |
+| `scripts/calibrate_config.py` | Derive optimal simulation parameters from world definition using physics |
 
 ---
 

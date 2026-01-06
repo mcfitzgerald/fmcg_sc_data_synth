@@ -17,7 +17,7 @@
     "agents": {
       "abc_prioritization": {
         "enabled": true,
-        "a_threshold_pct": 0.80,
+        "a_threshold_pct": 0.8,
         "b_threshold_pct": 0.95,
         "a_rop_multiplier": 1.5,
         "b_rop_multiplier": 1.0,
@@ -96,10 +96,21 @@
         "gamma_scale": 0.1
       },
       "category_profiles": {
-        "ORAL_CARE": { "base_daily_demand": 7.0, "sku_proportion": 0.40 },
-        "PERSONAL_WASH": { "base_daily_demand": 7.0, "sku_proportion": 0.35 },
-        "HOME_CARE": { "base_daily_demand": 7.0, "sku_proportion": 0.25 },
-        "INGREDIENT": { "base_daily_demand": 0.0 }
+        "ORAL_CARE": {
+          "base_daily_demand": 7.0,
+          "sku_proportion": 0.4
+        },
+        "PERSONAL_WASH": {
+          "base_daily_demand": 7.0,
+          "sku_proportion": 0.35
+        },
+        "HOME_CARE": {
+          "base_daily_demand": 7.0,
+          "sku_proportion": 0.25
+        },
+        "INGREDIENT": {
+          "base_daily_demand": 0.0
+        }
       },
       "format_scale_factors": {
         "SUPERMARKET": 1.0,
@@ -139,10 +150,10 @@
     "inventory": {
       "initial_fg_level": 5.0,
       "initialization": {
-        "store_days_supply": 21.0,
-        "rdc_days_supply": 28.0,
-        "rdc_store_multiplier": 500.0,
-        "customer_dc_days_supply": 21.0
+        "store_days_supply": 4.5,
+        "rdc_days_supply": 7.5,
+        "rdc_store_multiplier": 150.8,
+        "customer_dc_days_supply": 7.5
       }
     },
     "logistics": {
@@ -157,7 +168,7 @@
         "B2M_LARGE": {
           "mode": "FTL",
           "min_order_pallets": 20,
-          "target_fill_rate": 0.90
+          "target_fill_rate": 0.9
         },
         "B2M_CLUB": {
           "mode": "FTL",
@@ -167,7 +178,7 @@
         "B2M_DISTRIBUTOR": {
           "mode": "FTL",
           "min_order_pallets": 10,
-          "target_fill_rate": 0.80
+          "target_fill_rate": 0.8
         },
         "ECOMMERCE": {
           "mode": "FTL",
@@ -176,7 +187,7 @@
         }
       },
       "store_delivery_mode": "LTL",
-      "ltl_min_cases": 10,
+      "ltl_min_cases": 100,
       "default_ftl_min_pallets": 10,
       "co2_emission_factor_kg_per_ton_km": 0.1
     },
@@ -193,23 +204,38 @@
         "inventory_cap_dos": 45.0,
         "diagnostics_enabled": true,
         "abc_production_enabled": true,
-        "a_production_buffer": 1.10,
+        "a_production_buffer": 1.1,
         "c_production_factor": 0.6,
         "c_demand_factor": 0.8
       },
       "inventory_policies": {
-        "DEFAULT": { "reorder_point_days": 7.0, "target_days_supply": 14.0 },
-        "INGREDIENT": { "reorder_point_days": 7.0, "target_days_supply": 14.0 },
-        "PACKAGING": { "reorder_point_days": 7.0, "target_days_supply": 14.0 },
-        "ACTIVE_CHEM": { "reorder_point_days": 7.0, "target_days_supply": 14.0 },
-        "SPOF": { "reorder_point_days": 14.0, "target_days_supply": 21.0 }
+        "DEFAULT": {
+          "reorder_point_days": 7.0,
+          "target_days_supply": 14.0
+        },
+        "INGREDIENT": {
+          "reorder_point_days": 7.0,
+          "target_days_supply": 14.0
+        },
+        "PACKAGING": {
+          "reorder_point_days": 7.0,
+          "target_days_supply": 14.0
+        },
+        "ACTIVE_CHEM": {
+          "reorder_point_days": 7.0,
+          "target_days_supply": 14.0
+        },
+        "SPOF": {
+          "reorder_point_days": 14.0,
+          "target_days_supply": 21.0
+        }
       },
       "min_production_qty": 25000.0,
       "min_batch_size_absolute": 1000.0,
       "min_ingredient_moq": 100.0,
       "production_lead_time_days": 3,
       "production_hours_per_day": 24.0,
-      "production_rate_multiplier": 25.0,
+      "production_rate_multiplier": 0.2,
       "changeover_time_multiplier": 0.1,
       "efficiency_factor": 0.95,
       "unplanned_downtime_pct": 0.05,
@@ -219,26 +245,36 @@
         "PLANT-OH": {
           "description": "Legacy plant - upgraded efficiency, still higher downtime",
           "efficiency_factor": 0.78,
-          "unplanned_downtime_pct": 0.10,
-          "supported_categories": ["HOME_CARE"]
+          "unplanned_downtime_pct": 0.1,
+          "supported_categories": [
+            "HOME_CARE"
+          ]
         },
         "PLANT-TX": {
           "description": "Modern high-speed facility (realistic OEE)",
           "efficiency_factor": 0.88,
           "unplanned_downtime_pct": 0.04,
-          "supported_categories": ["ORAL_CARE"]
+          "supported_categories": [
+            "ORAL_CARE"
+          ]
         },
         "PLANT-CA": {
           "description": "Flexible multi-category facility",
           "efficiency_factor": 0.82,
           "unplanned_downtime_pct": 0.06,
-          "supported_categories": ["ORAL_CARE", "PERSONAL_WASH"]
+          "supported_categories": [
+            "ORAL_CARE",
+            "PERSONAL_WASH"
+          ]
         },
         "PLANT-GA": {
           "description": "Standard facility",
-          "efficiency_factor": 0.80,
+          "efficiency_factor": 0.8,
           "unplanned_downtime_pct": 0.07,
-          "supported_categories": ["PERSONAL_WASH", "HOME_CARE"]
+          "supported_categories": [
+            "PERSONAL_WASH",
+            "HOME_CARE"
+          ]
         }
       },
       "default_yield_percent": 98.5,
@@ -262,29 +298,41 @@
       }
     },
     "validation": {
-      "oee_range": [0.65, 0.85],
+      "oee_range": [
+        0.65,
+        0.85
+      ],
       "truck_fill_target": 0.85,
-      "slob_max_pct": 0.30,
+      "slob_max_pct": 0.3,
       "slob_days_threshold": 60.0,
-      "inventory_turns_range": [6.0, 14.0],
-      "cost_per_case_range": [1.00, 3.00],
+      "inventory_turns_range": [
+        6.0,
+        14.0
+      ],
+      "cost_per_case_range": [
+        1.0,
+        3.0
+      ],
       "mass_balance_drift_max": 0.02,
       "mass_balance_min_threshold": 1.0,
       "min_samples_for_variance": 2,
-      "perfect_order_threshold": 0.90,
-      "mape_base": 0.30,
+      "perfect_order_threshold": 0.9,
+      "mape_base": 0.3,
       "mape_quirks_penalty": 0.15
     },
     "quirks": {
       "port_congestion": {
         "enabled": false,
-        "ar_coefficient": 0.70,
+        "ar_coefficient": 0.7,
         "noise_std_hours": 2.0,
         "cluster_threshold_hours": 4.0,
         "cluster_size": 3,
         "cluster_delay_min_hours": 2.0,
         "cluster_delay_max_hours": 6.0,
-        "affected_ports": ["USLAX", "CNSHA"]
+        "affected_ports": [
+          "USLAX",
+          "CNSHA"
+        ]
       },
       "optimism_bias": {
         "enabled": false,
@@ -335,7 +383,9 @@
             "delay_multiplier": 4.0,
             "delay_distribution": "gamma",
             "gamma_shape": 2.0,
-            "affected_ports": ["USLAX"]
+            "affected_ports": [
+              "USLAX"
+            ]
           }
         },
         {
@@ -345,7 +395,7 @@
           "duration_days": 30,
           "parameters": {
             "target_supplier": "SUP-001",
-            "degraded_otd_rate": 0.40
+            "degraded_otd_rate": 0.4
           }
         },
         {

@@ -11,7 +11,7 @@
       "rdcs": 4,
       "plants": 4,
       "suppliers": 50,
-      "skus": 50
+      "skus": 500
     },
     "fixed_nodes": {
       "rdcs": [
