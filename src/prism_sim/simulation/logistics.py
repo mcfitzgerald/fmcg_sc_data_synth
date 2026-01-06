@@ -99,7 +99,14 @@ class LogisticsEngine:
         immediately without pallet minimum - stores receive smaller deliveries.
         """
         # 1. Combine new orders with held orders
-        active_orders = self.held_orders + orders
+        # v0.20.0: Filter out stale held orders to prevent unbounded accumulation
+        # Orders held longer than 14 days are discarded (route likely not serviceable)
+        stale_threshold_days = 14
+        fresh_held_orders = [
+            o for o in self.held_orders
+            if current_day - o.creation_day <= stale_threshold_days
+        ]
+        active_orders = fresh_held_orders + orders
         self.held_orders = []  # Reset, will repopulate with remaining
 
         # 2. Group by Route (Source -> Target)
@@ -191,16 +198,16 @@ class LogisticsEngine:
                     source_id, target_id, current_day, arrival_day, shipment_counter, earliest_order_day
                 )
                 shipment_counter += 1
-                
+
                 # Bulk add lines
                 shipment.lines = valid_lines
                 shipment.total_weight_kg = route_weight
                 shipment.total_volume_m3 = route_volume
-                
+
                 # Emissions
                 dist = link.distance_km if link else 0.0
                 shipment.emissions_kg = self._calculate_emissions(shipment, dist)
-                
+
                 new_shipments.append(shipment)
                 continue
             # --------------------------------------------

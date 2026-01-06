@@ -5,6 +5,55 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.20.0] - 2026-01-05
+
+### Death Spiral Fix: Root Cause Resolution
+
+This release fixes the "death spiral" issue that caused production to collapse from 7M to 3.5M cases/day and service levels to drop below 85%. The simulation now runs stably for 90+ days with 500 SKUs.
+
+### Root Cause Analysis
+
+Three interrelated issues caused the death spiral:
+
+1. **SLOB Throttling Override:** The SLOB (Slow/Obsolete) throttling logic in MRP was applied AFTER the ABC production floors, allowing it to override safety minimums and crash production when DOS appeared high.
+
+2. **Raw Material Starvation:** Plants ran out of specific ingredients (ACT-CHEM-003, PKG-CAP-003) because initial inventory (5M per ingredient) was insufficient, and the ingredient supply chain wasn't replenishing fast enough.
+
+3. **Production Order Backlog Explosion:** Unfulfilled production orders accumulated unboundedly (164M requested vs 6M produced by Day 90), hiding actual production capacity issues.
+
+### Fixed
+
+- **MRP Floor Priority** (`mrp.py:840-857`): Moved SLOB throttling BEFORE the ABC production floor so the floor acts as an absolute safety net. Production floors (A=90%, B=80%, C=70% of expected demand) are now always respected.
+
+- **Plant Ingredient Inventory** (`orchestrator.py:324-336`): Increased initial plant ingredient inventory from 5M to 50M per ingredient type to provide 90+ day buffer while MRP ingredient ordering catches up.
+
+- **Production Order Timeout** (`orchestrator.py:475-483`): Added 14-day timeout for stale production orders. Orders that can't be fulfilled within 14 days are dropped to prevent unbounded backlog accumulation. MRP regenerates if demand persists.
+
+- **Order Demand Signal** (`mrp.py:920-940`): Made order-based demand the primary MRP signal (replacing shipment-based), with expected demand as floor to prevent signal collapse during constrained periods.
+
+- **Held Order Timeout** (`logistics.py:101-110`): Added 14-day timeout for held logistics orders to prevent unbounded accumulation.
+
+- **Pending Order Deduplication** (`replenishment.py:206-210, 1019-1075`): Added tracking to prevent stores from generating duplicate orders for SKUs already awaiting fulfillment.
+
+- **Batch Memory Cleanup** (`orchestrator.py:485-491`): Added 30-day retention limit for completed batches to prevent unbounded memory growth.
+
+### Results
+
+| Metric | Before Fix | After Fix (30d) | After Fix (90d) |
+|--------|------------|-----------------|-----------------|
+| Service Level | 83% → crashed | **95.86%** | **90.50%** |
+| Production | 7M → 3.5M/day | **7M stable** | **6M stable** |
+| OEE | 68% | **91.3%** | **89.9%** |
+| Truck Fill Rate | 47% | **76.0%** | **53.6%** |
+
+### Technical Notes
+
+- The ingredient supply chain needs long-term improvement in MRP ordering logic to maintain supply without relying on large initial buffers.
+- Production order timeout prevents backlog explosion but means some demand may be temporarily unfulfilled during constrained periods.
+- The 500 SKU scale is now stable for 90+ day runs, suitable for virt-graph stress testing.
+
+---
+
 ## [0.19.16] - 2026-01-05
 
 ### Performance Optimizations & Death Spiral Diagnosis

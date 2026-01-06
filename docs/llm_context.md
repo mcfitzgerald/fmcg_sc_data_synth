@@ -2,7 +2,7 @@
 
 > **System Prompt Context:** This document contains the critical architectural, functional, and physical constraints of the Prism Sim project. Use this as primary context when reasoning about code changes, bug fixes, or feature expansions.
 
-**Version:** 0.19.11 | **Last Updated:** 2026-01-04
+**Version:** 0.20.0 | **Last Updated:** 2026-01-05
 
 ---
 
@@ -113,6 +113,38 @@ Every `tick()` (1 day) in `Orchestrator._run_day()`:
 10. POST-QUIRKS  → Apply logistics delays/congestion (QuirkManager)
 11. MONITORING   → PhysicsAuditor validates mass balance, records KPIs
 ```
+
+---
+
+## 5.1 Death Spiral Safeguards (v0.20.0)
+
+The simulation has multiple safeguards to prevent feedback loops that collapse production:
+
+### MRP Production Floors
+ABC-based minimum production floors ensure demand is met regardless of inventory signals:
+- **A-Items:** 90% of expected demand (absolute minimum)
+- **B-Items:** 80% of expected demand
+- **C-Items:** 70% of expected demand
+
+**Critical:** SLOB throttling is applied BEFORE floors, so floors always win.
+
+### Timeout Mechanisms
+To prevent unbounded accumulation:
+- **Production Orders:** 14-day timeout (stale orders dropped, MRP regenerates)
+- **Held Logistics Orders:** 14-day timeout (FTL consolidation doesn't block indefinitely)
+- **Pending Replenishment Orders:** 14-day timeout (allows retry after failed fulfillment)
+- **Completed Batches:** 30-day retention (memory cleanup)
+
+### Demand Signal Priority
+MRP uses order-based demand (not shipment-based) as primary signal, with expected demand as floor:
+```python
+# mrp.py: record_order_demand()
+daily_vol = np.maximum(daily_vol, self.expected_daily_demand)  # Floor
+daily_vol = np.minimum(daily_vol, self.expected_daily_demand * 4.0)  # Cap
+```
+
+### Initial Inventory Buffers
+Plants are seeded with 50M units per ingredient type (~90 days buffer) to allow production stability while ingredient ordering catches up.
 
 ---
 

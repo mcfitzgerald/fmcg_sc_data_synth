@@ -322,12 +322,17 @@ class Orchestrator:
                         self.state.actual_inventory[node_idx, :] = dc_levels
 
             # Seed raw materials at Plants
+            # v0.20.0: Sized for ~120 days supply to ensure 90-day production stability.
+            # Some ingredients are consumed much faster due to recipe clustering.
+            # Using 50M per ingredient to provide sufficient buffer for high-demand
+            # ingredients while MRP ingredient ordering catches up.
+            # NOTE: Long-term fix needed in MRP ingredient ordering to maintain supply.
             elif node.type == NodeType.PLANT:
                 node_idx = self.state.node_id_to_idx.get(node_id)
                 if node_idx is not None:
                     for product in self.world.products.values():
                         if product.category == ProductCategory.INGREDIENT:
-                            qty = initial_plant_inv.get(product.id, 5000000.0)
+                            qty = initial_plant_inv.get(product.id, 50000000.0)
                             self.state.update_inventory(node_id, product.id, qty)
 
     def _build_finished_goods_mask(self) -> np.ndarray:
@@ -414,6 +419,12 @@ class Orchestrator:
         # This prevents bullwhip cascade by using actual outflow as demand
         self.replenisher.record_outflow(allocation_result.allocation_matrix)
 
+        # v0.20.0: Pending Order Deduplication
+        # Track which orders were fulfilled vs unfulfilled to prevent duplicate ordering
+        self.replenisher.expire_stale_pending_orders(day, timeout_days=14)
+        self.replenisher.record_fulfilled_orders(allocated_orders)
+        self.replenisher.record_unfulfilled_orders(raw_orders, allocated_orders, day)
+
         # 5. Logistics (Milestone 4.2)
         new_shipments = self.logistics.create_shipments(allocated_orders, day)
         self._apply_logistics_quirks_and_risks(new_shipments)
@@ -460,6 +471,24 @@ class Orchestrator:
             o for o in updated_orders if o.status.value != "complete"
         ]
         self.completed_batches.extend(new_batches)
+
+        # v0.20.0: Production order cleanup - remove stale orders
+        # Orders that haven't been fulfilled within 14 days are likely blocked
+        # (material shortage, capacity issues) and should be dropped to prevent
+        # unbounded backlog accumulation. MRP will regenerate if demand persists.
+        production_order_timeout = 14
+        self.active_production_orders = [
+            o for o in self.active_production_orders
+            if day - o.creation_day <= production_order_timeout
+        ]
+
+        # v0.20.0: Memory cleanup - only retain recent batches for traceability
+        # Keep last 30 days of batches, discard older ones to prevent unbounded growth
+        batch_retention_days = 30
+        self.completed_batches = [
+            b for b in self.completed_batches
+            if day - b.production_day <= batch_retention_days
+        ]
 
         # 10. Ship finished goods from Plants to RDCs
         plant_shipments = self._create_plant_shipments(new_batches, day)

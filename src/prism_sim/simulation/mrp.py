@@ -496,8 +496,12 @@ class MRPEngine:
         floor_applied = False
         cap_applied = False
 
-        # 1. Update Demand History with daily shipment volume (The "Lumpy" Signal)
-        self._update_demand_history(current_day, rdc_shipments)
+        # v0.20.0: Use order-based signal as primary (prevents death spiral)
+        # Shipment signal removed - orders (recorded via record_order_demand()) are
+        # the primary demand signal. Shipments collapse when constrained, but orders
+        # reflect true demand. The fallback logic below (lines 520-538) is kept as
+        # a safety net in case order signal also collapses.
+        # OLD: self._update_demand_history(current_day, rdc_shipments)
 
         # Calculate Moving Average Demand from order/shipment history
         avg_daily_demand_vec = np.mean(self.demand_history, axis=0)
@@ -784,7 +788,7 @@ class MRPEngine:
 
             if abc == 0:  # A-item: Fast response, high service target
                 # Target DOS for A-items: 14-21 days
-                target_dos = 17.0  # noqa: PLR2004
+                target_dos = 17.0
                 if dos_position < 10:  # noqa: PLR2004
                     # Critical low - aggressive catch-up (130% of demand)
                     production_qty = actual_demand * 1.3
@@ -800,7 +804,7 @@ class MRPEngine:
 
             elif abc == 1:  # B-item: Balanced response
                 # Target DOS for B-items: 21 days
-                target_dos = 21.0  # noqa: PLR2004
+                target_dos = 21.0
                 if dos_position < 14:  # noqa: PLR2004
                     # Low - catch-up (110% of demand)
                     production_qty = actual_demand * 1.1
@@ -813,7 +817,7 @@ class MRPEngine:
 
             else:  # C-item: Slow response, let inventory self-correct
                 # Target DOS for C-items: 28 days (we can afford more buffer)
-                target_dos = 28.0  # noqa: PLR2004
+                target_dos = 28.0
                 if dos_position < 14:  # noqa: PLR2004
                     # Low - match demand (no aggressive catch-up for C)
                     production_qty = actual_demand
@@ -830,7 +834,17 @@ class MRPEngine:
             # ============================================================
             # SAFETY BOUNDS
             # ============================================================
-            # Floor: Differentiated by ABC class
+            # v0.20.0: SLOB throttling applied FIRST, then floor (floor is absolute)
+            # This prevents SLOB from overriding safety floors and causing starvation
+
+            # SLOB Throttling - apply BEFORE floor so floor always wins
+            # Only throttle in extreme SLOB territory (90+ DOS = 3 months inventory)
+            if dos_position > 90.0:  # noqa: PLR2004
+                production_qty = min(production_qty, actual_demand * 0.7)
+            elif dos_position > 75.0:  # noqa: PLR2004
+                production_qty = min(production_qty, actual_demand * 0.85)
+
+            # Floor: Differentiated by ABC class (ABSOLUTE - never produce below this)
             # PERF FIX: Raised floors to prevent production starvation
             # A-items: 90% floor (critical availability)
             # B-items: 80% floor
@@ -841,13 +855,6 @@ class MRPEngine:
 
             # Cap: Never produce more than 150% of expected (prevent runaway)
             production_qty = min(production_qty, expected_demand * 1.5)
-
-            # SLOB Throttling Override - RELAXED to prevent starvation
-            # Only throttle in extreme SLOB territory (90+ DOS = 3 months inventory)
-            if dos_position > 90.0:  # noqa: PLR2004
-                production_qty = min(production_qty, actual_demand * 0.7)
-            elif dos_position > 75.0:  # noqa: PLR2004
-                production_qty = min(production_qty, actual_demand * 0.85)
 
             order_qty = production_qty
 
@@ -897,15 +904,15 @@ class MRPEngine:
 
     def record_order_demand(self, orders: list[Order]) -> None:
         """
-        v0.15.9: Record order-based demand signal (pre-allocation).
+        v0.20.0: Record order-based demand as PRIMARY signal.
 
         This captures the TRUE demand signal - what customer DCs requested from
-        RDCs, before allocation constrains it. Used to prevent demand signal
-        attenuation when DCs are short on inventory.
+        RDCs, before allocation constrains it. Orders reflect actual demand
+        while shipments collapse when inventory is constrained.
 
-        Unlike shipment-based demand (what was shipped), order-based demand
-        reflects what was actually needed. This creates a stronger, more accurate
-        signal for production planning.
+        v0.20.0 CHANGE: This is now the PRIMARY signal for MRP (not blended).
+        The shipment-based update was removed to prevent death spiral where
+        low shipments → low production → lower shipments.
 
         Args:
             orders: Orders to RDCs (source_id is RDC, target_id is customer DC)
@@ -923,12 +930,15 @@ class MRPEngine:
             max_signal = self.expected_daily_demand * 4.0
             daily_vol = np.minimum(daily_vol, max_signal)
 
-        # Blend with existing history - use max to not lose shipment signal
-        # This ensures we capture the higher of (orders, shipments) as demand
-        current_slot = (self._history_ptr - 1) % 14
-        self.demand_history[current_slot] = np.maximum(
-            self.demand_history[current_slot], daily_vol
-        )
+            # v0.20.0: Also use expected demand as FLOOR to prevent death spiral
+            # Order signal can collapse due to deduplication or allocation constraints
+            # Expected demand ensures production matches at least baseline needs
+            daily_vol = np.maximum(daily_vol, self.expected_daily_demand)
+
+        # v0.20.0: REPLACE slot directly (no blending with shipments)
+        # This is now the primary signal - advance pointer after writing
+        self.demand_history[self._history_ptr] = daily_vol
+        self._history_ptr = (self._history_ptr + 1) % 14
 
     def _estimate_demand(self, product_idx: int, daily_demand: np.ndarray) -> float:
         """

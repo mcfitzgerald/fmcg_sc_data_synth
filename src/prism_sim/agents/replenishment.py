@@ -203,6 +203,12 @@ class MinMaxReplenisher:
                 if p_idx is not None:
                     self.ingredient_mask[p_idx] = True
 
+        # v0.20.0: Pending Order Deduplication
+        # Tracks orders awaiting fulfillment to prevent duplicate ordering
+        # Key: (source_id, target_id, product_id) -> (quantity, creation_day)
+        # Orders expire after 14 days to allow retry with fresh calculations
+        self.pending_orders: dict[tuple[str, str, str], tuple[float, int]] = {}
+
     def record_lead_time(self, target_id: str, source_id: str, lead_time_days: float) -> None:
         """
         Record a realized lead time for a specific link.
@@ -931,6 +937,17 @@ class MinMaxReplenisher:
             t_idx = int(target_indices[r])
             p_idx = int(c)
 
+            # v0.20.0: Deduplication check - skip if pending order exists
+            target_id = target_ids[r]
+            source_id = self.store_supplier_map.get(target_id)
+            p_id = self.state.product_idx_to_id[p_idx]
+
+            if source_id:
+                pending_key = (source_id, target_id, p_id)
+                if pending_key in self.pending_orders:
+                    # Skip - already have pending order for this route/product
+                    continue
+
             if t_idx not in orders_by_target:
                 orders_by_target[t_idx] = {
                     "lines": [],
@@ -938,7 +955,6 @@ class MinMaxReplenisher:
                     "promo_id": None
                 }
 
-            p_id = self.state.product_idx_to_id[p_idx]
             orders_by_target[t_idx]["lines"].append(OrderLine(p_id, qty))
 
             # Check days supply for Rush classification
@@ -1005,3 +1021,65 @@ class MinMaxReplenisher:
             ))
 
         return orders
+
+    # =========================================================================
+    # v0.20.0: Pending Order Deduplication Methods
+    # =========================================================================
+
+    def record_fulfilled_orders(self, allocated_orders: list[Order]) -> None:
+        """
+        Remove fulfilled orders from pending tracking.
+
+        Called after allocation to clear orders that were successfully allocated.
+        This allows the store to generate new orders on the next cycle if still
+        below reorder point (with fresh quantity calculations).
+        """
+        for order in allocated_orders:
+            for line in order.lines:
+                key = (order.source_id, order.target_id, line.product_id)
+                self.pending_orders.pop(key, None)
+
+    def record_unfulfilled_orders(
+        self,
+        raw_orders: list[Order],
+        allocated_orders: list[Order],
+        current_day: int,
+    ) -> None:
+        """
+        Track orders that weren't fulfilled for deduplication.
+
+        Orders that failed allocation are added to pending_orders to prevent
+        duplicate ordering on the next cycle. The store will not generate a
+        new order for the same (source, target, product) while one is pending.
+        """
+        allocated_ids = {o.id for o in allocated_orders}
+        for order in raw_orders:
+            if order.id not in allocated_ids:
+                # This order was not allocated (source had no inventory)
+                for line in order.lines:
+                    key = (order.source_id, order.target_id, line.product_id)
+                    # Only add if not already tracked (preserve original creation day)
+                    if key not in self.pending_orders:
+                        self.pending_orders[key] = (line.quantity, current_day)
+
+    def expire_stale_pending_orders(
+        self, current_day: int, timeout_days: int = 14
+    ) -> None:
+        """
+        Remove pending orders older than timeout to allow retry.
+
+        After timeout_days, a pending order is considered stale and removed.
+        This allows the store to generate a fresh order with recalculated
+        quantities based on current inventory position.
+
+        Args:
+            current_day: Current simulation day
+            timeout_days: Days after which pending orders expire (default 14)
+        """
+        stale_keys = [
+            key
+            for key, (qty, created) in self.pending_orders.items()
+            if current_day - created > timeout_days
+        ]
+        for key in stale_keys:
+            del self.pending_orders[key]
