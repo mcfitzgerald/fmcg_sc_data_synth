@@ -236,6 +236,8 @@ class PhysicsAuditor:
         self.mass_balance_drift_max = config.get("mass_balance_drift_max", 0.02)
         self.mass_balance_min_threshold = config.get("mass_balance_min_threshold", 1.0)
         self.all_violations: list[str] = []
+        # v0.21.0: Cap violations list to prevent memory growth in long runs
+        self._max_violations = config.get("max_violations_tracked", 1000)
 
         self.current_flows: DailyFlows | None = None
 
@@ -401,7 +403,9 @@ class PhysicsAuditor:
                     f"Drift={drift[node_idx, prod_idx]*100:.2f}%"
                 )
                 violations.append(msg)
-                self.all_violations.append(msg)
+                # v0.21.0: Cap all_violations to prevent memory growth
+                if len(self.all_violations) < self._max_violations:
+                    self.all_violations.append(msg)
 
         return violations
 

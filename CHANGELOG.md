@@ -5,6 +5,51 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.22.0] - 2026-01-06
+
+### Memory Explosion Fix: Real-World Replenishment Model
+
+This release fixes the memory explosion issue that caused 365-day runs to crash with 33GB+ memory usage. The fix aligns the replenishment model with how real retail systems (Walmart, Target) actually work.
+
+### Root Cause Analysis
+
+The `pending_orders` dictionary in `MinMaxReplenisher` tracked every unfulfilled order by `(source_id, target_id, product_id)` tuple. With 6,000 stores and 500 SKUs, this could grow to **3M+ entries** (420MB+) during stockout scenarios.
+
+**Key insight from research**: Real retail systems like Walmart's Retail Link don't track pending orders per-SKU. Instead, they:
+1. Use **Inventory Position** (on-hand + in-transit) for reorder decisions
+2. Recalculate requirements fresh each cycle
+3. Generate consolidated orders at the warehouse level, not per-SKU
+
+### Removed
+
+- **`pending_orders` dict** (`replenishment.py`): Removed the dictionary that tracked unfulfilled orders per (source, target, product) combination
+- **`record_fulfilled_orders()`**: Removed - no longer needed
+- **`record_unfulfilled_orders()`**: Removed - no longer needed
+- **`expire_stale_pending_orders()`**: Removed - no longer needed
+- **Deduplication check in `generate_orders()`**: Removed the `pending_key in self.pending_orders` check
+
+### Changed
+
+- **`all_violations` list** (`monitor.py`): Now capped at 1,000 entries (configurable via `max_violations_tracked`) to prevent unbounded growth
+
+### Technical Notes
+
+The Inventory Position logic at `replenishment.py:727` already correctly prevents double-ordering:
+```python
+inventory_position = on_hand_inv + in_transit_inv  # Line 727
+needs_order = inventory_position < reorder_point   # Line 849
+```
+
+If a shipment is in-transit, it's counted in `in_transit_inv`, preventing duplicate orders without needing a separate tracking dictionary.
+
+### References
+
+- [Walmart Retail Link](https://supplierwiki.supplypike.com/articles/retail-link-how-does-it-help)
+- [Walmart Real-Time Replenishment with Kafka](https://www.confluent.io/blog/how-walmart-uses-kafka-for-real-time-omnichannel-replenishment/)
+- [Walmart National PO Program](https://supplierwiki.supplypike.com/articles/what-is-walmarts-national-po-program)
+
+---
+
 ## [0.21.0] - 2026-01-06
 
 ### SKU Scale Expansion & Config Calibration

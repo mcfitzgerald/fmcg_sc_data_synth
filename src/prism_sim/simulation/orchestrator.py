@@ -419,11 +419,9 @@ class Orchestrator:
         # This prevents bullwhip cascade by using actual outflow as demand
         self.replenisher.record_outflow(allocation_result.allocation_matrix)
 
-        # v0.20.0: Pending Order Deduplication
-        # Track which orders were fulfilled vs unfulfilled to prevent duplicate ordering
-        self.replenisher.expire_stale_pending_orders(day, timeout_days=14)
-        self.replenisher.record_fulfilled_orders(allocated_orders)
-        self.replenisher.record_unfulfilled_orders(raw_orders, allocated_orders, day)
+        # v0.21.0: Removed pending order tracking (memory explosion fix)
+        # Real retail systems use Inventory Position for reorder decisions,
+        # not per-SKU pending order tracking. See replenishment.py for details.
 
         # 5. Logistics (Milestone 4.2)
         new_shipments = self.logistics.create_shipments(allocated_orders, day)
