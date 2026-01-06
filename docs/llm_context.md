@@ -2,7 +2,7 @@
 
 > **System Prompt Context:** This document contains the critical architectural, functional, and physical constraints of the Prism Sim project. Use this as primary context when reasoning about code changes, bug fixes, or feature expansions.
 
-**Version:** 0.21.0 | **Last Updated:** 2026-01-06
+**Version:** 0.22.0 | **Last Updated:** 2026-01-06
 
 ---
 
@@ -489,6 +489,38 @@ def generate_purchase_orders(
 - Added minimum absolute difference threshold (1.0 case) to filter floating-point noise
 
 **Result:** No false mass balance violations at customer DCs. Audit now correctly tracks inventory changes.
+
+### Production Death Spiral (v0.22.0 - IN PROGRESS)
+**Status:** UNDER INVESTIGATION
+
+**Symptom:** 365-day simulation shows production declining from 8.8M to 4.3M cases/day (51% drop) over time, even after memory fix.
+
+**Root Causes Identified:**
+
+1. **Changeover Time Accumulation:** With 500 SKUs and daily production orders for ALL of them, changeover time exceeds daily capacity:
+   - 500 SKUs × 0.05 hours changeover each = 25 hours/day lost to changeovers
+   - Daily capacity is only ~20 hours effective
+   - TransformEngine processes orders sorted by plant/ABC/product, but with 500 daily orders, switches are inevitable
+
+2. **POS-Demand Feedback Loop:** When stores stock out, POS drops → MRP reduces production → stores stock out more → POS drops further
+
+3. **Capacity Calculation Bug (FIXED):** `_calculate_max_daily_capacity()` was not including `production_rate_multiplier`
+
+**Attempted Fixes (v0.22.0):**
+- Added `sustainable_daily_demand` vector (capacity-aware)
+- Capped total production orders at 95% of capacity
+- Removed blanket 70% production floors for B/C items
+- Floors now only apply when DOS < 7 days
+
+**Proposed Solutions (Not Yet Implemented):**
+1. **Production Batching:** Produce multi-day quantities per SKU, then switch. Reduces changeovers.
+2. **SKU Limit per Day:** Only produce N SKUs/day, cycle through portfolio over time.
+3. **DOS-Triggered Production:** Use inventory position/DOS as primary signal, not POS demand.
+4. **Changeover Time Reduction:** Reduce `changeover_time_multiplier` or implement campaign batching in TransformEngine.
+
+**Key Files:**
+- `simulation/mrp.py`: `_generate_rate_based_orders()`, `_build_sustainable_demand_vector()`
+- `simulation/transform.py`: `_process_single_order()` (changeover logic at lines 300-313)
 
 ---
 

@@ -129,7 +129,11 @@ def calculate_plant_capacity(
     """
     Calculate theoretical plant capacity from configuration.
 
-    Capacity = sum over plants of (hours × efficiency × sum of run_rates for supported SKUs)
+    Each plant has ONE production line that can produce one SKU at a time.
+    The production_rate_multiplier scales this to simulate multiple lines.
+
+    Capacity per plant = effective_hours × avg_run_rate (for ONE line)
+    Total capacity = sum of plant capacities × multiplier
     """
     sim_params = sim_config.get("simulation_parameters", {})
     mfg_config = sim_params.get("manufacturing", {})
@@ -150,22 +154,28 @@ def calculate_plant_capacity(
         plant_efficiency = params.get("efficiency_factor", efficiency)
         plant_downtime = params.get("unplanned_downtime_pct", downtime)
 
-        # Sum run rates for all SKUs in supported categories
-        total_run_rate = 0.0
+        # Get AVERAGE run rate for supported SKUs (not sum!)
+        # A plant can only produce ONE SKU at a time, so we use avg rate per line
+        run_rates = []
         for cat in supported_cats:
             for product_id in products_by_category.get(cat, []):
-                total_run_rate += recipe_rates.get(product_id, 0.0)
+                rate = recipe_rates.get(product_id, 0.0)
+                if rate > 0:
+                    run_rates.append(rate)
 
-        # Theoretical capacity = hours × run_rate × efficiency × (1 - downtime)
-        # Note: run_rate is cases/hour, so this gives cases/day
+        avg_run_rate = sum(run_rates) / len(run_rates) if run_rates else 0.0
+
+        # Theoretical capacity = hours × avg_run_rate × efficiency × (1 - downtime)
+        # This is capacity for ONE production line at this plant
         effective_hours = hours_per_day * plant_efficiency * (1 - plant_downtime)
-        plant_capacity = effective_hours * total_run_rate
+        plant_capacity = effective_hours * avg_run_rate
 
         plant_capacities[plant_id] = {
             "supported_categories": supported_cats,
-            "total_run_rate_per_hour": total_run_rate,
+            "avg_run_rate_per_hour": avg_run_rate,
+            "n_supported_skus": len(run_rates),
             "effective_hours": effective_hours,
-            "theoretical_capacity": plant_capacity,
+            "theoretical_capacity_per_line": plant_capacity,
         }
         total_theoretical_capacity += plant_capacity
 
@@ -173,7 +183,7 @@ def calculate_plant_capacity(
         "hours_per_day": hours_per_day,
         "current_multiplier": current_multiplier,
         "plant_capacities": plant_capacities,
-        "total_theoretical_capacity": total_theoretical_capacity,
+        "total_theoretical_capacity": total_theoretical_capacity,  # For 1 line per plant
         "total_with_multiplier": total_theoretical_capacity * current_multiplier,
     }
 
@@ -269,16 +279,17 @@ def print_report(
         print(f"  {cat}: {demand:,.0f} cases/day")
     print(f"\nTOTAL DAILY DEMAND: {demand_analysis['total_daily_demand']:,.0f} cases/day")
 
-    print("\n--- CAPACITY ANALYSIS ---")
-    print(f"Base Theoretical Capacity: {capacity_analysis['total_theoretical_capacity']:,.0f} cases/day")
+    print("\n--- CAPACITY ANALYSIS (per line, before multiplier) ---")
+    print(f"Base Capacity (1 line/plant): {capacity_analysis['total_theoretical_capacity']:,.0f} cases/day")
     print(f"Current Multiplier: {capacity_analysis['current_multiplier']}x")
     print(f"Current Effective Capacity: {capacity_analysis['total_with_multiplier']:,.0f} cases/day")
-    print(f"\nPlant Breakdown:")
+    print(f"\nPlant Breakdown (1 line each):")
     for plant_id, cap in capacity_analysis["plant_capacities"].items():
         print(f"  {plant_id}:")
         print(f"    Categories: {', '.join(cap['supported_categories'])}")
-        print(f"    Run Rate: {cap['total_run_rate_per_hour']:,.0f} cases/hr")
-        print(f"    Daily Capacity: {cap['theoretical_capacity']:,.0f} cases")
+        print(f"    Avg Run Rate: {cap['avg_run_rate_per_hour']:,.0f} cases/hr")
+        print(f"    SKUs Supported: {cap['n_supported_skus']}")
+        print(f"    Daily Capacity/Line: {cap['theoretical_capacity_per_line']:,.0f} cases")
 
     print("\n--- CURRENT STATE ---")
     analysis = recommendations["analysis"]

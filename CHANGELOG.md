@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.22.0] - 2026-01-06
 
+### Death Spiral Investigation (WIP)
+
+After fixing the memory explosion, a production decline "death spiral" was identified where production drops from 8.8M to 4.3M cases/day over 365 days (51% decline).
+
+#### Root Cause Analysis (In Progress)
+
+The death spiral has multiple contributing factors:
+
+1. **Capacity Calculation Bug** (FIXED): `_calculate_max_daily_capacity()` was not including `production_rate_multiplier`, causing sustainable_demand to be incorrectly calculated.
+
+2. **Changeover Time Accumulation**: With 500 SKUs and daily production orders for ALL of them, changeover time exceeds daily capacity:
+   - 500 SKUs × 0.05 hours changeover each = 25 hours/day lost to changeovers
+   - Daily capacity is only ~20 hours effective
+
+3. **POS-Demand Feedback Loop**: When stores stock out, POS drops → production drops → stores stock out more → POS drops further
+
+#### Changes Made
+
+- **`_calculate_max_daily_capacity()`** (`mrp.py`): Now includes `production_rate_multiplier` in capacity calculation
+- **`_build_sustainable_demand_vector()`** (`mrp.py`): New method calculates capacity-aware demand that respects plant capacity
+- **`_generate_rate_based_orders()`** (`mrp.py`):
+  - Uses `sustainable_daily_demand` for floor calculations
+  - Caps total production orders at 95% of capacity
+  - Floors now only apply when DOS < 7 (critical shortage)
+  - Removed blanket 70% floors for B/C items
+
+#### Status
+
+The death spiral is NOT YET FULLY RESOLVED. Production still declines from 8.8M to 4.3M over 365 days. Further investigation needed:
+- Consider batching production (produce multi-day quantities per SKU)
+- Consider limiting number of SKUs produced per day
+- Consider DOS-triggered production regardless of POS signal
+
 ### Memory Explosion Fix: Real-World Replenishment Model
 
 This release fixes the memory explosion issue that caused 365-day runs to crash with 33GB+ memory usage. The fix aligns the replenishment model with how real retail systems (Walmart, Target) actually work.

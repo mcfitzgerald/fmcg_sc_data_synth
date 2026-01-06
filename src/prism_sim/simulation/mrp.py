@@ -148,6 +148,13 @@ class MRPEngine:
         # C.1 FIX: Cache expected daily demand for fallback (prevents death spiral)
         self._build_expected_demand_vector()
 
+        # v0.22.0: Calculate sustainable demand (capacity-aware)
+        # DEATH SPIRAL FIX: When expected demand exceeds plant capacity,
+        # MRP floors must be scaled down to match what plants can actually produce.
+        # Otherwise, production orders pile up, changeovers increase, and
+        # actual throughput drops - creating a death spiral.
+        self._build_sustainable_demand_vector()
+
         # Demand history for moving average [Products]
         # v0.15.6: Extended from 7 to 14 days for smoother signal
         # v0.19.9: Warm start with expected demand to prevent Day 1 dip
@@ -273,6 +280,45 @@ class MRPEngine:
             # Expected demand = base per store * number of stores
             self.expected_daily_demand[p_idx] = base_demand * n_stores
 
+    def _build_sustainable_demand_vector(self) -> None:
+        """
+        v0.22.0: Calculate sustainable demand that respects plant capacity.
+
+        DEATH SPIRAL ROOT CAUSE:
+        When expected_daily_demand exceeds plant capacity, MRP floors
+        (70-90% of expected) create impossible production targets.
+        Example: 21M expected demand × 0.8 floor = 16.8M requested,
+        but plants can only produce 8-9M. The backlog accumulates,
+        causing more changeovers and less actual production time.
+
+        FIX: Scale expected demand proportionally when it exceeds capacity.
+        This ensures MRP never requests more than plants can deliver.
+        """
+        total_expected = np.sum(self.expected_daily_demand)
+
+        if total_expected > 0 and self._max_daily_capacity > 0:
+            capacity_ratio = self._max_daily_capacity / total_expected
+
+            if capacity_ratio < 1.0:
+                # Capacity is less than expected demand - scale down
+                self.sustainable_daily_demand = (
+                    self.expected_daily_demand * capacity_ratio
+                )
+                print(
+                    f"MRPEngine: Capacity constraint detected!\n"
+                    f"  Expected demand: {total_expected:,.0f} cases/day\n"
+                    f"  Plant capacity:  {self._max_daily_capacity:,.0f} cases/day\n"
+                    f"  Capacity ratio:  {capacity_ratio:.1%}\n"
+                    f"  Sustainable demand scaled to: "
+                    f"{np.sum(self.sustainable_daily_demand):,.0f} cases/day"
+                )
+            else:
+                # Capacity exceeds demand - use expected as-is
+                self.sustainable_daily_demand = self.expected_daily_demand.copy()
+        else:
+            # Fallback
+            self.sustainable_daily_demand = self.expected_daily_demand.copy()
+
     def _classify_products_abc(self) -> None:
         """
         Classify products into A/B/C categories within each category.
@@ -384,6 +430,9 @@ class MRPEngine:
         breaking the feedback loop where low historical production
         led to under-ordering ingredients.
 
+        v0.22.0: Now includes production_rate_multiplier to match
+        actual production capacity in TransformEngine.
+
         Returns:
             Total cases/day the network can produce at max capacity.
         """
@@ -394,6 +443,8 @@ class MRPEngine:
         hours_per_day = mfg_config.get("production_hours_per_day", 24.0)
         global_efficiency = mfg_config.get("efficiency_factor", 0.85)
         global_downtime = mfg_config.get("unplanned_downtime_pct", 0.05)
+        # v0.22.0: Include production_rate_multiplier (simulates multiple lines)
+        rate_multiplier = mfg_config.get("production_rate_multiplier", 1.0)
 
         total_capacity = 0.0
 
@@ -429,7 +480,8 @@ class MRPEngine:
                 plant_capacity = effective_hours * avg_run_rate
                 total_capacity += plant_capacity
 
-        return total_capacity
+        # v0.22.0: Apply rate multiplier (simulates multiple production lines)
+        return total_capacity * rate_multiplier
 
     def _cache_node_info(self) -> None:
         """Cache RDC and Plant node IDs for efficient lookups.
@@ -762,10 +814,22 @@ class MRPEngine:
                 # Fallback to avg demand if POS not available
                 pos_demand = float(avg_daily_demand_vec[p_idx])
 
-            # Use POS demand as the baseline, with expected as floor
-            # When stores stockout, POS drops but we still need to produce
-            # Use a higher floor (70% of expected) to prevent starvation
-            actual_demand = max(pos_demand, expected_demand * 0.7)
+            # Use POS demand directly as the primary signal
+            # v0.22.0 DEATH SPIRAL FIX: Remove the 70% floor!
+            # The floor was inflating demand for ALL SKUs, causing:
+            # - Production orders for items that don't need them
+            # - 500 orders/day → massive changeover overhead
+            #
+            # NEW LOGIC: Use actual POS demand. If stores are stocking out,
+            # the DOS-based control will trigger catch-up production.
+            # Only apply a floor for A-items to protect high-runners.
+            abc = self.abc_class[p_idx]
+            if abc == 0:  # A-item only: use floor to prevent stockouts
+                sustainable_floor = float(self.sustainable_daily_demand[p_idx]) * 0.5
+                actual_demand = max(pos_demand, sustainable_floor)
+            else:
+                # B and C items: use POS demand directly
+                actual_demand = max(pos_demand, 1.0)  # Avoid division by zero
 
             # Calculate inventory position and DOS based on POS demand
             inventory_position = self._calculate_inventory_position(
@@ -778,7 +842,7 @@ class MRPEngine:
             else:
                 dos_position = float("inf")
 
-            abc = self.abc_class[p_idx]
+            # abc already assigned above at line 826
 
             # ============================================================
             # v0.19.11: CLOSED-LOOP CONTROL
@@ -844,17 +908,26 @@ class MRPEngine:
             elif dos_position > 75.0:  # noqa: PLR2004
                 production_qty = min(production_qty, actual_demand * 0.85)
 
-            # Floor: Differentiated by ABC class (ABSOLUTE - never produce below this)
-            # PERF FIX: Raised floors to prevent production starvation
-            # A-items: 90% floor (critical availability)
-            # B-items: 80% floor
-            # C-items: 70% floor
-            abc_floors = {0: 0.9, 1: 0.8, 2: 0.7}
-            floor_pct = abc_floors.get(abc, 0.7)
-            production_qty = max(production_qty, expected_demand * floor_pct)
+            # Floor: Only apply when DOS is critically low (< 7 days)
+            # v0.22.0 DEATH SPIRAL FIX: Remove blanket daily floors!
+            # With 500 SKUs, daily floors for ALL SKUs cause:
+            # - 500 production orders/day
+            # - Massive changeover time (25+ hours)
+            # - Changeovers exceed daily capacity → production collapse
+            #
+            # NEW LOGIC: Only boost production when DOS is truly critical.
+            # Let the DOS-based control logic (lines 835-878) handle normal cases.
+            # This reduces changeover overhead dramatically.
+            if dos_position < 7.0:  # noqa: PLR2004
+                # Critical shortage - apply minimum floor
+                abc_floors = {0: 0.7, 1: 0.5, 2: 0.3}
+                floor_pct = abc_floors.get(abc, 0.3)
+                sustainable_demand = float(self.sustainable_daily_demand[p_idx])
+                production_qty = max(production_qty, sustainable_demand * floor_pct)
 
-            # Cap: Never produce more than 150% of expected (prevent runaway)
-            production_qty = min(production_qty, expected_demand * 1.5)
+            # Cap: Never produce more than 150% of sustainable (prevent runaway)
+            sustainable_demand = float(self.sustainable_daily_demand[p_idx])
+            production_qty = min(production_qty, sustainable_demand * 1.5)
 
             order_qty = production_qty
 
@@ -882,6 +955,24 @@ class MRPEngine:
                     planned_start_day=current_day + 1,
                 )
                 production_orders.append(po)
+
+        # ================================================================
+        # v0.22.0 DEATH SPIRAL FIX: Cap total orders at plant capacity
+        # ================================================================
+        # Individual SKU caps don't guarantee total stays within capacity.
+        # When many SKUs request catch-up (130% of demand), total can exceed
+        # what plants can produce. Backlog accumulates → more changeovers
+        # → less production → death spiral.
+        #
+        # FIX: If total orders exceed 95% of capacity, scale down proportionally.
+        # The 95% buffer leaves room for catch-up without creating backlog.
+        total_orders = sum(po.quantity_cases for po in production_orders)
+        capacity_threshold = self._max_daily_capacity * 0.95
+
+        if total_orders > capacity_threshold and total_orders > 0:
+            scale_factor = capacity_threshold / total_orders
+            for po in production_orders:
+                po.quantity_cases = po.quantity_cases * scale_factor
 
         return production_orders
 

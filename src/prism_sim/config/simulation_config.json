@@ -235,7 +235,7 @@
       "min_ingredient_moq": 100.0,
       "production_lead_time_days": 3,
       "production_hours_per_day": 24.0,
-      "production_rate_multiplier": 0.2,
+      "production_rate_multiplier": 45.7,
       "changeover_time_multiplier": 0.1,
       "efficiency_factor": 0.95,
       "unplanned_downtime_pct": 0.05,
@@ -427,7 +427,7 @@
     },
     "writer": {
       "output_format": "csv",
-      "streaming": false,
+      "streaming": true,
       "parquet_batch_size": 10000,
       "inventory_sample_rate": 1
     }
