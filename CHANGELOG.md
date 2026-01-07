@@ -5,6 +5,51 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.24.0] - 2026-01-07
+
+### Metric Infrastructure & Forward Path Analysis
+
+Added FTL/LTL metric tracking infrastructure and comprehensive analysis of 30-day vs 365-day metric degradation.
+
+#### Key Changes
+
+1. **FTL/LTL Metric Infrastructure** (`monitor.py`)
+   - Added `ftl_fill_tracker` for Full Truckload fill rate measurement
+   - Added `ltl_shipment_count` for Less Than Truckload tracking
+   - Added `record_ftl_fill()` and `record_ltl_shipment()` methods
+   - Added FTL metrics to `get_summary_report()` output
+   - Infrastructure ready for orchestrator integration in v0.25.0
+
+2. **Forward Path Documentation** (`docs/planning/v025_forward_path.md`)
+   - Comprehensive root cause analysis of metric gaps
+   - Key finding: 30-day metrics healthy, 365-day metrics degrade (drift problem)
+   - Physics-first diagnostic approach defined
+   - Prioritized fix list with expected impacts
+
+#### Key Finding: Metric Drift Problem
+
+| Metric | 30-Day | 365-Day | Target |
+|--------|--------|---------|--------|
+| Service | 86.5% ✅ | 80.2% ❌ | >85% |
+| Truck Fill | 70.0% | 31.0% ❌ | >85% |
+| SLOB | 29.0% ✅ | 81.0% ❌ | <30% |
+
+Metrics are healthy at startup but degrade over time, suggesting feedback loops or drift rather than structural issues.
+
+#### Research References
+
+Industry research on FMCG consolidation practices:
+- [Walmart Freight Consolidation](https://fstlogistics.com/walmart-freight-consolidation/)
+- [Target Consolidation Program](https://www.hubgroup.com/)
+- [APQC DOS Benchmarks](https://www.apqc.org/)
+
+#### Next Steps (v0.25.0)
+
+See `docs/planning/v025_forward_path.md` for implementation plan:
+1. Diagnose root cause of 365-day metric drift
+2. Implement Plant→RDC truck consolidation
+3. Refine SLOB metric calculation
+
 ## [0.23.0] - 2026-01-06
 
 ### Death Spiral Fix: Campaign Batching Production (RESOLVED)

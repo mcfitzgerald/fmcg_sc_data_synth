@@ -62,12 +62,18 @@ class RealismMonitor:
 
         # Accumulators for metrics
         self.oee_tracker = WelfordAccumulator()
-        self.truck_fill_tracker = WelfordAccumulator()
+        self.truck_fill_tracker = WelfordAccumulator()  # Combined (legacy)
         self.slob_tracker = WelfordAccumulator()  # SLOB: Slow Moving & Obsolete
         self.cost_tracker = WelfordAccumulator()
         self.inventory_turns_tracker = WelfordAccumulator()
         self.service_level_tracker = WelfordAccumulator()  # Aggregate Fill Rate
         self.store_service_level_tracker = WelfordAccumulator()  # Consumer Service Level
+
+        # v0.24.0: Separate FTL and LTL tracking
+        # FTL fill rate is the meaningful metric (target 85%)
+        # LTL is intentionally small (last-mile to stores)
+        self.ftl_fill_tracker = WelfordAccumulator()
+        self.ltl_shipment_count = 0
 
         # New KPIs (Fix 8)
         self.perfect_order_tracker = WelfordAccumulator()
@@ -95,6 +101,14 @@ class RealismMonitor:
 
     def record_truck_fill(self, fill_rate: float) -> None:
         self.truck_fill_tracker.update(fill_rate)
+
+    def record_ftl_fill(self, fill_rate: float) -> None:
+        """Record FTL (Full Truckload) fill rate - target 85%+."""
+        self.ftl_fill_tracker.update(fill_rate)
+
+    def record_ltl_shipment(self) -> None:
+        """Record an LTL (Less Than Truckload) shipment - counted, not rated."""
+        self.ltl_shipment_count += 1
 
     def record_slob(self, slob_pct: float) -> None:
         self.slob_tracker.update(slob_pct)
@@ -150,6 +164,20 @@ class RealismMonitor:
                     if self.truck_fill_tracker.mean >= self.truck_fill_target
                     else "LOW"
                 ),
+            },
+            # v0.24.0: FTL fill rate is the meaningful truck utilization metric
+            "ftl_fill": {
+                "mean": self.ftl_fill_tracker.mean,
+                "target": self.truck_fill_target,
+                "count": self.ftl_fill_tracker.count,
+                "status": (
+                    "OK"
+                    if self.ftl_fill_tracker.mean >= self.truck_fill_target
+                    else "LOW"
+                ),
+            },
+            "ltl_shipments": {
+                "count": self.ltl_shipment_count,
             },
             "slob": {
                 "mean": self.slob_tracker.mean,

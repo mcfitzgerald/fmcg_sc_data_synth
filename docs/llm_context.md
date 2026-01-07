@@ -2,7 +2,7 @@
 
 > **System Prompt Context:** This document contains the critical architectural, functional, and physical constraints of the Prism Sim project. Use this as primary context when reasoning about code changes, bug fixes, or feature expansions.
 
-**Version:** 0.23.0 | **Last Updated:** 2026-01-06
+**Version:** 0.24.0 | **Last Updated:** 2026-01-07
 
 ---
 
@@ -615,6 +615,14 @@ When simulation behaves unexpectedly:
    - Verify `actual_inventory` is used (not `perceived_inventory`) for allocation/consumption decisions
    - Look for direct tensor manipulation without floor guards
    - Run: `inv[inv['actual_inventory'] < 0]` on inventory.csv to find violating cells
+
+7. **Metrics healthy at 30 days but degrade at 365 days?** (v0.24.0 finding)
+   - This is a **drift problem**, not a structural issue
+   - **SLOB drift:** C-items accumulating relative to A-items (slow movers don't sell)
+   - **Service drift:** SLOB throttling reducing production → inventory draws down unevenly
+   - **Truck fill drift:** Lower overall volume as inventory depletes
+   - **Key diagnostic:** Compare ABC class inventory distribution at day 30 vs day 365
+   - See `docs/planning/v025_forward_path.md` for root cause analysis
 
 ---
 
