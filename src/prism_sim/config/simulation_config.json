@@ -209,7 +209,7 @@
         "c_demand_factor": 0.8,
         "campaign_batching": {
           "enabled": true,
-          "production_horizon_days": 10,
+          "production_horizon_days": 6,
           "trigger_dos_a": 14,
           "trigger_dos_b": 10,
           "trigger_dos_c": 7,

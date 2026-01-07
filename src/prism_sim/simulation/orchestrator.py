@@ -230,12 +230,19 @@ class Orchestrator:
         # Get per-SKU demand matrix for demand-proportional priming
         base_demand_matrix = self.pos_engine.get_base_demand_matrix()
 
-        # Phase 2.3: Target DOS by ABC class
+        # v0.25.0: ABC-based priming aligned with MRP trigger thresholds
+        # Priming must EXCEED trigger_dos + production_horizon to prevent
+        # Day 1 production spike. Triggers are: A=14, B=10, C=7
+        # Horizon is 6 days. Initial DOS = trigger + horizon/2 + buffer.
+        # Higher initial priming reduces Day 1-30 production spike.
         abc_target_dos = {
-            0: 21.0,   # A-items: 3 weeks
-            1: 14.0,   # B-items: 2 weeks
-            2: 7.0,    # C-items: 1 week
+            0: 21.0,   # A-items: 14 trigger + ~7 buffer
+            1: 16.0,   # B-items: 10 trigger + 6 buffer
+            2: 12.0,   # C-items: 7 trigger + 5 buffer
         }
+
+        # Same values for RDCs and Customer DCs
+        rdc_abc_target_dos = abc_target_dos
 
         # Seed finished goods at RDCs and Stores
         for node_id, node in self.world.nodes.items():
@@ -290,8 +297,16 @@ class Orchestrator:
                         if rdc_downstream_demand.sum() == 0:
                             continue
 
-                        # RDC inventory = downstream demand x rdc_days_supply
-                        rdc_sku_levels = rdc_downstream_demand * rdc_days
+                        # v0.25.0: Apply ABC-based priming to RDCs
+                        # This prevents Day 1 production spike by ensuring initial
+                        # DOS exceeds trigger thresholds for all products
+                        rdc_days_vec = np.array([
+                            rdc_abc_target_dos.get(
+                                self.mrp_engine.abc_class[p_idx], rdc_days
+                            )
+                            for p_idx in range(self.state.n_products)
+                        ])
+                        rdc_sku_levels = rdc_downstream_demand * rdc_days_vec
                         self.state.perceived_inventory[node_idx, :] = rdc_sku_levels
                         self.state.actual_inventory[node_idx, :] = rdc_sku_levels
                     else:
@@ -316,8 +331,15 @@ class Orchestrator:
                         if downstream_demand.sum() == 0:
                             continue
 
-                        # DC inventory = aggregated downstream demand x days supply
-                        dc_levels = downstream_demand * customer_dc_days
+                        # v0.25.0: Apply ABC-based priming to Customer DCs
+                        # to reduce replenishment cascade at startup
+                        dc_days_vec = np.array([
+                            rdc_abc_target_dos.get(
+                                self.mrp_engine.abc_class[p_idx], customer_dc_days
+                            )
+                            for p_idx in range(self.state.n_products)
+                        ])
+                        dc_levels = downstream_demand * dc_days_vec
                         self.state.perceived_inventory[node_idx, :] = dc_levels
                         self.state.actual_inventory[node_idx, :] = dc_levels
 

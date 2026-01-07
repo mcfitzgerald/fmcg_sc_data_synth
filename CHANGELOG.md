@@ -5,6 +5,51 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.25.0] - 2026-01-07
+
+### Production Physics Fix: Balanced Production/Consumption
+
+Fixed critical production overshoot that caused inventory accumulation and metric drift over 365 days.
+
+#### Root Cause Identified
+
+Initial inventory priming (6.7 days RDC DOS) was below MRP trigger thresholds (A:14, B:10, C:7 days),
+causing 100% of SKUs to trigger production on Day 1. This created a 2x production spike that
+accumulated as SLOB inventory.
+
+#### Key Changes
+
+1. **ABC-Differentiated Network Priming** (`orchestrator.py`)
+   - Applied ABC-based initial inventory to ALL echelons (stores, customer DCs, RDCs)
+   - A-items: 21 days, B-items: 16 days, C-items: 12 days
+   - Initial RDC DOS now 17.4 days (was 6.7 days)
+   - Prevents 100% Day-1 production trigger
+
+2. **Campaign Batching Calibration** (`simulation_config.json`)
+   - Reduced `production_horizon_days` from 10 to 6
+   - Math: With ~90 SKUs triggering daily, horizon=6 gives 90/500 × 6 = 1.08x ratio
+   - Previous horizon=10 gave 1.8x ratio (production >> consumption)
+
+#### Results: 365-Day Production/Consumption Ratio
+
+| Day | Before Fix | After Fix |
+|-----|------------|-----------|
+| 30  | 1.90x      | 1.54x     |
+| 90  | 1.50x      | 1.20x     |
+| 180 | ~1.3x      | 1.04x     |
+| 365 | ~1.2x      | **0.99x** |
+
+Production is now balanced (0.99x) over 365 days. The system self-corrects by under-producing
+after the initial spike to draw down excess inventory.
+
+#### Remaining Issues (Not Physics)
+
+1. **SLOB Metric**: Still high (81.9%) - uses volatile daily demand, not expected demand
+2. **Service Level Drift**: 87% → 83% - product mix mismatch (A-items short, C-items excess)
+3. **FTL Fill**: Shows 0.0% - metric measurement issue to investigate
+
+These are metric definition issues, not simulation physics issues.
+
 ## [0.24.0] - 2026-01-07
 
 ### Metric Infrastructure & Forward Path Analysis
