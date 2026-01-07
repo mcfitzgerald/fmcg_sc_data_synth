@@ -111,6 +111,17 @@ class Orchestrator:
         self.mape_base = validation_config.get("mape_base", 0.30)
         self.mape_quirks_penalty = validation_config.get("mape_quirks_penalty", 0.15)
 
+        # v0.26.0: ABC-differentiated SLOB thresholds and demand-based calculation
+        slob_abc = validation_config.get("slob_abc_thresholds", {})
+        self.slob_threshold_a = slob_abc.get("A", 30.0)
+        self.slob_threshold_b = slob_abc.get("B", 60.0)
+        self.slob_threshold_c = slob_abc.get("C", 120.0)
+        self.slob_min_demand_velocity = validation_config.get(
+            "slob_min_demand_velocity", 1.0
+        )
+        # Store base demand matrix for SLOB calculation (expected, not volatile)
+        self._base_demand_matrix = base_demand_matrix
+
         # 6. Initialize Data Writer (Milestone 7)
         # Load writer config from simulation_config.json, allow CLI overrides
         writer_config = sim_params.get("writer", {})
@@ -222,27 +233,38 @@ class Orchestrator:
         inv_config = sim_params.get("inventory", {})
         init_config = inv_config.get("initialization", {})
 
-        # Defaults if config missing
-        store_days_default = init_config.get("store_days_supply", 14.0)
-        rdc_days = init_config.get("rdc_days_supply", 21.0)
-        customer_dc_days = init_config.get("customer_dc_days_supply", 21.0)
+        # CONFIG-DRIVEN priming (v0.26.0 fix - was previously hardcoded)
+        store_days_supply = init_config.get("store_days_supply", 4.5)
+        rdc_days_supply = init_config.get("rdc_days_supply", 7.5)
+        customer_dc_days = init_config.get("customer_dc_days_supply", 7.5)
 
         # Get per-SKU demand matrix for demand-proportional priming
         base_demand_matrix = self.pos_engine.get_base_demand_matrix()
 
-        # v0.25.0: ABC-based priming aligned with MRP trigger thresholds
-        # Priming must EXCEED trigger_dos + production_horizon to prevent
-        # Day 1 production spike. Triggers are: A=14, B=10, C=7
-        # Horizon is 6 days. Initial DOS = trigger + horizon/2 + buffer.
-        # Higher initial priming reduces Day 1-30 production spike.
-        abc_target_dos = {
-            0: 21.0,   # A-items: 14 trigger + ~7 buffer
-            1: 16.0,   # B-items: 10 trigger + 6 buffer
-            2: 12.0,   # C-items: 7 trigger + 5 buffer
+        # v0.26.0: ABC-based priming DERIVED FROM CONFIG, not hardcoded
+        # Uses config values with ABC velocity factors to differentiate priming
+        # A-items need slightly more buffer (higher service level target)
+        # C-items need less (lower velocity, can tolerate longer replenishment)
+        abc_velocity_cfg = init_config.get(
+            "abc_velocity_factors", {"A": 1.2, "B": 1.0, "C": 0.8}
+        )
+        # Convert string keys to int keys (0=A, 1=B, 2=C)
+        abc_velocity_factors = {
+            0: abc_velocity_cfg.get("A", 1.2),
+            1: abc_velocity_cfg.get("B", 1.0),
+            2: abc_velocity_cfg.get("C", 0.8),
         }
 
-        # Same values for RDCs and Customer DCs
-        rdc_abc_target_dos = abc_target_dos
+        abc_target_dos = {
+            abc_class: store_days_supply * factor
+            for abc_class, factor in abc_velocity_factors.items()
+        }
+
+        # Same scaling for RDCs
+        rdc_abc_target_dos = {
+            abc_class: rdc_days_supply * factor
+            for abc_class, factor in abc_velocity_factors.items()
+        }
 
         # Seed finished goods at RDCs and Stores
         for node_id, node in self.world.nodes.items():
@@ -255,7 +277,7 @@ class Orchestrator:
                     # Vectorized operation: Create a vector of days supply based on product ABC class
                     store_days_vec = np.array([
                         abc_target_dos.get(
-                            self.mrp_engine.abc_class[p_idx], store_days_default
+                            self.mrp_engine.abc_class[p_idx], store_days_supply
                         )
                         for p_idx in range(self.state.n_products)
                     ])
@@ -297,12 +319,10 @@ class Orchestrator:
                         if rdc_downstream_demand.sum() == 0:
                             continue
 
-                        # v0.25.0: Apply ABC-based priming to RDCs
-                        # This prevents Day 1 production spike by ensuring initial
-                        # DOS exceeds trigger thresholds for all products
+                        # v0.26.0: Apply ABC-based priming to RDCs (config-driven)
                         rdc_days_vec = np.array([
                             rdc_abc_target_dos.get(
-                                self.mrp_engine.abc_class[p_idx], rdc_days
+                                self.mrp_engine.abc_class[p_idx], rdc_days_supply
                             )
                             for p_idx in range(self.state.n_products)
                         ])
@@ -493,18 +513,20 @@ class Orchestrator:
         self.completed_batches.extend(new_batches)
 
         # v0.20.0: Production order cleanup - remove stale orders
-        # Orders that haven't been fulfilled within 14 days are likely blocked
+        # Orders that haven't been fulfilled within timeout days are likely blocked
         # (material shortage, capacity issues) and should be dropped to prevent
         # unbounded backlog accumulation. MRP will regenerate if demand persists.
-        production_order_timeout = 14
+        sim_params = self.config.get("simulation_parameters", {})
+        mfg_config = sim_params.get("manufacturing", {})
+        production_order_timeout = mfg_config.get("production_order_timeout_days", 14)
         self.active_production_orders = [
             o for o in self.active_production_orders
             if day - o.creation_day <= production_order_timeout
         ]
 
         # v0.20.0: Memory cleanup - only retain recent batches for traceability
-        # Keep last 30 days of batches, discard older ones to prevent unbounded growth
-        batch_retention_days = 30
+        # Keep last N days of batches, discard older ones to prevent unbounded growth
+        batch_retention_days = mfg_config.get("batch_retention_days", 30)
         self.completed_batches = [
             b for b in self.completed_batches
             if day - b.production_day <= batch_retention_days
@@ -644,6 +666,28 @@ class Orchestrator:
             store_fill_rate = np.sum(actual_sales) / total_demand_qty
             self.monitor.record_store_service_level(store_fill_rate)
 
+            # v0.26.0: ABC-class service level breakdown for mix analysis
+            # Helps diagnose whether service level drift is due to A-item stockouts
+            fg_demand = daily_demand[:, self._fg_product_mask]
+            fg_available = available[:, self._fg_product_mask]
+            fg_sales = np.minimum(fg_demand, fg_available)
+            fg_abc_class = self.mrp_engine.abc_class[self._fg_product_mask]
+
+            # Calculate fill rate by ABC class
+            a_mask = fg_abc_class == 0
+            b_mask = fg_abc_class == 1
+            c_mask = fg_abc_class == 2
+
+            a_demand = np.sum(fg_demand[:, a_mask])
+            b_demand = np.sum(fg_demand[:, b_mask])
+            c_demand = np.sum(fg_demand[:, c_mask])
+
+            a_fill = np.sum(fg_sales[:, a_mask]) / a_demand if a_demand > 0 else 1.0
+            b_fill = np.sum(fg_sales[:, b_mask]) / b_demand if b_demand > 0 else 1.0
+            c_fill = np.sum(fg_sales[:, c_mask]) / c_demand if c_demand > 0 else 1.0
+
+            self.monitor.record_abc_service_levels(a_fill, b_fill, c_fill)
+
         # Calculate Inventory Turns (Cash) - ONLY finished goods, not ingredients
         # Inventory turns = Annual Sales / Average Inventory (finished goods only)
         fg_inventory = self.state.actual_inventory[:, self._fg_product_mask]
@@ -664,20 +708,35 @@ class Orchestrator:
             shrink_rate = shrinkage_qty / total_fg_inv
             self.monitor.record_shrinkage_rate(shrink_rate)
 
-            # SLOB % (Per-SKU calculation)
-            # Only finished goods can be "slow/obsolete" for this metric
-            # Calculate per-SKU days of supply across all nodes
+            # SLOB % (Per-SKU calculation with ABC-differentiated thresholds)
+            # v0.26.0: Use expected demand (base_demand) instead of volatile daily_demand
+            # This prevents near-zero demand days from creating artificial SLOB
             fg_inv_per_sku = np.sum(fg_inventory, axis=0)  # Sum across nodes
-            fg_demand_per_sku = np.sum(
-                daily_demand[:, self._fg_product_mask], axis=0
+
+            # Use expected demand (base_demand_matrix) instead of volatile daily demand
+            fg_base_demand = np.sum(
+                self._base_demand_matrix[:, self._fg_product_mask], axis=0
             )
 
-            # Avoid division by zero - use small floor for zero-demand SKUs
-            demand_per_sku_safe = np.maximum(fg_demand_per_sku, 0.01)
+            # Apply minimum demand velocity floor (cases/day) to prevent div-by-zero
+            demand_per_sku_safe = np.maximum(
+                fg_base_demand, self.slob_min_demand_velocity
+            )
             sku_dos = fg_inv_per_sku / demand_per_sku_safe
 
-            # Flag SKUs with DOS > threshold as SLOB
-            slob_mask = sku_dos > self.slob_days_threshold
+            # ABC-differentiated SLOB thresholds
+            # Get ABC class for finished goods only (0=A, 1=B, 2=C)
+            fg_abc_class = self.mrp_engine.abc_class[self._fg_product_mask]
+
+            # Build threshold array per SKU based on ABC class
+            slob_thresholds = np.where(
+                fg_abc_class == 0,
+                self.slob_threshold_a,
+                np.where(fg_abc_class == 1, self.slob_threshold_b, self.slob_threshold_c),
+            )
+
+            # Flag SKUs with DOS > their ABC-specific threshold as SLOB
+            slob_mask = sku_dos > slob_thresholds
             slob_inventory = fg_inv_per_sku[slob_mask].sum()
 
             slob_pct = slob_inventory / total_fg_inv if total_fg_inv > 0 else 0.0
@@ -686,15 +745,27 @@ class Orchestrator:
         log_config = self.config.get("simulation_parameters", {}).get("logistics", {})
         constraints = log_config.get("constraints", {})
         max_weight = constraints.get("truck_max_weight_kg", 20000.0)
+        store_delivery_mode = log_config.get("store_delivery_mode", "FTL")
 
-        # v0.15.5: Measure truck fill for all shipments
-        # Note: With LTL for stores, many shipments are intentionally small.
-        # The metric now reflects actual truck utilization across the network.
-        # For FMCG products that "cube out" before "weighting out", fill rates
-        # of 30-50% are realistic (light but bulky products).
+        # v0.26.0: Differentiate FTL vs LTL for truck fill metrics
+        # FTL fill rate is the meaningful metric (target 85%)
+        # LTL (store deliveries) are intentionally small - last-mile deliveries
         for s in daily_shipments:
             fill_rate = min(1.0, s.total_weight_kg / max_weight)
             self.monitor.record_truck_fill(fill_rate)
+
+            # Determine if this is an LTL (store) or FTL (DC/RDC) shipment
+            target_node = self.world.nodes.get(s.target_id)
+            is_store_delivery = (
+                target_node is not None
+                and target_node.type == NodeType.STORE
+                and store_delivery_mode == "LTL"
+            )
+
+            if is_store_delivery:
+                self.monitor.record_ltl_shipment()
+            else:
+                self.monitor.record_ftl_fill(fill_rate)
 
         # Record OEE
         if plant_oee:
@@ -812,13 +883,26 @@ class Orchestrator:
         shrink = report.get("shrinkage_rate", {}).get("mean", 0) * 100.0
         slob = report.get("slob", {}).get("mean", 0) * 100.0
 
+        # v0.26.0: FTL fill rate and ABC service levels
+        ftl_fill = report.get("ftl_fill", {}).get("mean", 0) * truck_scale
+        ltl_count = report.get("ltl_shipments", {}).get("count", 0)
+        abc_svc = report.get("service_level_by_abc", {})
+        svc_a = abc_svc.get("A", 0) * 100.0
+        svc_b = abc_svc.get("B", 0) * 100.0
+        svc_c = abc_svc.get("C", 0) * 100.0
+
         summary = [
             "==================================================",
             "        THE SUPPLY CHAIN TRIANGLE REPORT          ",
             "==================================================",
             f"1. SERVICE (Store Fill Rate):   {service_index:.2f}%",
+            f"   - A-Items:                   {svc_a:.1f}%",
+            f"   - B-Items:                   {svc_b:.1f}%",
+            f"   - C-Items:                   {svc_c:.1f}%",
             f"2. CASH (Inventory Turns):      {inv_turns:.2f}x",
             f"3. COST (Truck Fill Rate):      {truck_fill * truck_scale:.1f}%",
+            f"   - FTL Fill Rate:             {ftl_fill:.1f}%",
+            f"   - LTL Shipments:             {ltl_count:,}",
             "--------------------------------------------------",
             f"Manufacturing OEE:              {oee * oee_scale:.1f}%",
             f"Perfect Order Rate:             {perfect_order:.1f}%",

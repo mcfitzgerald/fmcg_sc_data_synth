@@ -75,6 +75,12 @@ class RealismMonitor:
         self.ftl_fill_tracker = WelfordAccumulator()
         self.ltl_shipment_count = 0
 
+        # v0.26.0: ABC-class service level tracking
+        # Tracks fill rate by ABC class to diagnose service level drift
+        self.service_level_a_tracker = WelfordAccumulator()
+        self.service_level_b_tracker = WelfordAccumulator()
+        self.service_level_c_tracker = WelfordAccumulator()
+
         # New KPIs (Fix 8)
         self.perfect_order_tracker = WelfordAccumulator()
         self.cash_to_cash_tracker = WelfordAccumulator()
@@ -98,6 +104,14 @@ class RealismMonitor:
 
     def record_store_service_level(self, service_level: float) -> None:
         self.store_service_level_tracker.update(service_level)
+
+    def record_abc_service_levels(
+        self, a_fill: float, b_fill: float, c_fill: float
+    ) -> None:
+        """Record service levels by ABC class for mix analysis."""
+        self.service_level_a_tracker.update(a_fill)
+        self.service_level_b_tracker.update(b_fill)
+        self.service_level_c_tracker.update(c_fill)
 
     def record_truck_fill(self, fill_rate: float) -> None:
         self.truck_fill_tracker.update(fill_rate)
@@ -145,6 +159,12 @@ class RealismMonitor:
                 "mean": self.store_service_level_tracker.mean,
                 "std": self.store_service_level_tracker.std_dev,
                 "status": "OK",
+            },
+            # v0.26.0: ABC-class service level breakdown
+            "service_level_by_abc": {
+                "A": self.service_level_a_tracker.mean,
+                "B": self.service_level_b_tracker.mean,
+                "C": self.service_level_c_tracker.mean,
             },
             "oee": {
                 "mean": self.oee_tracker.mean,

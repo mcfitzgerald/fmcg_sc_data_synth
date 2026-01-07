@@ -5,6 +5,48 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.27.0] - 2026-01-07
+
+### Hardcode Audit & Physics-Based Calibration
+
+Completed comprehensive semgrep audit and moved all hardcoded values to config. Enhanced calibration script with physics-based derivations.
+
+#### Hardcodes Fixed (moved to config)
+
+| Location | Hardcode | New Config Key |
+|----------|----------|----------------|
+| `orchestrator.py:248` | ABC velocity factors `{0:1.2, 1:1.0, 2:0.8}` | `inventory.initialization.abc_velocity_factors` |
+| `orchestrator.py:519` | Production order timeout `14` | `manufacturing.production_order_timeout_days` |
+| `orchestrator.py:528` | Batch retention days `30` | `manufacturing.batch_retention_days` |
+| `logistics.py:104` | Stale order threshold `14` | `logistics.stale_order_threshold_days` |
+| `calibrate_config.py:263` | SLOB velocity factors | `validation.slob_abc_velocity_factors` |
+| `calibrate_config.py:267` | SLOB margin `1.5` | `validation.slob_margin` |
+
+#### Calibration Script Enhancements (`calibrate_config.py`)
+
+1. **Physics-Based Priming Derivation**
+   - Store DOS derived from: cycle_stock + safety_stock + lead_time
+   - Safety stock uses z-scores: A=2.33 (99%), B=1.65 (95%), C=1.28 (90%)
+   - CV by echelon: store=0.4, DC=0.25, RDC=0.15 (aggregation effect)
+
+2. **Network-Level Trigger Derivation**
+   - trigger = production_time + transit_time + safety_buffer
+   - Derived: A=14d, B=12d, C=10d
+
+3. **Config Consistency Validation**
+   - Multi-echelon priming vs trigger check
+   - SLOB threshold vs expected DOS check
+   - Capacity utilization bounds (50%-95%)
+   - Expected turns sanity check
+
+#### Root Cause Discovery: MRP Uses Static Demand
+
+Investigation revealed MRP batch sizing uses static `expected_daily_demand` (no seasonality) while actual demand varies ±12% with seasonality. This causes:
+- Trough overproduction → SLOB accumulation
+- Peak underproduction → stockouts
+
+**Fix planned for v0.28.0:** Use actual demand signal for batch sizing.
+
 ## [0.25.0] - 2026-01-07
 
 ### Production Physics Fix: Balanced Production/Consumption

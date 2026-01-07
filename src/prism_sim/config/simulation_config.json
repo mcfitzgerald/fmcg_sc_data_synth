@@ -150,10 +150,15 @@
     "inventory": {
       "initial_fg_level": 5.0,
       "initialization": {
-        "store_days_supply": 4.5,
-        "rdc_days_supply": 7.5,
+        "store_days_supply": 6.6,
+        "rdc_days_supply": 6.4,
         "rdc_store_multiplier": 150.8,
-        "customer_dc_days_supply": 7.5
+        "customer_dc_days_supply": 6.2,
+        "abc_velocity_factors": {
+          "A": 1.08,
+          "B": 1.0,
+          "C": 0.97
+        }
       }
     },
     "logistics": {
@@ -189,7 +194,8 @@
       "store_delivery_mode": "LTL",
       "ltl_min_cases": 100,
       "default_ftl_min_pallets": 10,
-      "co2_emission_factor_kg_per_ton_km": 0.1
+      "co2_emission_factor_kg_per_ton_km": 0.1,
+      "stale_order_threshold_days": 14
     },
     "manufacturing": {
       "target_days_supply": 28.0,
@@ -211,8 +217,8 @@
           "enabled": true,
           "production_horizon_days": 6,
           "trigger_dos_a": 14,
-          "trigger_dos_b": 10,
-          "trigger_dos_c": 7,
+          "trigger_dos_b": 12,
+          "trigger_dos_c": 10,
           "max_skus_per_plant_per_day": 60
         }
       },
@@ -286,6 +292,8 @@
         }
       },
       "default_yield_percent": 98.5,
+      "production_order_timeout_days": 14,
+      "batch_retention_days": 30,
       "recall_batch_trigger_day": 30,
       "recall_scenario": {
         "product_id": "SKU-DET-001",
@@ -313,6 +321,18 @@
       "truck_fill_target": 0.85,
       "slob_max_pct": 0.3,
       "slob_days_threshold": 60.0,
+      "slob_abc_thresholds": {
+        "A": 23.0,
+        "B": 33.0,
+        "C": 50.0
+      },
+      "slob_margin": 1.5,
+      "slob_abc_velocity_factors": {
+        "A": 0.7,
+        "B": 1.0,
+        "C": 1.5
+      },
+      "slob_min_demand_velocity": 1.0,
       "inventory_turns_range": [
         6.0,
         14.0

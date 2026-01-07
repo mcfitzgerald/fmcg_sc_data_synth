@@ -100,8 +100,9 @@ class LogisticsEngine:
         """
         # 1. Combine new orders with held orders
         # v0.20.0: Filter out stale held orders to prevent unbounded accumulation
-        # Orders held longer than 14 days are discarded (route likely not serviceable)
-        stale_threshold_days = 14
+        # Orders held longer than threshold days are discarded (route likely not serviceable)
+        log_config = self.config.get("simulation_parameters", {}).get("logistics", {})
+        stale_threshold_days = log_config.get("stale_order_threshold_days", 14)
         fresh_held_orders = [
             o for o in self.held_orders
             if current_day - o.creation_day <= stale_threshold_days

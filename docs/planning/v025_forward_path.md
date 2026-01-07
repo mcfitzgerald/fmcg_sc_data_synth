@@ -2,7 +2,312 @@
 
 > **Purpose**: Consolidated analysis of remaining issues and physics-first approach to fixes.
 > **Created**: 2026-01-07
-> **Status**: Ready for implementation
+> **Updated**: 2026-01-07 (v0.26.0 hardcode discovery)
+> **Status**: Critical - Hardcode audit required before further development
+
+---
+
+## CRITICAL: Hardcode Violations (v0.26.0 Discovery)
+
+### The Problem
+
+During v0.26.0 metric fixes, we discovered **hardcoded values bypassing config**:
+
+```python
+# orchestrator.py:249-253 (BEFORE fix)
+abc_target_dos = {
+    0: 21.0,   # A-items: HARDCODED, ignores config
+    1: 16.0,   # B-items: HARDCODED
+    2: 12.0,   # C-items: HARDCODED
+}
+```
+
+**Impact:**
+| Parameter | Config Value | Hardcoded Value | Actual Behavior |
+|-----------|--------------|-----------------|-----------------|
+| store_days_supply | 4.5 days | 21.0 days | **4.7x config** |
+| rdc_days_supply | 7.5 days | 21.0 days | **2.8x config** |
+| Expected DOS | 18 days | - | 58 days actual |
+| Inventory Turns | 20x expected | - | 6.3x actual |
+
+This caused the simulation to hold **3x more inventory** than config specified, making the calibration script useless and all config tuning ineffective.
+
+### Root Cause
+
+The hardcode was added in v0.25.0 with good intentions (prevent Day 1 production spike) but violated the config-driven principle. The CLAUDE.md states "Use semgrep to detect hardcoded values" but this wasn't enforced.
+
+### Immediate Fix Applied (v0.26.0)
+
+Priming now derives from config with ABC velocity factors:
+```python
+abc_velocity_factors = {0: 1.2, 1: 1.0, 2: 0.8}  # A, B, C
+abc_target_dos = {
+    abc_class: store_days_supply * factor
+    for abc_class, factor in abc_velocity_factors.items()
+}
+```
+
+---
+
+## P-CRITICAL: Hardcode Audit & Config Overhaul
+
+### Phase 1: Semgrep Hardcode Scan
+
+**Objective:** Find ALL hardcoded values that should be config-driven.
+
+**Existing Rule:** `.semgrep/hardcodes.yaml` - catches numeric literals, strings, booleans in assignments.
+
+**Run Scan:**
+```bash
+poetry run semgrep --config .semgrep/hardcodes.yaml src/prism_sim/
+```
+
+**Triage Process:**
+1. Run scan, export results
+2. Categorize each finding: VIOLATION (must fix) vs LEGITIMATE (constants, indices, etc.)
+3. For violations: move value to config, update calibrate_config.py if derived
+
+**Expected Violations to Find:**
+- [ ] Priming buffers (FIXED in v0.26.0)
+- [ ] ABC velocity factors (currently hardcoded as 1.2/1.0/0.8)
+- [ ] SLOB margin (currently hardcoded as 1.5x)
+- [ ] Safety stock factors
+- [ ] Lead time assumptions
+- [ ] Capacity utilization targets
+
+### Phase 2: Config Schema Overhaul
+
+**Objective:** Create a complete, validated config schema where every tunable parameter is exposed.
+
+**New Config Sections Needed:**
+
+```json
+{
+  "simulation_parameters": {
+    "priming": {
+      "enabled": true,
+      "strategy": "demand_proportional",
+      "abc_velocity_factors": {
+        "A": 1.2,
+        "B": 1.0,
+        "C": 0.8
+      },
+      "echelon_targets": {
+        "store_days_supply": 4.5,
+        "customer_dc_days_supply": 7.5,
+        "rdc_days_supply": 7.5,
+        "plant_days_supply": 3.0
+      },
+      "network_dos_expected": "AUTO",  // Calculated from echelon targets
+      "comments": {
+        "network_dos_formula": "store + dc + rdc + lead_time + batch_buffer/2"
+      }
+    },
+    "validation": {
+      "slob_abc_thresholds": "AUTO",  // Derived from priming.network_dos_expected
+      "slob_margin": 1.5,
+      "slob_min_demand_velocity": 1.0
+    }
+  }
+}
+```
+
+**Key Principle: Derived Values**
+- Some values should be AUTO-derived from others
+- `network_dos_expected` = sum of echelon targets + lead time + batch buffer
+- `slob_abc_thresholds` = `network_dos_expected` × `slob_margin` × ABC factor
+- Calibration script computes these; config stores the inputs
+
+### Phase 3: Calibrate Config Overhaul
+
+**Objective:** Make `calibrate_config.py` the single source of truth for all physics-derived parameters.
+
+**Current State:**
+- Calculates: demand, capacity, production_rate_multiplier, inventory DOS
+- Added in v0.26.0: SLOB thresholds
+
+**Required Additions:**
+
+```python
+def derive_optimal_parameters(...) -> dict:
+    """
+    Derive ALL physics-constrained parameters from first principles.
+    """
+    # === EXISTING ===
+    # 1. Demand analysis
+    # 2. Capacity analysis
+    # 3. Production rate multiplier
+    # 4. Inventory DOS targets
+    # 5. SLOB thresholds (v0.26.0)
+
+    # === NEW: Multi-Echelon Priming ===
+    # 6. Network-wide DOS calculation
+    network_dos = calculate_network_dos(
+        store_dos=store_days_supply,
+        dc_dos=customer_dc_days,
+        rdc_dos=rdc_days_supply,
+        lead_time=lead_time_days,
+        batch_horizon=production_horizon,
+    )
+
+    # 7. Validate priming doesn't exceed triggers
+    # If initial DOS < trigger_dos, Day 1 will have production spike
+    # If initial DOS >> trigger_dos, excess inventory
+    validate_priming_vs_triggers(
+        priming_dos=network_dos,
+        trigger_dos_a=trigger_a,
+        trigger_dos_b=trigger_b,
+        trigger_dos_c=trigger_c,
+    )
+
+    # 8. ABC velocity factors (make configurable)
+    abc_velocity_factors = derive_abc_factors(
+        a_service_target=0.98,  # Higher service for A-items
+        b_service_target=0.95,
+        c_service_target=0.90,
+    )
+
+    # 9. Safety stock by echelon
+    # Higher echelons need less safety stock (demand aggregation)
+    echelon_safety = calculate_echelon_safety(
+        store_cv=0.3,      # High variability at store
+        dc_cv=0.15,        # Aggregation reduces CV
+        rdc_cv=0.10,       # More aggregation
+        service_level_z=1.65,
+    )
+
+    # 10. Cross-validate: expected turns vs actual
+    expected_turns = 365 / network_dos
+    if abs(expected_turns - observed_turns) / expected_turns > 0.2:
+        warnings.append(f"Turns mismatch: expected {expected_turns:.1f}, observed {observed_turns:.1f}")
+```
+
+**New Validations:**
+
+```python
+def validate_config_consistency(config: dict, derived: dict) -> list[str]:
+    """
+    Check that config values are internally consistent.
+    """
+    violations = []
+
+    # 1. Priming vs Triggers
+    # Initial DOS must exceed trigger to avoid Day 1 spike
+    for abc in ["A", "B", "C"]:
+        priming = derived["priming_dos"][abc]
+        trigger = config["campaign_batching"][f"trigger_dos_{abc.lower()}"]
+        if priming < trigger:
+            violations.append(
+                f"{abc}-item priming ({priming:.1f}d) < trigger ({trigger}d) "
+                f"→ Day 1 production spike"
+            )
+
+    # 2. SLOB threshold vs Network DOS
+    # SLOB threshold should be > expected DOS (else everything is SLOB)
+    for abc in ["A", "B", "C"]:
+        network_dos = derived["network_dos"][abc]
+        slob_threshold = config["validation"]["slob_abc_thresholds"][abc]
+        if slob_threshold < network_dos * 1.2:
+            violations.append(
+                f"{abc}-item SLOB threshold ({slob_threshold:.0f}d) too close to "
+                f"expected DOS ({network_dos:.1f}d) → high SLOB %"
+            )
+
+    # 3. Multi-echelon double-counting
+    # Total network DOS should equal sum of echelons (not multiply)
+    store_dos = config["priming"]["echelon_targets"]["store_days_supply"]
+    rdc_dos = config["priming"]["echelon_targets"]["rdc_days_supply"]
+    if store_dos == rdc_dos:
+        violations.append(
+            f"Store DOS ({store_dos}) == RDC DOS ({rdc_dos}) - "
+            f"are these intentionally equal or copy-paste error?"
+        )
+
+    # 4. Capacity vs Demand balance
+    utilization = derived["capacity_utilization"]
+    if utilization > 0.95:
+        violations.append(f"Capacity utilization {utilization:.0%} > 95% → stockouts likely")
+    if utilization < 0.50:
+        violations.append(f"Capacity utilization {utilization:.0%} < 50% → low OEE")
+
+    return violations
+```
+
+### Phase 4: Config-as-Code Enforcement
+
+**Objective:** Prevent future hardcode violations.
+
+**Existing Rule:** `.semgrep/hardcodes.yaml`
+
+**Enforcement Mechanisms:**
+
+1. **Pre-commit hook**: Run semgrep on changed files
+   ```yaml
+   # .pre-commit-config.yaml
+   - repo: https://github.com/returntocorp/semgrep
+     hooks:
+       - id: semgrep
+         args: ['--config', '.semgrep/hardcodes.yaml', '--error']
+   ```
+
+2. **CI check**: Fail build if new hardcodes introduced
+   ```yaml
+   # .github/workflows/lint.yaml
+   - name: Check for hardcodes
+     run: semgrep --config .semgrep/hardcodes.yaml --error src/
+   ```
+
+3. **Code review checklist**:
+   - [ ] No new numeric literals in business logic
+   - [ ] All thresholds read from config
+   - [ ] Calibration script updated if new parameter added
+
+---
+
+## Updated Implementation Order
+
+| Priority | Task | Status |
+|----------|------|--------|
+| P-CRITICAL | Semgrep hardcode scan | ✅ Complete (v0.27.0) |
+| P-CRITICAL | Fix all hardcode violations | ✅ Complete (v0.27.0) |
+| P-CRITICAL | Overhaul calibrate_config.py | ✅ Complete (v0.27.0) |
+| P0 | Config schema validation | ✅ Complete (v0.27.0) |
+| P1 | Pre-commit enforcement | 🔴 Not started |
+| P2 | Tune config for target metrics | 🟡 Ready to start |
+
+## v0.27.0 Hardcode Audit Summary
+
+**Completed 2026-01-07:**
+
+### Hardcodes Fixed (moved to config)
+1. `orchestrator.py:248` - ABC velocity factors `{0: 1.2, 1: 1.0, 2: 0.8}` → `inventory.initialization.abc_velocity_factors`
+2. `orchestrator.py:519` - Production order timeout `14` → `manufacturing.production_order_timeout_days`
+3. `orchestrator.py:528` - Batch retention days `30` → `manufacturing.batch_retention_days`
+4. `logistics.py:104` - Stale order threshold `14` → `logistics.stale_order_threshold_days`
+5. `calibrate_config.py:263` - ABC velocity factors for SLOB → `validation.slob_abc_velocity_factors`
+6. `calibrate_config.py:267` - SLOB margin `1.5` → `validation.slob_margin`
+
+### Config Sections Added
+```json
+"inventory.initialization.abc_velocity_factors": {"A": 1.2, "B": 1.0, "C": 0.8}
+"manufacturing.production_order_timeout_days": 14
+"manufacturing.batch_retention_days": 30
+"logistics.stale_order_threshold_days": 14
+"validation.slob_margin": 1.5
+"validation.slob_abc_velocity_factors": {"A": 0.7, "B": 1.0, "C": 1.5}
+```
+
+### Calibration Validations Added
+1. **Multi-echelon priming validation** - Verifies network DOS (store + DC + RDC) exceeds triggers
+2. **SLOB threshold vs network DOS** - Flags if thresholds too close to expected DOS
+3. **Capacity utilization bounds** - Warns if <50% or >95%
+4. **Expected turns sanity check** - Warns if <5x or >30x
+
+### Remaining Legitimate Hardcodes (not violations)
+- Loop counters and accumulators (0, 0.0)
+- Boolean mask assignments (True/False)
+- Enum/status string values
+- Physical constants (Earth radius)
 
 ---
 
