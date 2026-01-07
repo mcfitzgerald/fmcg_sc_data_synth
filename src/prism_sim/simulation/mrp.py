@@ -199,6 +199,25 @@ class MRPEngine:
         # C-items: when using actual demand, apply this factor
         self.c_demand_factor = mrp_thresholds.get("c_demand_factor", 0.8)
 
+        # v0.23.0: Campaign Batching parameters
+        # DEATH SPIRAL FIX: Instead of producing all 500 SKUs daily (25h changeover),
+        # produce larger batches for fewer SKUs (campaign runs).
+        # Only trigger production when DOS drops below threshold.
+        # When triggered, produce enough to cover the full horizon.
+        campaign_config = mrp_thresholds.get("campaign_batching", {})
+        self.campaign_batching_enabled = campaign_config.get("enabled", True)
+        self.production_horizon_days = campaign_config.get(
+            "production_horizon_days", 14
+        )
+        # Different DOS triggers by ABC class (A needs tighter coverage)
+        self.trigger_dos_a = campaign_config.get("trigger_dos_a", 10)
+        self.trigger_dos_b = campaign_config.get("trigger_dos_b", 7)
+        self.trigger_dos_c = campaign_config.get("trigger_dos_c", 5)
+        # Hard cap on SKUs per plant per day to limit changeover overhead
+        self.max_skus_per_plant_per_day = campaign_config.get(
+            "max_skus_per_plant_per_day", 25
+        )
+
     def _build_policy_vectors(self, mrp_config: dict[str, Any]) -> None:
         """Pre-calculate ROP and Target vectors for all products."""
         policies = mrp_config.get("inventory_policies", {})
@@ -777,178 +796,135 @@ class MRPEngine:
         pos_demand_vec: np.ndarray | None = None,
     ) -> list[ProductionOrder]:
         """
-        v0.19.11: POS-driven production (physically correct approach).
+        v0.23.0: Campaign Batching production (DEATH SPIRAL FIX).
 
-        Key insight: Production should TRACK actual consumer demand (POS),
-        not expected demand or derived signals. This creates a closed-loop
-        system that self-corrects based on actual inventory and demand.
-
-        Physics principle: At steady state, Production = Demand.
-        ABC differentiation is in RESPONSE DYNAMICS, not baseline rates.
+        Key insight: Instead of producing all 500 SKUs daily (causing 25h+ of
+        changeovers), produce larger batches for fewer SKUs. This matches how
+        real FMCG plants operate with "campaign runs".
 
         Production logic:
-        1. PRIMARY SIGNAL: Use POS demand (actual consumer sales)
-        2. INVENTORY FEEDBACK: Adjust based on actual DOS
-        3. ABC RESPONSE: Different catch-up/draw-down speeds per class
+        1. TRIGGER: Only produce when DOS drops below threshold (not daily)
+        2. BATCH SIZE: Produce horizon_days worth (not daily demand)
+        3. PRIORITY: Lowest DOS first (most critical items)
+        4. CAP: Max SKUs per plant per day (limits changeover overhead)
+
+        Math example:
+        - 500 SKUs, produce 14 days' worth when DOS < 7
+        - Each SKU produced every ~7 days = 500/7 ≈ 71 SKUs/day
+        - Split across 4 plants = ~18 SKUs/plant/day
+        - 18 x 0.05h changeover = 0.9h/plant (vs 25h before)
         """
-        production_orders: list[ProductionOrder] = []
+        # ================================================================
+        # PHASE 1: Build candidate list - only SKUs that need production
+        # ================================================================
+        # Candidate tuple: (product_id, plant_id, dos, batch_qty, abc_class)
+        candidates: list[tuple[str, str, float, float, int]] = []
+
+        mfg_config = self.config.get("simulation_parameters", {}).get(
+            "manufacturing", {}
+        )
+        absolute_min = float(mfg_config.get("rate_based_min_batch", 100.0))
 
         for product_id in self._finished_product_ids:
             p_idx = self.state.product_id_to_idx.get(product_id)
             if p_idx is None:
                 continue
 
-            # Get expected demand as fallback
+            # Get expected demand for batch sizing
             expected_demand = float(self.expected_daily_demand[p_idx])
             if expected_demand <= 0:
                 continue
 
-            # ============================================================
-            # v0.19.11: PRIMARY SIGNAL - Use POS demand (actual consumer sales)
-            # ============================================================
-            # POS demand is the TRUE demand signal - what consumers actually bought
-            # This is more reliable than order-based signals which collapse
-            if pos_demand_vec is not None:
-                pos_demand = float(pos_demand_vec[p_idx])
-            else:
-                # Fallback to avg demand if POS not available
-                pos_demand = float(avg_daily_demand_vec[p_idx])
+            # Use sustainable demand (capacity-aware) for batch calculation
+            sustainable_demand = float(self.sustainable_daily_demand[p_idx])
 
-            # Use POS demand directly as the primary signal
-            # v0.22.0 DEATH SPIRAL FIX: Remove the 70% floor!
-            # The floor was inflating demand for ALL SKUs, causing:
-            # - Production orders for items that don't need them
-            # - 500 orders/day → massive changeover overhead
+            # v0.23.0 FIX: Use EXPECTED demand for DOS, not POS
+            # Problem: When stores stock out, POS drops → DOS appears high →
+            # production doesn't trigger → more stockouts. This creates a
+            # different death spiral where production tracks depressed POS.
             #
-            # NEW LOGIC: Use actual POS demand. If stores are stocking out,
-            # the DOS-based control will trigger catch-up production.
-            # Only apply a floor for A-items to protect high-runners.
-            abc = self.abc_class[p_idx]
-            if abc == 0:  # A-item only: use floor to prevent stockouts
-                sustainable_floor = float(self.sustainable_daily_demand[p_idx]) * 0.5
-                actual_demand = max(pos_demand, sustainable_floor)
-            else:
-                # B and C items: use POS demand directly
-                actual_demand = max(pos_demand, 1.0)  # Avoid division by zero
+            # Solution: Calculate DOS against expected demand (what we SHOULD
+            # sell if inventory was available). This decouples production
+            # decisions from stockout-induced demand collapse.
+            demand_for_dos = max(expected_demand, sustainable_demand, 1.0)
 
-            # Calculate inventory position and DOS based on POS demand
+            # Calculate inventory position
             inventory_position = self._calculate_inventory_position(
                 product_id, in_transit_qty, in_production_qty
             )
 
-            # DOS calculated against actual POS demand (not derived signals)
-            if actual_demand > 0:
-                dos_position = inventory_position / actual_demand
-            else:
-                dos_position = float("inf")
+            # Calculate DOS
+            dos_position = inventory_position / demand_for_dos
 
-            # abc already assigned above at line 826
-
-            # ============================================================
-            # v0.19.11: CLOSED-LOOP CONTROL
-            # Production = Demand + Inventory Correction
-            # ABC determines HOW FAST we correct, not baseline rate
-            # ============================================================
-
-            if abc == 0:  # A-item: Fast response, high service target
-                # Target DOS for A-items: 14-21 days
-                target_dos = 17.0
-                if dos_position < 10:  # noqa: PLR2004
-                    # Critical low - aggressive catch-up (130% of demand)
-                    production_qty = actual_demand * 1.3
-                elif dos_position < target_dos:
-                    # Below target - moderate catch-up (115% of demand)
-                    production_qty = actual_demand * 1.15
-                elif dos_position < 30:  # noqa: PLR2004
-                    # At/above target - maintain (100% of demand)
-                    production_qty = actual_demand
-                else:
-                    # Overstocked - slight reduction (90% of demand)
-                    production_qty = actual_demand * 0.9
-
-            elif abc == 1:  # B-item: Balanced response
-                # Target DOS for B-items: 21 days
-                target_dos = 21.0
-                if dos_position < 14:  # noqa: PLR2004
-                    # Low - catch-up (110% of demand)
-                    production_qty = actual_demand * 1.1
-                elif dos_position < 35:  # noqa: PLR2004
-                    # Normal - match demand
-                    production_qty = actual_demand
-                else:
-                    # High - reduce (85% of demand)
-                    production_qty = actual_demand * 0.85
-
-            else:  # C-item: Slow response, let inventory self-correct
-                # Target DOS for C-items: 28 days (we can afford more buffer)
-                target_dos = 28.0
-                if dos_position < 14:  # noqa: PLR2004
-                    # Low - match demand (no aggressive catch-up for C)
-                    production_qty = actual_demand
-                elif dos_position < 45:  # noqa: PLR2004
-                    # Normal - slight underproduce (90%)
-                    production_qty = actual_demand * 0.9
-                elif dos_position < 90:  # noqa: PLR2004
-                    # High - reduce significantly (60%)
-                    production_qty = actual_demand * 0.6
-                else:
-                    # Very high (SLOB territory) - minimal production (30%)
-                    production_qty = actual_demand * 0.3
+            # Get ABC class and corresponding trigger threshold
+            abc = int(self.abc_class[p_idx])
+            if abc == 0:  # A-item
+                trigger_dos = self.trigger_dos_a
+            elif abc == 1:  # B-item
+                trigger_dos = self.trigger_dos_b
+            else:  # C-item
+                trigger_dos = self.trigger_dos_c
 
             # ============================================================
-            # SAFETY BOUNDS
+            # CAMPAIGN BATCHING: Only trigger when DOS < threshold
             # ============================================================
-            # v0.20.0: SLOB throttling applied FIRST, then floor (floor is absolute)
-            # This prevents SLOB from overriding safety floors and causing starvation
+            if dos_position < trigger_dos:
+                # Calculate batch size: horizon_days worth of demand
+                # Use sustainable_demand to ensure capacity-feasible batches
+                batch_qty = sustainable_demand * self.production_horizon_days
 
-            # SLOB Throttling - apply BEFORE floor so floor always wins
-            # Only throttle in extreme SLOB territory (90+ DOS = 3 months inventory)
-            if dos_position > 90.0:  # noqa: PLR2004
-                production_qty = min(production_qty, actual_demand * 0.7)
-            elif dos_position > 75.0:  # noqa: PLR2004
-                production_qty = min(production_qty, actual_demand * 0.85)
+                # Apply SLOB throttling for overstocked items
+                if dos_position > 60.0:  # noqa: PLR2004
+                    # Even if below trigger, reduce batch if already high inventory
+                    batch_qty *= 0.5
+                elif dos_position > 45.0:  # noqa: PLR2004
+                    batch_qty *= 0.7
 
-            # Floor: Only apply when DOS is critically low (< 7 days)
-            # v0.22.0 DEATH SPIRAL FIX: Remove blanket daily floors!
-            # With 500 SKUs, daily floors for ALL SKUs cause:
-            # - 500 production orders/day
-            # - Massive changeover time (25+ hours)
-            # - Changeovers exceed daily capacity → production collapse
-            #
-            # NEW LOGIC: Only boost production when DOS is truly critical.
-            # Let the DOS-based control logic (lines 835-878) handle normal cases.
-            # This reduces changeover overhead dramatically.
-            if dos_position < 7.0:  # noqa: PLR2004
-                # Critical shortage - apply minimum floor
-                abc_floors = {0: 0.7, 1: 0.5, 2: 0.3}
-                floor_pct = abc_floors.get(abc, 0.3)
-                sustainable_demand = float(self.sustainable_daily_demand[p_idx])
-                production_qty = max(production_qty, sustainable_demand * floor_pct)
+                # Apply ABC-based minimum to ensure A-items always get coverage
+                if abc == 0:  # A-item minimum
+                    min_batch = sustainable_demand * 7.0  # At least 1 week
+                    batch_qty = max(batch_qty, min_batch)
 
-            # Cap: Never produce more than 150% of sustainable (prevent runaway)
-            sustainable_demand = float(self.sustainable_daily_demand[p_idx])
-            production_qty = min(production_qty, sustainable_demand * 1.5)
+                # Skip if batch too small
+                if batch_qty < absolute_min:
+                    continue
 
-            order_qty = production_qty
-
-            # Apply minimum batch size
-            # v0.19.9: For rate-based production, use a lower minimum to avoid
-            # filtering out C-items entirely. C-items with Zipfian distribution
-            # average ~450 cases/day, so use 100 as the floor.
-            mfg_config = self.config.get(
-                "simulation_parameters", {}
-            ).get("manufacturing", {})
-            # Use a lower min batch for rate-based mode to capture C-items
-            absolute_min = float(mfg_config.get("rate_based_min_batch", 100.0))
-
-            # Only create order if meaningful quantity
-            if order_qty >= absolute_min:
+                # Get plant assignment
                 plant_id = self._select_plant(product_id)
+
+                # Add to candidates: (product_id, plant_id, dos, batch_qty, abc)
+                candidates.append((product_id, plant_id, dos_position, batch_qty, abc))
+
+        # ================================================================
+        # PHASE 2: Sort by priority (lowest DOS first, then ABC)
+        # ================================================================
+        # Sort by: ABC class (A first), then DOS (lowest first)
+        # This ensures A-items with critical DOS get produced first
+        candidates.sort(key=lambda x: (x[4], x[2]))  # (abc, dos)
+
+        # ================================================================
+        # PHASE 3: Select top N per plant (limit changeovers)
+        # ================================================================
+        # Group by plant and take top N from each
+        plant_orders: dict[str, list[tuple[str, str, float, float, int]]] = {}
+        for cand in candidates:
+            plant_id = cand[1]
+            if plant_id not in plant_orders:
+                plant_orders[plant_id] = []
+            plant_orders[plant_id].append(cand)
+
+        production_orders: list[ProductionOrder] = []
+
+        for plant_id, plant_candidates in plant_orders.items():
+            # Take top N candidates for this plant
+            selected = plant_candidates[: self.max_skus_per_plant_per_day]
+
+            for product_id, _, dos, batch_qty, _ in selected:
                 po = ProductionOrder(
                     id=self._generate_po_id(current_day),
                     plant_id=plant_id,
                     product_id=product_id,
-                    quantity_cases=order_qty,
+                    quantity_cases=batch_qty,
                     creation_day=current_day,
                     due_day=current_day + self.production_lead_time,
                     status=ProductionOrderStatus.PLANNED,
@@ -957,15 +933,9 @@ class MRPEngine:
                 production_orders.append(po)
 
         # ================================================================
-        # v0.22.0 DEATH SPIRAL FIX: Cap total orders at plant capacity
+        # PHASE 4: Final capacity check (safety valve)
         # ================================================================
-        # Individual SKU caps don't guarantee total stays within capacity.
-        # When many SKUs request catch-up (130% of demand), total can exceed
-        # what plants can produce. Backlog accumulates → more changeovers
-        # → less production → death spiral.
-        #
-        # FIX: If total orders exceed 95% of capacity, scale down proportionally.
-        # The 95% buffer leaves room for catch-up without creating backlog.
+        # Even with SKU limits, total volume might exceed capacity
         total_orders = sum(po.quantity_cases for po in production_orders)
         capacity_threshold = self._max_daily_capacity * 0.95
 

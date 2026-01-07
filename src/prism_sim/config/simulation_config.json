@@ -206,7 +206,15 @@
         "abc_production_enabled": true,
         "a_production_buffer": 1.1,
         "c_production_factor": 0.6,
-        "c_demand_factor": 0.8
+        "c_demand_factor": 0.8,
+        "campaign_batching": {
+          "enabled": true,
+          "production_horizon_days": 10,
+          "trigger_dos_a": 14,
+          "trigger_dos_b": 10,
+          "trigger_dos_c": 7,
+          "max_skus_per_plant_per_day": 60
+        }
       },
       "inventory_policies": {
         "DEFAULT": {
