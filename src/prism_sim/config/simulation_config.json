@@ -88,7 +88,7 @@
       "sku_popularity_alpha": 0.5,
       "seasonality": {
         "amplitude": 0.12,
-        "capacity_amplitude": 0.12,
+        "capacity_amplitude": 0.108,
         "phase_shift_days": 150,
         "cycle_days": 365
       },
@@ -334,6 +334,11 @@
         "C": 1.5
       },
       "slob_min_demand_velocity": 1.0,
+      "seasonal_min_peak_margin": 0.05,
+      "seasonal_min_trough_margin": 0.10,
+      "seasonal_max_peak_oee": 0.95,
+      "seasonal_min_trough_oee": 0.40,
+      "seasonal_target_trough_buffer": 0.10,
       "inventory_turns_range": [
         6.0,
         14.0

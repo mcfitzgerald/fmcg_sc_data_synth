@@ -5,6 +5,61 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.30.0] - 2026-01-10
+
+### Seasonal Capacity Calibration Enhancement
+
+Enhanced the calibration script to validate and optimize seasonal capacity parameters, addressing the service degradation introduced in v0.29.0.
+
+#### Root Cause Analysis
+
+v0.29.0 set `capacity_amplitude = 0.12` to match `demand_amplitude = 0.12`, creating symmetric flex. During trough periods, when both demand AND capacity drop by 12%, there's no margin for demand variability, causing stockouts.
+
+#### Changes
+
+**Calibration Script (`scripts/calibrate_config.py`)**
+- Added `validate_seasonal_balance()` function to check capacity meets demand across all seasons
+- Added `derive_seasonal_capacity_params()` function to derive optimal capacity_amplitude based on physics
+- Integrated seasonal validation into the main calibration flow
+- Added seasonal analysis section to calibration report output
+- Updated `apply_recommendations()` to set `capacity_amplitude`
+
+**Configuration (`simulation_config.json`)**
+- Changed `capacity_amplitude` from 0.12 to 0.108 (physics-derived: `demand_amp × (1 - trough_buffer)`)
+- Added seasonal validation thresholds to `validation` section:
+  - `seasonal_min_peak_margin`: 0.05 (5% minimum margin at peak)
+  - `seasonal_min_trough_margin`: 0.10 (10% minimum margin at trough)
+  - `seasonal_max_peak_oee`: 0.95 (flag if OEE > 95% at peak)
+  - `seasonal_min_trough_oee`: 0.40 (flag if OEE < 40% at trough)
+  - `seasonal_target_trough_buffer`: 0.10 (target 10% buffer during trough)
+
+#### Physics Rationale
+
+The key insight is that `capacity_amplitude` should be LESS than `demand_amplitude` to maintain safety buffer during troughs:
+
+```
+demand_amplitude = 0.12 (±12%)
+capacity_amplitude = 0.108 (±10.8%)
+
+At TROUGH (day ~58):
+  Demand:   base × 0.88 = 88%
+  Capacity: base × 0.892 = 89.2%
+  Margin:   ~1.4% buffer (was 0% with symmetric 0.12)
+```
+
+This small asymmetry maintains service during trough while preserving most of the SLOB improvement from v0.29.0.
+
+#### Actual Metrics Impact (365-day)
+
+| Metric | v0.29.0 | v0.30.0 | Target |
+|--------|---------|---------|--------|
+| SLOB | 26.2% | **25.1%** | <30% |
+| Service | 73.7% | **74.3%** | >85% |
+| Turns | 10.43x | **10.32x** | 12-16x |
+| OEE | 41.4% | **41.6%** | 65-85% |
+
+**Analysis**: Modest service improvement (+0.6%) with slight SLOB improvement. The small change (0.12 → 0.108) provides minimal buffer. Further reduction to 0.10 or 0.08 may be needed if service target remains priority.
+
 ## [0.29.0] - 2026-01-08
 
 ### Flexible Production Capacity (Seasonal Capacity Flex)

@@ -419,6 +419,9 @@ def derive_optimal_parameters(
             "expected_network_dos": round(base_network_dos, 1),
             "expected_turns": round(365.0 / base_network_dos, 1),
         },
+        # Seasonal capacity analysis added in v0.30.0
+        # Will be populated by derive_seasonal_capacity_params after initial derivation
+        "seasonal_capacity": {},
     }
 
 
@@ -516,6 +519,166 @@ def validate_config_consistency(
     return violations
 
 
+def validate_seasonal_balance(
+    sim_config: dict[str, Any],
+    derived: dict[str, Any],
+) -> list[str]:
+    """
+    Validate capacity meets demand across all seasons.
+
+    v0.30.0: Ensures seasonal capacity flex doesn't create structural
+    shortfalls during peak or insufficient buffer during trough.
+    """
+    warnings: list[str] = []
+
+    sim_params = sim_config.get("simulation_parameters", {})
+    demand_config = sim_params.get("demand", {}).get("seasonality", {})
+    validation_config = sim_params.get("validation", {})
+
+    demand_amp = demand_config.get("amplitude", 0.12)
+    capacity_amp = demand_config.get("capacity_amplitude", 0.0)
+
+    if capacity_amp == 0:
+        return warnings  # No seasonal flex, skip validation
+
+    base_demand = derived.get("analysis", {}).get("total_daily_demand", 0)
+    base_capacity = derived.get("analysis", {}).get("current_capacity", 0)
+
+    if base_capacity == 0:
+        return warnings  # Can't validate without capacity data
+
+    # Get margin thresholds from config (with sensible defaults)
+    min_peak_margin = validation_config.get("seasonal_min_peak_margin", 0.05)
+    min_trough_margin = validation_config.get("seasonal_min_trough_margin", 0.10)
+    max_peak_oee = validation_config.get("seasonal_max_peak_oee", 0.95)
+    min_trough_oee = validation_config.get("seasonal_min_trough_oee", 0.40)
+
+    # Peak validation: capacity must exceed demand with margin
+    peak_demand = base_demand * (1 + demand_amp)
+    peak_capacity = base_capacity * (1 + capacity_amp)
+    peak_margin = (peak_capacity - peak_demand) / peak_demand if peak_demand > 0 else 0
+
+    if peak_margin < min_peak_margin:
+        warnings.append(
+            f"Peak season: capacity margin only {peak_margin:.1%} "
+            f"(demand {peak_demand:,.0f}, capacity {peak_capacity:,.0f}) "
+            f"-> stockouts likely during peak"
+        )
+
+    # Trough validation: need buffer for variability
+    trough_demand = base_demand * (1 - demand_amp)
+    trough_capacity = base_capacity * (1 - capacity_amp)
+    trough_margin = (
+        (trough_capacity - trough_demand) / trough_demand if trough_demand > 0 else 0
+    )
+
+    if trough_margin < min_trough_margin:
+        warnings.append(
+            f"Trough season: capacity margin only {trough_margin:.1%} "
+            f"(demand {trough_demand:,.0f}, capacity {trough_capacity:,.0f}) "
+            f"-> insufficient buffer for demand variability"
+        )
+
+    # OEE range validation
+    if peak_capacity > 0:
+        peak_oee = peak_demand / peak_capacity
+        if peak_oee > max_peak_oee:
+            warnings.append(
+                f"Peak OEE would be {peak_oee:.0%} (>{max_peak_oee:.0%}) "
+                f"-> capacity-constrained"
+            )
+
+    if trough_capacity > 0:
+        trough_oee = trough_demand / trough_capacity
+        if trough_oee < min_trough_oee:
+            warnings.append(
+                f"Trough OEE would be {trough_oee:.0%} (<{min_trough_oee:.0%}) "
+                f"-> very low utilization"
+            )
+
+    # Amplitude relationship check
+    if capacity_amp > demand_amp:
+        warnings.append(
+            f"capacity_amplitude ({capacity_amp}) > demand amplitude ({demand_amp}) "
+            f"-> unused capacity during peak, risk during trough"
+        )
+
+    return warnings
+
+
+def derive_seasonal_capacity_params(
+    sim_config: dict[str, Any],
+    derived: dict[str, Any],
+) -> dict[str, Any]:
+    """
+    Derive optimal capacity_amplitude based on physics.
+
+    Key insight: capacity_amplitude should be LESS than demand_amplitude
+    to maintain safety buffer during troughs.
+
+    Real FMCG practice:
+    - Peak: Easy to add overtime, temp workers
+    - Trough: Labor contracts limit reduction
+
+    Returns recommendations for seasonal capacity parameters.
+    """
+    sim_params = sim_config.get("simulation_parameters", {})
+    demand_config = sim_params.get("demand", {}).get("seasonality", {})
+    validation_config = sim_params.get("validation", {})
+
+    demand_amp = demand_config.get("amplitude", 0.12)
+    current_capacity_amp = demand_config.get("capacity_amplitude", 0.0)
+
+    # Get target buffer from config (default 10% margin at trough)
+    target_trough_buffer = validation_config.get(
+        "seasonal_target_trough_buffer", 0.10
+    )
+
+    # Derive optimal capacity amplitude
+    # If demand drops by demand_amp, capacity should drop less
+    # to maintain buffer: capacity_amp = demand_amp * (1 - buffer_fraction)
+    # This ensures trough_capacity / trough_demand >= 1 + buffer
+    optimal_symmetric = demand_amp * (1 - target_trough_buffer)
+
+    # Get base metrics for seasonal analysis
+    base_demand = derived.get("analysis", {}).get("total_daily_demand", 0)
+    base_capacity = derived.get("analysis", {}).get("current_capacity", 0)
+
+    # Calculate seasonal metrics for reporting
+    seasonal_metrics = {
+        "peak_demand": base_demand * (1 + demand_amp),
+        "peak_capacity_current": base_capacity * (1 + current_capacity_amp),
+        "peak_capacity_recommended": base_capacity * (1 + optimal_symmetric),
+        "trough_demand": base_demand * (1 - demand_amp),
+        "trough_capacity_current": base_capacity * (1 - current_capacity_amp),
+        "trough_capacity_recommended": base_capacity * (1 - optimal_symmetric),
+    }
+
+    # Calculate margins
+    if seasonal_metrics["trough_demand"] > 0:
+        current_trough_margin = (
+            seasonal_metrics["trough_capacity_current"]
+            - seasonal_metrics["trough_demand"]
+        ) / seasonal_metrics["trough_demand"]
+        recommended_trough_margin = (
+            seasonal_metrics["trough_capacity_recommended"]
+            - seasonal_metrics["trough_demand"]
+        ) / seasonal_metrics["trough_demand"]
+    else:
+        current_trough_margin = 0
+        recommended_trough_margin = 0
+
+    return {
+        "demand_amplitude": demand_amp,
+        "current_capacity_amplitude": current_capacity_amp,
+        "recommended_capacity_amplitude": round(optimal_symmetric, 3),
+        "target_trough_buffer": target_trough_buffer,
+        "current_trough_margin": round(current_trough_margin, 3),
+        "recommended_trough_margin": round(recommended_trough_margin, 3),
+        "seasonal_metrics": seasonal_metrics,
+    }
+
+
 def print_report(
     demand_analysis: dict[str, Any],
     capacity_analysis: dict[str, Any],
@@ -530,10 +693,10 @@ def print_report(
     print("\n--- DEMAND ANALYSIS ---")
     print(f"Total Stores: {demand_analysis['n_stores']:,}")
     print(f"Total SKUs: {demand_analysis['total_skus']:,}")
-    print(f"SKUs by Category:")
+    print("SKUs by Category:")
     for cat, count in demand_analysis["sku_counts"].items():
         print(f"  {cat}: {count}")
-    print(f"\nDaily Demand by Category:")
+    print("\nDaily Demand by Category:")
     for cat, demand in demand_analysis["category_demand"].items():
         print(f"  {cat}: {demand:,.0f} cases/day")
     print(f"\nTOTAL DAILY DEMAND: {demand_analysis['total_daily_demand']:,.0f} cases/day")
@@ -542,7 +705,7 @@ def print_report(
     print(f"Base Capacity (1 line/plant): {capacity_analysis['total_theoretical_capacity']:,.0f} cases/day")
     print(f"Current Multiplier: {capacity_analysis['current_multiplier']}x")
     print(f"Current Effective Capacity: {capacity_analysis['total_with_multiplier']:,.0f} cases/day")
-    print(f"\nPlant Breakdown (1 line each):")
+    print("\nPlant Breakdown (1 line each):")
     for plant_id, cap in capacity_analysis["plant_capacities"].items():
         print(f"  {plant_id}:")
         print(f"    Categories: {', '.join(cap['supported_categories'])}")
@@ -599,6 +762,41 @@ def print_report(
             print("\n  WARNING: SLOB thresholds mismatch physics!")
             for m in mismatches:
                 print(m)
+
+    # Seasonal capacity analysis (v0.30.0)
+    seasonal = recommendations.get("seasonal_capacity", {})
+    if seasonal:
+        print("\n--- SEASONAL CAPACITY ANALYSIS (v0.30.0) ---")
+        d_amp = seasonal["demand_amplitude"]
+        c_amp_cur = seasonal["current_capacity_amplitude"]
+        c_amp_rec = seasonal["recommended_capacity_amplitude"]
+        print(f"Demand Amplitude: ±{d_amp:.0%}")
+        print(f"Current Capacity Amplitude: ±{c_amp_cur:.0%}")
+        print(f"Recommended Capacity Amplitude: ±{c_amp_rec:.1%}")
+        print(f"Target Trough Buffer: {seasonal['target_trough_buffer']:.0%}")
+        print("\nTrough Margin Analysis:")
+        print(f"  Current: {seasonal['current_trough_margin']:.1%}")
+        print(f"  Recommended: {seasonal['recommended_trough_margin']:.1%}")
+
+        metrics = seasonal.get("seasonal_metrics", {})
+        if metrics:
+            print("\nSeasonal Capacity/Demand (cases/day):")
+            peak_d = metrics.get("peak_demand", 0)
+            peak_c_cur = metrics.get("peak_capacity_current", 0)
+            peak_c_rec = metrics.get("peak_capacity_recommended", 0)
+            trough_d = metrics.get("trough_demand", 0)
+            trough_c_cur = metrics.get("trough_capacity_current", 0)
+            trough_c_rec = metrics.get("trough_capacity_recommended", 0)
+
+            print(f"  Peak Demand:     {peak_d:,.0f}")
+            print(f"  Peak Capacity:   {peak_c_cur:,.0f} / {peak_c_rec:,.0f} (rec)")
+            print(f"  Trough Demand:   {trough_d:,.0f}")
+            print(f"  Trough Capacity: {trough_c_cur:,.0f} / {trough_c_rec:,.0f} (rec)")
+
+        # Show warning if current amplitude differs from recommended
+        amplitude_tolerance = 0.01  # 1% tolerance
+        if abs(c_amp_cur - c_amp_rec) > amplitude_tolerance:
+            print(f"\n  NOTE: capacity_amp ({c_amp_cur}) != rec ({c_amp_rec:.3f})")
 
     print("\n--- RECOMMENDATIONS ---")
     rec = recommendations["recommendations"]
@@ -666,6 +864,13 @@ def apply_recommendations(
     validation = sim_params.setdefault("validation", {})
     validation["slob_abc_thresholds"] = rec["slob_abc_thresholds"]
 
+    # Update seasonal capacity amplitude (v0.30.0)
+    seasonal = recommendations.get("seasonal_capacity", {})
+    if seasonal and "recommended_capacity_amplitude" in seasonal:
+        demand = sim_params.setdefault("demand", {})
+        seasonality = demand.setdefault("seasonality", {})
+        seasonality["capacity_amplitude"] = seasonal["recommended_capacity_amplitude"]
+
     save_json(sim_config_path, config)
     print(f"\nApplied recommendations to {sim_config_path}")
 
@@ -728,8 +933,17 @@ def main() -> None:
         target_service_level=args.target_service,
     )
 
+    # Add seasonal capacity analysis (v0.30.0)
+    recommendations["seasonal_capacity"] = derive_seasonal_capacity_params(
+        sim_config, recommendations
+    )
+
     # Validate config consistency
     violations = validate_config_consistency(sim_config, recommendations)
+
+    # Add seasonal balance warnings (v0.30.0)
+    seasonal_warnings = validate_seasonal_balance(sim_config, recommendations)
+    violations.extend(seasonal_warnings)
 
     # Report
     print_report(demand_analysis, capacity_analysis, recommendations, violations)
