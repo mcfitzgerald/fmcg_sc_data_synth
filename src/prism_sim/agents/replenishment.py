@@ -787,10 +787,10 @@ class MinMaxReplenisher:
         sigma_L_vec = np.zeros((n_targets, 1), dtype=np.float32)
 
         if np.any(has_source):
-            valid_targets = target_idx_arr[has_source]
-            valid_sources = source_idx_arr[has_source]
-            mu_L_vec[has_source, 0] = self._lt_mu_cache[valid_targets, valid_sources]
-            sigma_L_vec[has_source, 0] = self._lt_sigma_cache[valid_targets, valid_sources]
+            valid_target_idx = target_idx_arr[has_source]
+            valid_source_idx = source_idx_arr[has_source]
+            mu_L_vec[has_source, 0] = self._lt_mu_cache[valid_target_idx, valid_source_idx]
+            sigma_L_vec[has_source, 0] = self._lt_sigma_cache[valid_target_idx, valid_source_idx]
 
         # 1. Cycle Stock = Average Demand * Mean Lead Time
         # Using realized mean lead time instead of static config
@@ -988,10 +988,12 @@ class MinMaxReplenisher:
             source_id = self.store_supplier_map.get(target_id)
             if not source_id: continue
 
+            target_node = self.world.nodes.get(target_id)
+
             # Determine Order Type
             o_type = OrderType.STANDARD
             priority = OrderPriority.LOW
-            if node.type == NodeType.DC:
+            if target_node and target_node.type == NodeType.DC:
                 # DC orders are standard replenishment
                 priority = OrderPriority.STANDARD
 

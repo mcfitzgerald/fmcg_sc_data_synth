@@ -78,6 +78,16 @@ class TransformEngine:
         # with automated changeover. Recipe default of 0.5h becomes 3 minutes.
         self.changeover_multiplier = mfg_config.get("changeover_time_multiplier", 0.1)
 
+        # v0.29.0: Seasonal capacity flex configuration
+        # Mirrors demand seasonality so production can flex with demand:
+        # - Peak demand → higher capacity (overtime, extra shifts)
+        # - Trough demand → lower capacity (reduced shifts, maintenance)
+        demand_config = config.get("simulation_parameters", {}).get("demand", {})
+        season_cfg = demand_config.get("seasonality", {})
+        self._seasonal_capacity_amplitude = season_cfg.get("capacity_amplitude", 0.0)
+        self._seasonal_phase_shift = season_cfg.get("phase_shift_days", 150)
+        self._seasonal_cycle_days = season_cfg.get("cycle_days", 365)
+
         # Recall Scenario Config
         self.recall_scenario = mfg_config.get("recall_scenario", {})
         self.recall_product_id = self.recall_scenario.get("product_id", "SKU-DET-001")
@@ -155,6 +165,34 @@ class TransformEngine:
         self._base_demand = base_demand
         self._classify_products_abc()
 
+    def _get_seasonal_capacity_factor(self, day: int) -> float:
+        """
+        Calculate seasonal capacity multiplier for a given day.
+
+        v0.29.0: Mirrors demand seasonality so production can flex with demand:
+        - Peak demand → higher capacity (overtime, extra shifts)
+        - Trough demand → lower capacity (reduced shifts, maintenance)
+
+        Args:
+            day: Current simulation day
+
+        Returns:
+            Capacity multiplier (e.g., 1.12 for +12% capacity during peak)
+        """
+        if self._seasonal_capacity_amplitude == 0:
+            return 1.0
+
+        return float(
+            1.0
+            + self._seasonal_capacity_amplitude
+            * np.sin(
+                2
+                * np.pi
+                * (day - self._seasonal_phase_shift)
+                / self._seasonal_cycle_days
+            )
+        )
+
     def _classify_products_abc(self) -> None:
         """
         Classify products into A/B/C based on base demand velocity.
@@ -170,7 +208,7 @@ class TransformEngine:
             .get("abc_prioritization", {})
         )
         if not abc_config.get("enabled", True):
-            self._product_abc_class = {}
+            self._product_abc_class: dict[str, str] = {}
             return
 
         thresh_a = abc_config.get("a_threshold_pct", 0.80)
@@ -191,7 +229,7 @@ class TransformEngine:
         idx_a = np.searchsorted(cumulative, total_volume * thresh_a, side='right')
         idx_b = np.searchsorted(cumulative, total_volume * thresh_b, side='right')
 
-        self._product_abc_class: dict[str, str] = {}
+        self._product_abc_class = {}
         for i, p_idx in enumerate(sorted_indices):
             p_id = self.state.product_idx_to_id[p_idx]
             if i < idx_a:
@@ -230,9 +268,19 @@ class TransformEngine:
         new_batches: list[Batch] = []
         plant_oee: dict[str, float] = {}
 
-        # Reset daily capacity for all plants
-        for plant_state in self._plant_states.values():
-            plant_state.remaining_capacity_hours = plant_state.max_capacity_hours
+        # v0.29.0: Apply seasonal capacity factor for flexible capacity
+        # This allows production to track seasonal demand patterns:
+        # - Peak season: overtime, extra shifts → capacity INCREASES
+        # - Trough season: reduced shifts, maintenance → capacity DECREASES
+        seasonal_factor = self._get_seasonal_capacity_factor(current_day)
+
+        # Reset daily capacity for all plants (with seasonal adjustment)
+        # Track effective capacity for accurate OEE calculation
+        effective_daily_capacity: dict[str, float] = {}
+        for plant_id, plant_state in self._plant_states.items():
+            effective_capacity = plant_state.max_capacity_hours * seasonal_factor
+            plant_state.remaining_capacity_hours = effective_capacity
+            effective_daily_capacity[plant_id] = effective_capacity
 
         # Sort orders by:
         # 1. Plant ID -> Process each plant's orders together
@@ -257,12 +305,14 @@ class TransformEngine:
                 self.batches.append(batch)
 
         # Calculate OEE for each plant (Utilization of Effective Capacity)
+        # v0.29.0: Use effective_daily_capacity (seasonally adjusted) for OEE denominator
         for plant_id, plant_state in self._plant_states.items():
-            used_cap = (
-                plant_state.max_capacity_hours - plant_state.remaining_capacity_hours
+            effective_cap = effective_daily_capacity.get(
+                plant_id, plant_state.max_capacity_hours
             )
-            if plant_state.max_capacity_hours > 0:
-                oee = used_cap / plant_state.max_capacity_hours
+            used_cap = effective_cap - plant_state.remaining_capacity_hours
+            if effective_cap > 0:
+                oee = used_cap / effective_cap
             else:
                 oee = 0.0
             plant_oee[plant_id] = oee

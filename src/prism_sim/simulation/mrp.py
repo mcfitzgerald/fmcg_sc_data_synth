@@ -123,6 +123,17 @@ class MRPEngine:
         # Only throttle production if DOS exceeds this many days
         self.inventory_cap_dos = mrp_thresholds.get("inventory_cap_dos", 45.0)
 
+        # v0.28.0: Seasonality parameters for demand-aware MRP
+        # Without this, MRP uses flat expected demand for DOS/batch calculations,
+        # causing overproduction during troughs → inventory ages → SLOB accumulation
+        demand_config = config.get("simulation_parameters", {}).get("demand", {})
+        season_config = demand_config.get("seasonality", {})
+        self._seasonality_amplitude = season_config.get("amplitude", 0.12)
+        self._seasonality_phase_shift = season_config.get("phase_shift_days", 150)
+        self._seasonality_cycle_days = season_config.get("cycle_days", 365)
+        # v0.29.0: Capacity amplitude for flexible production capacity
+        self._capacity_amplitude = season_config.get("capacity_amplitude", 0.0)
+
         # Diagnostics storage
         self._diagnostics: MRPDiagnostics | None = None
         self._diagnostics_enabled = mrp_thresholds.get("diagnostics_enabled", True)
@@ -393,18 +404,18 @@ class MRPEngine:
             if not cat_p_indices:
                 continue
 
-            cat_p_indices = np.array(cat_p_indices)
-            cat_demands = np.array(cat_demands)
+            cat_p_arr = np.array(cat_p_indices)
+            cat_demands_arr = np.array(cat_demands)
 
-            cat_total_volume = np.sum(cat_demands)
+            cat_total_volume = np.sum(cat_demands_arr)
             if cat_total_volume == 0:
                 continue
 
             # Sort within category
-            sorted_local_indices = np.argsort(cat_demands)[::-1]
-            sorted_global_indices = cat_p_indices[sorted_local_indices]
+            sorted_local_indices = np.argsort(cat_demands_arr)[::-1]
+            sorted_global_indices = cat_p_arr[sorted_local_indices]
 
-            cumulative_volume = np.cumsum(cat_demands[sorted_local_indices])
+            cumulative_volume = np.cumsum(cat_demands_arr[sorted_local_indices])
 
             # Determine cutoffs
             idx_a = np.searchsorted(
@@ -500,7 +511,7 @@ class MRPEngine:
                 total_capacity += plant_capacity
 
         # v0.22.0: Apply rate multiplier (simulates multiple production lines)
-        return total_capacity * rate_multiplier
+        return float(total_capacity * rate_multiplier)
 
     def _cache_node_info(self) -> None:
         """Cache RDC and Plant node IDs for efficient lookups.
@@ -541,6 +552,45 @@ class MRPEngine:
             + in_transit_qty.get(product_id, 0.0)
             + in_production_qty.get(product_id, 0.0)
         )
+
+    def _get_seasonal_factor(self, day: int) -> float:
+        """
+        v0.28.0: Calculate seasonal demand factor for a given day.
+
+        Returns a multiplier (e.g., 0.88 for trough, 1.12 for peak) that
+        represents actual demand relative to expected annual average.
+
+        This matches the seasonality calculation in POSEngine.generate_demand().
+        """
+        return float(1.0 + self._seasonality_amplitude * np.sin(
+            2 * np.pi * (day - self._seasonality_phase_shift) / self._seasonality_cycle_days
+        ))
+
+    def _get_daily_capacity(self, day: int) -> float:
+        """
+        v0.29.0: Get production capacity for a specific day, accounting for seasonal flex.
+
+        Mirrors demand seasonality so MRP can plan with accurate capacity knowledge:
+        - Peak demand → higher capacity available (overtime, extra shifts)
+        - Trough demand → lower capacity available (reduced shifts, maintenance)
+
+        This allows MRP to generate appropriately-sized production orders that
+        TransformEngine can actually execute within the day's capacity.
+
+        Args:
+            day: Current simulation day
+
+        Returns:
+            Total network capacity in cases/day, seasonally adjusted
+        """
+        if self._capacity_amplitude == 0:
+            return self._max_daily_capacity
+
+        # Apply same sinusoidal pattern as demand seasonality
+        capacity_factor = 1.0 + self._capacity_amplitude * np.sin(
+            2 * np.pi * (day - self._seasonality_phase_shift) / self._seasonality_cycle_days
+        )
+        return float(self._max_daily_capacity * capacity_factor)
 
     def generate_production_orders(  # noqa: PLR0912, PLR0915
         self,
@@ -825,6 +875,11 @@ class MRPEngine:
         )
         absolute_min = float(mfg_config.get("rate_based_min_batch", 100.0))
 
+        # v0.28.0: Get seasonal factor for current day
+        # This adjusts production decisions to track actual seasonal demand,
+        # preventing overproduction during troughs that causes SLOB accumulation.
+        seasonal_factor = self._get_seasonal_factor(current_day)
+
         for product_id in self._finished_product_ids:
             p_idx = self.state.product_id_to_idx.get(product_id)
             if p_idx is None:
@@ -838,15 +893,21 @@ class MRPEngine:
             # Use sustainable demand (capacity-aware) for batch calculation
             sustainable_demand = float(self.sustainable_daily_demand[p_idx])
 
+            # v0.28.0: Apply seasonal adjustment to expected demands
+            # This makes MRP track actual seasonal demand patterns, preventing
+            # overproduction during troughs (which causes SLOB accumulation) and
+            # underproduction during peaks (which causes stockouts).
+            seasonal_expected = expected_demand * seasonal_factor
+            seasonal_sustainable = sustainable_demand * seasonal_factor
+
             # v0.23.0 FIX: Use EXPECTED demand for DOS, not POS
             # Problem: When stores stock out, POS drops → DOS appears high →
             # production doesn't trigger → more stockouts. This creates a
             # different death spiral where production tracks depressed POS.
             #
-            # Solution: Calculate DOS against expected demand (what we SHOULD
-            # sell if inventory was available). This decouples production
-            # decisions from stockout-induced demand collapse.
-            demand_for_dos = max(expected_demand, sustainable_demand, 1.0)
+            # v0.28.0 UPDATE: Use SEASONAL expected demand instead of flat expected.
+            # This preserves the death-spiral protection while tracking seasonality.
+            demand_for_dos = max(seasonal_expected, seasonal_sustainable, 1.0)
 
             # Calculate inventory position
             inventory_position = self._calculate_inventory_position(
@@ -870,8 +931,16 @@ class MRPEngine:
             # ============================================================
             if dos_position < trigger_dos:
                 # Calculate batch size: horizon_days worth of demand
-                # Use sustainable_demand to ensure capacity-feasible batches
-                batch_qty = sustainable_demand * self.production_horizon_days
+                # v0.28.0: Use seasonal_sustainable for seasonally-adjusted batch sizes
+                batch_qty = seasonal_sustainable * self.production_horizon_days
+
+                # v0.28.0: Apply ABC-differentiated production factors
+                # A-items: buffer 10% more to prevent stockouts
+                # C-items: reduce 40% to prevent SLOB accumulation
+                if abc == 0:  # A-item
+                    batch_qty *= self.a_production_buffer  # 1.1
+                elif abc == 2:  # C-item
+                    batch_qty *= self.c_production_factor  # 0.6
 
                 # Apply SLOB throttling for overstocked items
                 if dos_position > 60.0:  # noqa: PLR2004
@@ -882,7 +951,7 @@ class MRPEngine:
 
                 # Apply ABC-based minimum to ensure A-items always get coverage
                 if abc == 0:  # A-item minimum
-                    min_batch = sustainable_demand * 7.0  # At least 1 week
+                    min_batch = seasonal_sustainable * 7.0  # At least 1 week
                     batch_qty = max(batch_qty, min_batch)
 
                 # Skip if batch too small
@@ -936,8 +1005,10 @@ class MRPEngine:
         # PHASE 4: Final capacity check (safety valve)
         # ================================================================
         # Even with SKU limits, total volume might exceed capacity
+        # v0.29.0: Use day-aware capacity to account for seasonal flex
         total_orders = sum(po.quantity_cases for po in production_orders)
-        capacity_threshold = self._max_daily_capacity * 0.95
+        daily_capacity = self._get_daily_capacity(current_day)
+        capacity_threshold = daily_capacity * 0.95
 
         if total_orders > capacity_threshold and total_orders > 0:
             scale_factor = capacity_threshold / total_orders

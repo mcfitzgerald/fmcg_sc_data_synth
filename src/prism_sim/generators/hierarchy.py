@@ -454,9 +454,10 @@ class ProductGenerator:
                         actives.append(self.rng.choice(general_chem_candidates))  # type: ignore
                 else:
                     n_actives = self.rng.integers(1, 3)
-                    actives = self.rng.choice(
-                        general_chem_candidates, size=n_actives, replace=False
-                    )  # type: ignore
+                    # rng.choice with list[Product] returns ndarray but works at runtime
+                    actives = list(self.rng.choice(
+                        general_chem_candidates, size=n_actives, replace=False  # type: ignore[arg-type]
+                    ))
 
                 total_active_kg = p.weight_kg * act_pct
                 for act in actives:

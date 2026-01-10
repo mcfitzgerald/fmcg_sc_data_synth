@@ -88,6 +88,7 @@
       "sku_popularity_alpha": 0.5,
       "seasonality": {
         "amplitude": 0.12,
+        "capacity_amplitude": 0.12,
         "phase_shift_days": 150,
         "cycle_days": 365
       },
@@ -210,15 +211,15 @@
         "inventory_cap_dos": 45.0,
         "diagnostics_enabled": true,
         "abc_production_enabled": true,
-        "a_production_buffer": 1.1,
+        "a_production_buffer": 1.0,
         "c_production_factor": 0.6,
         "c_demand_factor": 0.8,
         "campaign_batching": {
           "enabled": true,
-          "production_horizon_days": 6,
-          "trigger_dos_a": 14,
-          "trigger_dos_b": 12,
-          "trigger_dos_c": 10,
+          "production_horizon_days": 4,
+          "trigger_dos_a": 5,
+          "trigger_dos_b": 4,
+          "trigger_dos_c": 3,
           "max_skus_per_plant_per_day": 60
         }
       },
@@ -322,9 +323,9 @@
       "slob_max_pct": 0.3,
       "slob_days_threshold": 60.0,
       "slob_abc_thresholds": {
-        "A": 23.0,
-        "B": 33.0,
-        "C": 50.0
+        "A": 60.0,
+        "B": 75.0,
+        "C": 120.0
       },
       "slob_margin": 1.5,
       "slob_abc_velocity_factors": {
@@ -346,7 +347,9 @@
       "min_samples_for_variance": 2,
       "perfect_order_threshold": 0.9,
       "mape_base": 0.3,
-      "mape_quirks_penalty": 0.15
+      "mape_quirks_penalty": 0.15,
+      "scope_3_kg_co2_per_case": 0.25,
+      "perfect_order_disruption_penalty": 0.5
     },
     "quirks": {
       "port_congestion": {

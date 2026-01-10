@@ -77,10 +77,10 @@ class StaticDataPool:
         self.companies: list[str] = self._generate_pool(
             self._faker.company, sizes["companies"]
         )
-        
+
         # v0.19.12: Load curated GIS cities instead of faking them
         self.cities: list[dict[str, Any]] = self._load_gis_cities()
-        
+
         self.emails: list[str] = self._generate_pool(self._faker.email, sizes["emails"])
         self.addresses: list[str] = self._generate_pool(
             self._faker.street_address, sizes["addresses"]
@@ -95,6 +95,17 @@ class StaticDataPool:
             self._faker.last_name, sizes["last_names"]
         )
 
+        # Build pool lookup for generic sample() method
+        self._pool_arrays: dict[str, list[str]] = {
+            "names": self.names,
+            "companies": self.companies,
+            "emails": self.emails,
+            "addresses": self.addresses,
+            "phone_numbers": self.phone_numbers,
+            "first_names": self.first_names,
+            "last_names": self.last_names,
+        }
+
     def _load_gis_cities(self) -> list[dict[str, Any]]:
         """Load curated US cities with lat/lon from config-defined CSV."""
         import csv
@@ -103,7 +114,7 @@ class StaticDataPool:
         # Default path if config missing
         geo_params = self.config.get("simulation_parameters", {}).get("geospatial", {})
         csv_path = geo_params.get("city_data_path", "data/static/us_cities.csv")
-        
+
         cities = []
         path = Path(csv_path)
         if not path.exists():

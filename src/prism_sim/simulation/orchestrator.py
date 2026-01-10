@@ -119,6 +119,13 @@ class Orchestrator:
         self.slob_min_demand_velocity = validation_config.get(
             "slob_min_demand_velocity", 1.0
         )
+        # Scope 3 emissions and perfect order penalty (v0.28.0 - moved from hardcode)
+        self.scope_3_kg_co2_per_case = validation_config.get(
+            "scope_3_kg_co2_per_case", 0.25
+        )
+        self.perfect_order_disruption_penalty = validation_config.get(
+            "perfect_order_disruption_penalty", 0.5
+        )
         # Store base demand matrix for SLOB calculation (expected, not volatile)
         self._base_demand_matrix = base_demand_matrix
 
@@ -266,6 +273,22 @@ class Orchestrator:
             for abc_class, factor in abc_velocity_factors.items()
         }
 
+        # v0.28.0: Calculate seasonal factor for Day 1 (cold start adjustment)
+        # Problem: Day 1 may be in a seasonal trough/peak, but priming uses expected
+        # demand (no seasonality). This causes systematic over/under-stocking.
+        # Solution: Adjust priming by the Day 1 seasonal factor.
+        demand_config = sim_params.get("demand", {})
+        season_config = demand_config.get("seasonality", {})
+        amplitude = season_config.get("amplitude", 0.12)
+        phase_shift = season_config.get("phase_shift_days", 150)
+        cycle_days = season_config.get("cycle_days", 365)
+
+        # Day 1 seasonal factor: matches demand.py seasonality calculation
+        day_1_seasonal = 1.0 + amplitude * np.sin(
+            2 * np.pi * (1 - phase_shift) / cycle_days
+        )
+        print(f"  Priming with seasonal adjustment: Day 1 factor = {day_1_seasonal:.4f}")
+
         # Seed finished goods at RDCs and Stores
         for node_id, node in self.world.nodes.items():
             if node.type == NodeType.STORE:
@@ -282,7 +305,8 @@ class Orchestrator:
                         for p_idx in range(self.state.n_products)
                     ])
 
-                    sku_levels = node_demand * store_days_vec
+                    # v0.28.0: Apply seasonal adjustment to match Day 1 actual demand
+                    sku_levels = node_demand * store_days_vec * day_1_seasonal
                     self.state.perceived_inventory[node_idx, :] = sku_levels
                     self.state.actual_inventory[node_idx, :] = sku_levels
 
@@ -326,7 +350,8 @@ class Orchestrator:
                             )
                             for p_idx in range(self.state.n_products)
                         ])
-                        rdc_sku_levels = rdc_downstream_demand * rdc_days_vec
+                        # v0.28.0: Apply seasonal adjustment to match Day 1 actual demand
+                        rdc_sku_levels = rdc_downstream_demand * rdc_days_vec * day_1_seasonal
                         self.state.perceived_inventory[node_idx, :] = rdc_sku_levels
                         self.state.actual_inventory[node_idx, :] = rdc_sku_levels
                     else:
@@ -359,7 +384,8 @@ class Orchestrator:
                             )
                             for p_idx in range(self.state.n_products)
                         ])
-                        dc_levels = downstream_demand * dc_days_vec
+                        # v0.28.0: Apply seasonal adjustment to match Day 1 actual demand
+                        dc_levels = downstream_demand * dc_days_vec * day_1_seasonal
                         self.state.perceived_inventory[node_idx, :] = dc_levels
                         self.state.actual_inventory[node_idx, :] = dc_levels
 
@@ -775,11 +801,11 @@ class Orchestrator:
         # Perfect Order Rate
         # Check active risk delays
         delay_mult = self.risks.get_logistics_delay_multiplier()
-        is_perfect = 1.0 if delay_mult == 1.0 else 0.5
+        is_perfect = 1.0 if delay_mult == 1.0 else self.perfect_order_disruption_penalty
         self.monitor.record_perfect_order(is_perfect)
 
-        # Scope 3 Emissions (0.25 kg CO2 per case placeholder)
-        self.monitor.record_scope_3(0.25)
+        # Scope 3 Emissions (config-driven)
+        self.monitor.record_scope_3(self.scope_3_kg_co2_per_case)
 
         # MAPE
         # Baseline error + Optimism Bias penalty if active

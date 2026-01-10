@@ -34,7 +34,7 @@ class NetworkGenerator:
             + np.cos(phi1) * np.cos(phi2) * np.sin(dlambda / 2) ** 2
         )
         c = 2 * np.arctan2(np.sqrt(a), np.sqrt(1 - a))
-        return R * c
+        return float(R * c)
 
     def _get_jittered_coords(
         self, lat: float, lon: float, scale: float = 0.05
@@ -67,7 +67,7 @@ class NetworkGenerator:
         topology_conf = self.config.get("topology", {})
         fixed_nodes_conf = topology_conf.get("fixed_nodes", {})
         target_counts = topology_conf.get("target_counts", {})
-        
+
         # Geospatial params
         sim_params = self.config.get("simulation_parameters", {})
         geo_params = sim_params.get("geospatial", {})
@@ -173,7 +173,7 @@ class NetworkGenerator:
         # B. B2M_CLUB (Direct to RDC)
         n_club_stores = target_counts.get("club_stores", 30)
         club_cities = self.pool.sample_cities(n_club_stores)
-        
+
         for i, city in enumerate(club_cities):
             stores.append(Node(
                 id=f"STORE-CLUB-{i+1:04d}",
@@ -190,7 +190,7 @@ class NetworkGenerator:
         n_distributor_dcs = target_counts.get("distributor_dcs", 8)
         n_small_retailers = target_counts.get("small_retailers", 4000)
         stores_per_distributor = n_small_retailers // n_distributor_dcs
-        
+
         dist_cities = self.pool.sample_cities(n_distributor_dcs)
         for i, city in enumerate(dist_cities):
             dc_id = f"DIST-DC-{i+1:03d}"
@@ -244,7 +244,7 @@ class NetworkGenerator:
         # --- 3. Generate Links (Physics-Based) ---
 
         # Helper for physics-based link
-        def add_geo_link(s_node: Node, t_node: Node):
+        def add_geo_link(s_node: Node, t_node: Node) -> None:
             dist = self._haversine(s_node.lat, s_node.lon, t_node.lat, t_node.lon)
             # Convert driving hours to days: (km / km/h) / 24 hours/day + handling
             lt = (dist / speed / 24) + handling
@@ -299,12 +299,15 @@ class NetworkGenerator:
         for i in range(n):
             node_id = f"SUP-{i + 1:03d}"
             capacity = 500000.0 if i == 0 else float("inf")
+            city_data = cities[i]
             nodes.append(
                 Node(
                     id=node_id,
                     name=companies[i],
                     type=NodeType.SUPPLIER,
-                    location=cities[i],
+                    location=f"{city_data['city']}, {city_data['state']}",
+                    lat=city_data.get("lat", 0.0),
+                    lon=city_data.get("lon", 0.0),
                     throughput_capacity=capacity,
                 )
             )
@@ -333,12 +336,16 @@ class NetworkGenerator:
         nodes = []
         cities = self.pool.sample_cities(n, replace=True)
         for i in range(n):
+            city_data = cities[i]
+            location = f"{city_data['city']}, {city_data['state']}"
             nodes.append(
                 Node(
                     id=f"STORE-{i + 1:05d}",
-                    name=f"Store {cities[i]} #{i + 1}",
+                    name=f"Store {location} #{i + 1}",
                     type=NodeType.STORE,
-                    location=cities[i],
+                    location=location,
+                    lat=city_data.get("lat", 0.0),
+                    lon=city_data.get("lon", 0.0),
                 )
             )
         return nodes
