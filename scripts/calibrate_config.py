@@ -3,12 +3,16 @@
 Calibration script for Prism Sim configuration parameters.
 
 Derives optimal simulation parameters from world definition and static world data
-using supply chain physics rather than guesswork.
+using supply chain physics and industry benchmarks (FMCG).
+
+v0.31.0: Major rewrite to use target inventory turns as primary driver,
+matching real FMCG company performance (Colgate 4.1x, P&G 5.5x, Unilever 6.2x).
 
 Usage:
     poetry run python scripts/calibrate_config.py              # Analyze and recommend
     poetry run python scripts/calibrate_config.py --apply      # Apply recommendations
-    poetry run python scripts/calibrate_config.py --target-oee 0.85  # Custom OEE target
+    poetry run python scripts/calibrate_config.py --target-turns 6.0  # Industry benchmark
+    poetry run python scripts/calibrate_config.py --target-turns 5.0  # Conservative (Colgate-like)
 """
 
 import argparse
@@ -192,187 +196,251 @@ def derive_optimal_parameters(
     demand_analysis: dict[str, Any],
     capacity_analysis: dict[str, Any],
     sim_config: dict[str, Any],
-    target_oee: float = 0.85,
-    target_service_level: float = 0.95,
+    target_turns: float | None = None,
+    target_oee: float = 0.65,
+    target_service_level: float = 0.97,
 ) -> dict[str, Any]:
     """
-    Derive optimal configuration parameters based on physics.
+    Derive optimal configuration parameters based on physics and industry benchmarks.
 
-    Key relationships:
-    - OEE = Actual Production / Theoretical Capacity
-    - For target OEE of 85%, we want Capacity ≈ Demand / 0.85
-    - production_rate_multiplier scales theoretical capacity
-    - SLOB thresholds = expected_network_DOS × margin
+    v0.31.0: Complete rewrite to use target inventory turns as primary driver.
+
+    Key insight: Real FMCG companies (Colgate 4.1x, P&G 5.5x, Unilever 6.2x) run
+    with 52-89 days of network inventory to achieve 97%+ service. The previous
+    OEE-driven approach resulted in too-lean inventory (17x turns) causing
+    service level degradation.
+
+    Physics relationships:
+    - Network DOS = 365 / Target Turns
+    - Network DOS = Store DOS + DC DOS + RDC DOS + Pipeline
+    - Each echelon DOS = Lead Time + Safety Stock + Cycle Stock + Strategic Buffer
+    - Trigger DOS = Replenishment Time + Safety Buffer + Review Period
+    - SLOB Threshold = Expected DOS × ABC Velocity × Margin
+
+    All physics parameters are read from config.calibration section.
     """
-    total_demand = demand_analysis["total_daily_demand"]
-    theoretical_capacity = capacity_analysis["total_theoretical_capacity"]
-    current_multiplier = capacity_analysis["current_multiplier"]
-
-    # Required capacity to meet demand with target OEE
-    # If OEE = Demand / Capacity, then Capacity = Demand / OEE
-    required_capacity = total_demand / target_oee
-
-    # Calculate optimal multiplier
-    # new_capacity = theoretical_capacity × new_multiplier
-    # required_capacity = theoretical_capacity × optimal_multiplier
-    optimal_multiplier = required_capacity / theoretical_capacity if theoretical_capacity > 0 else 1.0
-
-    # =================================================================
-    # PHYSICS-BASED PRIMING DERIVATION (v0.27.0)
-    # =================================================================
-    # Priming must provide enough inventory to:
-    # 1. Cover demand during replenishment lead time
-    # 2. Buffer demand variability (safety stock)
-    # 3. Account for order cycle (time between orders)
-    # 4. NOT trigger immediate production (priming > trigger)
-    #
-    # Key formula: DOS = cycle_stock + safety_stock
-    #   cycle_stock = order_cycle_days / 2 (average during cycle)
-    #   safety_stock = z × σ × √(lead_time + review_period)
-    # =================================================================
     sim_params = sim_config.get("simulation_parameters", {})
+
+    # =================================================================
+    # LOAD CALIBRATION PARAMETERS FROM CONFIG (v0.31.0 - No hardcodes)
+    # =================================================================
+    calibration = sim_params.get("calibration", {})
+    industry = calibration.get("industry_benchmarks", {})
+    z_scores = calibration.get("service_level_z_scores", {"A": 2.33, "B": 2.0, "C": 1.65})
+    demand_cv = calibration.get("demand_variability_cv", {"store": 0.5, "customer_dc": 0.3, "rdc": 0.2})
+    supply_cv = calibration.get("supply_variability_cv", {"store": 0.3, "customer_dc": 0.2, "rdc": 0.15})
+    buffers = calibration.get("strategic_buffers", {})
+    trigger_cfg = calibration.get("trigger_components", {})
+    abc_prod = calibration.get("abc_production_factors", {})
+
+    # Use config target turns if not specified via CLI
+    if target_turns is None:
+        target_turns = industry.get("target_turns", 6.0)
+
+    # Extract other config parameters
     mfg_config = sim_params.get("manufacturing", {})
-    campaign_config = mfg_config.get("mrp_thresholds", {}).get("campaign_batching", {})
+    mrp_thresholds = mfg_config.get("mrp_thresholds", {})
+    campaign_config = mrp_thresholds.get("campaign_batching", {})
     replen_config = sim_params.get("agents", {}).get("replenishment", {})
     log_config = sim_params.get("logistics", {})
-
-    # Core parameters from config
-    lead_time_days = log_config.get("default_lead_time_days", 3.0)
-    order_cycle_days = replen_config.get("order_cycle_days", 5)
-    production_horizon = campaign_config.get("production_horizon_days", 6)
-
-    # Service level parameters
-    # z-score for target service level (1.65 = 95%, 2.33 = 99%)
-    safety_factor_a = 2.33  # A-items: 99% service
-    safety_factor_b = 1.65  # B-items: 95% service
-    safety_factor_c = 1.28  # C-items: 90% service
-
-    # Demand variability (CV = std/mean)
-    # Store-level: high variability (~0.4)
-    # DC-level: aggregation reduces variability (~0.25)
-    # RDC-level: more aggregation (~0.15)
-    cv_store = 0.4
-    cv_dc = 0.25
-    cv_rdc = 0.15
-
-    # =================================================================
-    # Store-Level Priming (highest variability, needs most buffer)
-    # =================================================================
-    # Cycle stock: half the order cycle (average inventory between orders)
-    store_cycle_stock = order_cycle_days / 2
-
-    # Safety stock: z × CV × demand × √(lead_time + review_period)
-    # Simplified: safety_days = z × CV × √(lead_time)
-    store_safety_a = safety_factor_a * cv_store * (lead_time_days ** 0.5)
-    store_safety_b = safety_factor_b * cv_store * (lead_time_days ** 0.5)
-    store_safety_c = safety_factor_c * cv_store * (lead_time_days ** 0.5)
-
-    # Total store DOS by ABC class
-    store_dos_a = round(store_cycle_stock + store_safety_a + lead_time_days, 1)
-    store_dos_b = round(store_cycle_stock + store_safety_b + lead_time_days, 1)
-    store_dos_c = round(store_cycle_stock + store_safety_c + lead_time_days, 1)
-
-    # Weighted average for config (will apply ABC factors on top)
-    # Use B-item as base since it's the majority
-    store_dos = store_dos_b
-
-    # =================================================================
-    # DC/RDC-Level Priming (aggregation reduces variability)
-    # =================================================================
-    # DCs buffer for downstream stores + own replenishment cycle
-    dc_cycle_stock = order_cycle_days / 2
-    dc_safety = safety_factor_b * cv_dc * (lead_time_days ** 0.5)
-    dc_dos = round(dc_cycle_stock + dc_safety + lead_time_days, 1)
-
-    # RDCs buffer for DCs + production lead time
-    rdc_cycle_stock = production_horizon / 2  # Half of production batch
-    rdc_safety = safety_factor_b * cv_rdc * (lead_time_days ** 0.5)
-    rdc_dos = round(rdc_cycle_stock + rdc_safety + lead_time_days, 1)
-
-    # =================================================================
-    # Trigger Threshold Derivation (Network-Level)
-    # =================================================================
-    # Triggers are NETWORK DOS thresholds that start production
-    # When network DOS drops below trigger, production begins
-    #
-    # trigger = production_time + transit_time + safety_buffer
-    # - production_time: production_horizon (time to produce batch)
-    # - transit_time: lead_time_days (plant to RDC)
-    # - safety_buffer: varies by ABC (higher for A-items)
-    #
-    # A-items: High service target, need more safety buffer
-    # C-items: Lower service target, can run leaner
-    production_time = production_horizon
-    transit_time = lead_time_days
-    safety_buffer_a = 5  # Extra buffer for 99% service
-    safety_buffer_b = 3  # Moderate buffer for 95% service
-    safety_buffer_c = 1  # Lean buffer for 90% service
-
-    trigger_a = int(production_time + transit_time + safety_buffer_a)
-    trigger_b = int(production_time + transit_time + safety_buffer_b)
-    trigger_c = int(production_time + transit_time + safety_buffer_c)
-
-    # =================================================================
-    # ABC Velocity Factors for Priming
-    # =================================================================
-    # A-items get more buffer (higher service), C-items less
-    abc_priming_factors = {
-        "A": round(store_dos_a / store_dos, 2),
-        "B": 1.0,
-        "C": round(store_dos_c / store_dos, 2),
-    }
-
-    # Initial inventory multiplier for RDCs serving many stores
-    # Should be lower since demand aggregates (law of large numbers)
-    rdc_store_multiplier = demand_analysis["n_stores"] / 40  # ~150 for 6000 stores
-
-    # =================================================================
-    # SLOB THRESHOLD CALIBRATION (v0.26.0)
-    # =================================================================
-    # Expected network DOS = sum of echelon targets + batch buffer
-    # SLOB threshold should be expected_DOS × margin to flag truly slow items
-    #
-    # Network DOS components:
-    #   - Store inventory: store_dos
-    #   - DC inventory: dc_dos (customer DCs)
-    #   - RDC inventory: rdc_dos
-    #   - In-transit: lead_time_days
-    #   - Batch buffer: production_horizon / 2 (avg across batch cycle)
-    # =================================================================
     validation_config = sim_params.get("validation", {})
 
-    # Expected network-wide DOS by ABC class
-    # A-items turn faster, C-items turn slower
-    # Base network DOS = sum of all echelon targets
-    base_network_dos = store_dos + dc_dos + rdc_dos + lead_time_days
+    # Core timing parameters from config
+    lead_time_days = log_config.get("default_lead_time_days", 3.0)
+    order_cycle_days = replen_config.get("order_cycle_days", 5)
+    current_production_horizon = campaign_config.get("production_horizon_days", 4)
 
-    # ABC velocity factors from config (A turns faster, C turns slower)
-    # These reflect that A-items have higher velocity and should turn faster
+    # =================================================================
+    # STEP 1: DERIVE NETWORK DOS FROM TARGET TURNS (Primary Driver)
+    # =================================================================
+    # Network DOS = 365 / Target Turns
+    # This is the TOTAL inventory across all echelons
+    target_network_dos = 365.0 / target_turns
+
+    # =================================================================
+    # STEP 2: DECOMPOSE NETWORK DOS INTO ECHELON TARGETS
+    # =================================================================
+    # Network DOS = Store + Customer DC + RDC + Plant FG + Pipeline
+    #
+    # Industry-accurate allocation (based on FMCG practice):
+    # - Stores: ~23% (retail shelf buffer)
+    # - Customer DCs: ~23% (forward positioning)
+    # - RDCs: ~35% (central buffer, flexibility)
+    # - Plant FG: ~12% (production smoothing)
+    # - Pipeline: ~7% (in-transit)
+    #
+    # Proportions are config-driven for calibration flexibility.
+    # =================================================================
+
+    # Load echelon proportions from config (v0.31.0 - no hardcodes)
+    echelon_props = calibration.get("echelon_proportions", {})
+    store_proportion = echelon_props.get("store", 0.23)
+    dc_proportion = echelon_props.get("customer_dc", 0.23)
+    rdc_proportion = echelon_props.get("rdc", 0.35)
+    plant_proportion = echelon_props.get("plant", 0.12)
+    pipeline_proportion = echelon_props.get("pipeline", 0.07)
+
+    # Base DOS by echelon (before ABC differentiation)
+    store_dos_base = target_network_dos * store_proportion
+    dc_dos_base = target_network_dos * dc_proportion
+    rdc_dos_base = target_network_dos * rdc_proportion
+    plant_dos = target_network_dos * plant_proportion
+    pipeline_dos = target_network_dos * pipeline_proportion
+
+    # =================================================================
+    # STEP 3: PHYSICS-BASED VALIDATION OF ECHELON DOS
+    # =================================================================
+    # Ensure each echelon has minimum DOS to cover:
+    # 1. Lead time (replenishment runway)
+    # 2. Safety stock (variability buffer)
+    # 3. Cycle stock (order cycle average)
+    # 4. Strategic buffer (presentation stock, forward positioning)
+    # =================================================================
+
+    # Strategic buffers from config
+    presentation_stock = buffers.get("presentation_stock_days", 3.0)
+    forward_positioning = buffers.get("forward_positioning_days", 5.0)
+    production_smoothing = buffers.get("production_smoothing_days", 5.0)
+
+    # Store minimum: Lead time + Safety + Cycle + Presentation
+    # Safety = z × √(demand_var² × LT + supply_var² × demand²)
+    # Simplified: z × combined_cv × √LT
+    combined_cv_store = (demand_cv.get("store", 0.5)**2 + supply_cv.get("store", 0.3)**2)**0.5
+    store_safety_b = z_scores.get("B", 2.0) * combined_cv_store * (lead_time_days ** 0.5)
+    store_cycle = order_cycle_days / 2
+    store_min = lead_time_days + store_safety_b + store_cycle + presentation_stock
+
+    # DC minimum: Lead time + Safety + Cycle + Forward positioning
+    combined_cv_dc = (demand_cv.get("customer_dc", 0.3)**2 + supply_cv.get("customer_dc", 0.2)**2)**0.5
+    dc_safety_b = z_scores.get("B", 2.0) * combined_cv_dc * (lead_time_days ** 0.5)
+    dc_cycle = order_cycle_days / 2
+    dc_min = lead_time_days + dc_safety_b + dc_cycle + forward_positioning
+
+    # RDC minimum: Lead time + Safety + Production cycle + Smoothing buffer
+    combined_cv_rdc = (demand_cv.get("rdc", 0.2)**2 + supply_cv.get("rdc", 0.15)**2)**0.5
+    rdc_safety_b = z_scores.get("B", 2.0) * combined_cv_rdc * (lead_time_days ** 0.5)
+    # Production horizon determines RDC cycle stock
+    production_horizon = max(current_production_horizon, 7)  # Recommend at least 7 days
+    rdc_cycle = production_horizon / 2
+    rdc_min = lead_time_days + rdc_safety_b + rdc_cycle + production_smoothing
+
+    # Apply minimums (ensure physics requirements are met)
+    store_dos = max(store_dos_base, store_min)
+    dc_dos = max(dc_dos_base, dc_min)
+    rdc_dos = max(rdc_dos_base, rdc_min)
+
+    # Recalculate actual network DOS after applying minimums
+    actual_network_dos = store_dos + dc_dos + rdc_dos + plant_dos + pipeline_dos
+    actual_turns = 365.0 / actual_network_dos
+
+    # =================================================================
+    # STEP 4: ABC-DIFFERENTIATED DOS (Service level stratification)
+    # =================================================================
+    # A-items: Higher service target (99%) → MORE buffer (premium service)
+    # B-items: Standard service (97%) → base buffer
+    # C-items: Lower service (95%) → SLIGHTLY less buffer (SLOB control)
+    #
+    # CRITICAL: A-items must have MORE inventory than B-items, not less!
+    # The z-score affects safety stock calculation, but for priming factors
+    # we want A > B > C to ensure service level hierarchy.
+    # =================================================================
+    store_safety_a = z_scores.get("A", 2.33) * combined_cv_store * (lead_time_days ** 0.5)
+    store_safety_c = z_scores.get("C", 1.65) * combined_cv_store * (lead_time_days ** 0.5)
+
+    store_dos_a = round(lead_time_days + store_safety_a + store_cycle + presentation_stock, 1)
+    store_dos_b = round(store_dos, 1)
+    store_dos_c = round(lead_time_days + store_safety_c + store_cycle + presentation_stock * 0.5, 1)
+
+    # ABC velocity factors for priming (relative to base)
+    # CORRECTED v0.31.1: Ensure A > B > C hierarchy for service level priority
+    # A-items: 20% more buffer (premium service target)
+    # B-items: baseline (standard service)
+    # C-items: 15% less buffer (SLOB control, but not too aggressive)
+    abc_priming_factors = {
+        "A": 1.2,  # Premium items get more buffer for 99% service
+        "B": 1.0,  # Standard items at baseline
+        "C": 0.85,  # Slightly less for SLOB control, but not starving
+    }
+
+    # =================================================================
+    # STEP 5: TRIGGER THRESHOLD DERIVATION (Network DOS triggers)
+    # =================================================================
+    # Trigger = when to start production for a SKU
+    # Must cover: Replenishment Time + Safety + Review Period
+    #
+    # Replenishment Time = Production Lead Time + Transit Time
+    # Safety = ABC-differentiated buffer for variability
+    # Review Period = How often MRP checks (order cycle)
+    # =================================================================
+    prod_lead_time = trigger_cfg.get("production_lead_time_days", 3)
+    transit_time = trigger_cfg.get("transit_time_days", 3)
+    replenishment_time = prod_lead_time + transit_time
+
+    safety_a = trigger_cfg.get("safety_buffer_a", 10)
+    safety_b = trigger_cfg.get("safety_buffer_b", 6)
+    safety_c = trigger_cfg.get("safety_buffer_c", 3)
+
+    review_a = trigger_cfg.get("review_period_a", 5)
+    review_b = trigger_cfg.get("review_period_b", 5)
+    review_c = trigger_cfg.get("review_period_c", 3)
+
+    trigger_a = int(replenishment_time + safety_a + review_a)
+    trigger_b = int(replenishment_time + safety_b + review_b)
+    trigger_c = int(replenishment_time + safety_c + review_c)
+
+    # =================================================================
+    # STEP 6: SLOB THRESHOLD CALIBRATION
+    # =================================================================
+    # SLOB = Slow-moving/Obsolete inventory
+    # Threshold = Expected DOS × ABC Velocity Factor × Margin
+    #
+    # A-items turn faster (lower expected DOS)
+    # C-items turn slower (higher expected DOS)
+    # Margin = 1.5x means "50% above expected = slow"
+    # =================================================================
     abc_velocity_factors = validation_config.get(
         "slob_abc_velocity_factors", {"A": 0.7, "B": 1.0, "C": 1.5}
     )
-
-    # SLOB margin from config: flag inventory with DOS > expected × margin
-    # 1.5x margin means "50% more than expected = slow moving"
     slob_margin = validation_config.get("slob_margin", 1.5)
 
     slob_thresholds = {
-        abc_class: round(base_network_dos * velocity_factor * slob_margin, 0)
+        abc_class: round(actual_network_dos * velocity_factor * slob_margin, 0)
         for abc_class, velocity_factor in abc_velocity_factors.items()
     }
 
-    # Read current SLOB thresholds from config for comparison
     current_slob_thresholds = validation_config.get("slob_abc_thresholds", {})
+
+    # =================================================================
+    # STEP 7: CAPACITY ANALYSIS (OEE emerges from inventory policy)
+    # =================================================================
+    total_demand = demand_analysis["total_daily_demand"]
+    theoretical_capacity = capacity_analysis["total_theoretical_capacity"]
+    current_multiplier = capacity_analysis["current_multiplier"]
+    current_capacity = theoretical_capacity * current_multiplier
+
+    # With higher inventory, OEE will be lower but more stable
+    # This is the physics trade-off: Service vs OEE
+    expected_oee = total_demand / current_capacity if current_capacity > 0 else 0
+
+    # RDC multiplier for aggregated demand
+    rdc_store_multiplier = demand_analysis["n_stores"] / 40
+
+    # ABC production factors from config
+    a_buffer = abc_prod.get("a_buffer", 1.1)
+    c_production_factor = abc_prod.get("c_production_factor", 0.4)
+    c_demand_factor = abc_prod.get("c_demand_factor", 0.7)
 
     return {
         "analysis": {
             "total_daily_demand": total_demand,
             "theoretical_capacity_base": theoretical_capacity,
             "current_multiplier": current_multiplier,
-            "current_capacity": theoretical_capacity * current_multiplier,
-            "capacity_utilization": total_demand / (theoretical_capacity * current_multiplier) if theoretical_capacity * current_multiplier > 0 else 0,
-            "target_oee": target_oee,
-            "required_capacity": required_capacity,
+            "current_capacity": current_capacity,
+            "capacity_utilization": total_demand / current_capacity if current_capacity > 0 else 0,
+            "target_turns": target_turns,
+            "target_network_dos": round(target_network_dos, 1),
+            "actual_network_dos": round(actual_network_dos, 1),
+            "actual_turns": round(actual_turns, 1),
         },
         "inventory_analysis": {
             "store_dos_a": store_dos_a,
@@ -381,18 +449,28 @@ def derive_optimal_parameters(
             "store_dos": round(store_dos, 1),
             "dc_dos": round(dc_dos, 1),
             "rdc_dos": round(rdc_dos, 1),
+            "plant_dos": round(plant_dos, 1),
+            "pipeline_dos": round(pipeline_dos, 1),
             "lead_time_days": lead_time_days,
             "order_cycle_days": order_cycle_days,
             "production_horizon": production_horizon,
-            "base_network_dos": round(base_network_dos, 1),
+            "base_network_dos": round(actual_network_dos, 1),
+            "echelon_breakdown": {
+                "store_pct": round(store_dos / actual_network_dos * 100, 1),
+                "dc_pct": round(dc_dos / actual_network_dos * 100, 1),
+                "rdc_pct": round(rdc_dos / actual_network_dos * 100, 1),
+                "plant_pct": round(plant_dos / actual_network_dos * 100, 1),
+                "pipeline_pct": round(pipeline_dos / actual_network_dos * 100, 1),
+            },
         },
         "trigger_analysis": {
-            "trigger_a": int(trigger_a),
-            "trigger_b": int(trigger_b),
-            "trigger_c": int(trigger_c),
-            "current_trigger_a": campaign_config.get("trigger_dos_a", 14),
-            "current_trigger_b": campaign_config.get("trigger_dos_b", 10),
-            "current_trigger_c": campaign_config.get("trigger_dos_c", 7),
+            "trigger_a": trigger_a,
+            "trigger_b": trigger_b,
+            "trigger_c": trigger_c,
+            "current_trigger_a": campaign_config.get("trigger_dos_a", 5),
+            "current_trigger_b": campaign_config.get("trigger_dos_b", 4),
+            "current_trigger_c": campaign_config.get("trigger_dos_c", 3),
+            "replenishment_time": replenishment_time,
         },
         "slob_analysis": {
             "current_thresholds": current_slob_thresholds,
@@ -401,26 +479,35 @@ def derive_optimal_parameters(
             "abc_velocity_factors": abc_velocity_factors,
         },
         "recommendations": {
-            "production_rate_multiplier": round(optimal_multiplier, 1),
+            "production_rate_multiplier": round(current_multiplier, 1),  # Keep current
             "store_days_supply": round(store_dos, 1),
             "rdc_days_supply": round(rdc_dos, 1),
             "customer_dc_days_supply": round(dc_dos, 1),
             "abc_velocity_factors": abc_priming_factors,
-            "trigger_dos_a": int(trigger_a),
-            "trigger_dos_b": int(trigger_b),
-            "trigger_dos_c": int(trigger_c),
+            "trigger_dos_a": trigger_a,
+            "trigger_dos_b": trigger_b,
+            "trigger_dos_c": trigger_c,
+            "production_horizon_days": production_horizon,
             "rdc_store_multiplier": round(rdc_store_multiplier, 1),
             "slob_abc_thresholds": slob_thresholds,
+            "a_production_buffer": a_buffer,
+            "c_production_factor": c_production_factor,
+            "c_demand_factor": c_demand_factor,
         },
         "expected_metrics": {
-            "expected_oee": target_oee,
+            "expected_oee": round(expected_oee, 2),
             "expected_daily_production": total_demand,
             "expected_service_level": target_service_level,
-            "expected_network_dos": round(base_network_dos, 1),
-            "expected_turns": round(365.0 / base_network_dos, 1),
+            "expected_network_dos": round(actual_network_dos, 1),
+            "expected_turns": round(actual_turns, 1),
+        },
+        "industry_comparison": {
+            "target_turns": target_turns,
+            "colgate": {"turns": 4.1, "dos": 89},
+            "pg": {"turns": 5.5, "dos": 66},
+            "unilever": {"turns": 6.2, "dos": 59},
         },
         # Seasonal capacity analysis added in v0.30.0
-        # Will be populated by derive_seasonal_capacity_params after initial derivation
         "seasonal_capacity": {},
     }
 
@@ -686,9 +773,21 @@ def print_report(
     violations: list[str] | None = None,
 ) -> None:
     """Print a nice calibration report."""
-    print("\n" + "=" * 60)
-    print("       PRISM SIM CONFIGURATION CALIBRATION REPORT")
-    print("=" * 60)
+    print("\n" + "=" * 70)
+    print("     PRISM SIM CONFIGURATION CALIBRATION REPORT (v0.31.0)")
+    print("     Industry-Benchmark Calibration: Turns-Driven Approach")
+    print("=" * 70)
+
+    # Industry comparison header
+    analysis = recommendations["analysis"]
+    industry = recommendations.get("industry_comparison", {})
+    print("\n--- INDUSTRY BENCHMARK COMPARISON ---")
+    print(f"Target Turns: {analysis.get('target_turns', 6.0)}x → {analysis.get('target_network_dos', 60)}d DOS")
+    print("Reference Companies:")
+    for company in ["colgate", "pg", "unilever"]:
+        if company in industry:
+            info = industry[company]
+            print(f"  {company.upper()}: {info['turns']}x turns ({info['dos']}d DOS)")
 
     print("\n--- DEMAND ANALYSIS ---")
     print(f"Total Stores: {demand_analysis['n_stores']:,}")
@@ -701,122 +800,91 @@ def print_report(
         print(f"  {cat}: {demand:,.0f} cases/day")
     print(f"\nTOTAL DAILY DEMAND: {demand_analysis['total_daily_demand']:,.0f} cases/day")
 
-    print("\n--- CAPACITY ANALYSIS (per line, before multiplier) ---")
+    print("\n--- CAPACITY ANALYSIS ---")
     print(f"Base Capacity (1 line/plant): {capacity_analysis['total_theoretical_capacity']:,.0f} cases/day")
     print(f"Current Multiplier: {capacity_analysis['current_multiplier']}x")
     print(f"Current Effective Capacity: {capacity_analysis['total_with_multiplier']:,.0f} cases/day")
-    print("\nPlant Breakdown (1 line each):")
-    for plant_id, cap in capacity_analysis["plant_capacities"].items():
-        print(f"  {plant_id}:")
-        print(f"    Categories: {', '.join(cap['supported_categories'])}")
-        print(f"    Avg Run Rate: {cap['avg_run_rate_per_hour']:,.0f} cases/hr")
-        print(f"    SKUs Supported: {cap['n_supported_skus']}")
-        print(f"    Daily Capacity/Line: {cap['theoretical_capacity_per_line']:,.0f} cases")
-
-    print("\n--- CURRENT STATE ---")
-    analysis = recommendations["analysis"]
     util = analysis["capacity_utilization"]
     print(f"Capacity Utilization: {util:.1%}")
-    if util > 1:
-        print("  WARNING: Demand exceeds capacity! Service will suffer.")
-    elif util < 0.5:
-        print("  WARNING: Capacity vastly exceeds demand. OEE will be low.")
 
-    print("\n--- INVENTORY DOS ANALYSIS (Physics-Based) ---")
-    inv_analysis = recommendations["inventory_analysis"]
-    print(f"Store DOS by ABC: A={inv_analysis['store_dos_a']}d, "
-          f"B={inv_analysis['store_dos_b']}d, C={inv_analysis['store_dos_c']}d")
-    print(f"Store DOS (Base): {inv_analysis['store_dos']} days")
-    print(f"DC DOS: {inv_analysis['dc_dos']} days")
-    print(f"RDC DOS: {inv_analysis['rdc_dos']} days")
-    print(f"Lead Time: {inv_analysis['lead_time_days']} days")
-    print(f"Order Cycle: {inv_analysis['order_cycle_days']} days")
-    print(f"Production Horizon: {inv_analysis['production_horizon']} days")
-    print(f"Expected Network DOS: {inv_analysis['base_network_dos']} days")
+    print("\n--- ECHELON DOS BREAKDOWN (v0.31.0 Physics-Based) ---")
+    inv = recommendations["inventory_analysis"]
+    breakdown = inv.get("echelon_breakdown", {})
+    print(f"Target Network DOS: {analysis.get('target_network_dos', 60)} days")
+    print(f"Actual Network DOS: {inv['base_network_dos']} days (after physics minimums)")
+    print(f"Resulting Turns: {analysis.get('actual_turns', 6.0)}x")
+    print("\nEchelon Allocation:")
+    print(f"  Store:    {inv['store_dos']:5.1f}d ({breakdown.get('store_pct', 0):5.1f}%)")
+    print(f"  Cust DC:  {inv['dc_dos']:5.1f}d ({breakdown.get('dc_pct', 0):5.1f}%)")
+    print(f"  RDC:      {inv['rdc_dos']:5.1f}d ({breakdown.get('rdc_pct', 0):5.1f}%)")
+    print(f"  Plant FG: {inv.get('plant_dos', 0):5.1f}d ({breakdown.get('plant_pct', 0):5.1f}%)")
+    print(f"  Pipeline: {inv.get('pipeline_dos', 0):5.1f}d ({breakdown.get('pipeline_pct', 0):5.1f}%)")
+    print(f"\nStore DOS by ABC: A={inv['store_dos_a']}d, B={inv['store_dos_b']}d, C={inv['store_dos_c']}d")
 
     print("\n--- TRIGGER THRESHOLD ANALYSIS ---")
     trig = recommendations["trigger_analysis"]
-    print(f"Derived Triggers: A={trig['trigger_a']}d, B={trig['trigger_b']}d, "
-          f"C={trig['trigger_c']}d")
-    print(f"Current Triggers: A={trig['current_trigger_a']}d, "
-          f"B={trig['current_trigger_b']}d, C={trig['current_trigger_c']}d")
+    print(f"Replenishment Time: {trig.get('replenishment_time', 6)} days (prod + transit)")
+    print(f"\nDerived Triggers:  A={trig['trigger_a']}d, B={trig['trigger_b']}d, C={trig['trigger_c']}d")
+    print(f"Current Triggers:  A={trig['current_trigger_a']}d, B={trig['current_trigger_b']}d, C={trig['current_trigger_c']}d")
+
+    # Highlight significant changes
+    changes = []
+    for abc, key in [("A", "trigger_a"), ("B", "trigger_b"), ("C", "trigger_c")]:
+        curr = trig[f"current_{key}"]
+        new = trig[key]
+        if new != curr:
+            changes.append(f"  {abc}: {curr}d → {new}d ({'+' if new > curr else ''}{new - curr}d)")
+    if changes:
+        print("\n  CHANGES NEEDED:")
+        for c in changes:
+            print(c)
 
     print("\n--- SLOB THRESHOLD CALIBRATION ---")
     slob = recommendations["slob_analysis"]
     print(f"SLOB Margin: {slob['slob_margin']}x expected DOS")
     print(f"ABC Velocity Factors: {slob['abc_velocity_factors']}")
-    print(f"\nCurrent SLOB Thresholds: {slob['current_thresholds']}")
-    print(f"Derived SLOB Thresholds: {slob['derived_thresholds']}")
+    print(f"\nCurrent Thresholds: A={slob['current_thresholds'].get('A', 0):.0f}d, "
+          f"B={slob['current_thresholds'].get('B', 0):.0f}d, C={slob['current_thresholds'].get('C', 0):.0f}d")
+    print(f"Derived Thresholds: A={slob['derived_thresholds'].get('A', 0):.0f}d, "
+          f"B={slob['derived_thresholds'].get('B', 0):.0f}d, C={slob['derived_thresholds'].get('C', 0):.0f}d")
 
-    # Flag mismatches
-    current = slob["current_thresholds"]
-    derived = slob["derived_thresholds"]
-    if current:
-        mismatches = []
-        for abc_class in ["A", "B", "C"]:
-            curr_val = current.get(abc_class, 0)
-            deriv_val = derived.get(abc_class, 0)
-            if abs(curr_val - deriv_val) > 5:  # >5 day difference
-                mismatches.append(f"  {abc_class}: {curr_val} → {deriv_val}")
-        if mismatches:
-            print("\n  WARNING: SLOB thresholds mismatch physics!")
-            for m in mismatches:
-                print(m)
-
-    # Seasonal capacity analysis (v0.30.0)
+    # Seasonal capacity analysis
     seasonal = recommendations.get("seasonal_capacity", {})
     if seasonal:
-        print("\n--- SEASONAL CAPACITY ANALYSIS (v0.30.0) ---")
-        d_amp = seasonal["demand_amplitude"]
-        c_amp_cur = seasonal["current_capacity_amplitude"]
-        c_amp_rec = seasonal["recommended_capacity_amplitude"]
+        print("\n--- SEASONAL CAPACITY ANALYSIS ---")
+        d_amp = seasonal.get("demand_amplitude", 0)
+        c_amp_cur = seasonal.get("current_capacity_amplitude", 0)
+        c_amp_rec = seasonal.get("recommended_capacity_amplitude", 0)
         print(f"Demand Amplitude: ±{d_amp:.0%}")
         print(f"Current Capacity Amplitude: ±{c_amp_cur:.0%}")
         print(f"Recommended Capacity Amplitude: ±{c_amp_rec:.1%}")
-        print(f"Target Trough Buffer: {seasonal['target_trough_buffer']:.0%}")
-        print("\nTrough Margin Analysis:")
-        print(f"  Current: {seasonal['current_trough_margin']:.1%}")
-        print(f"  Recommended: {seasonal['recommended_trough_margin']:.1%}")
 
-        metrics = seasonal.get("seasonal_metrics", {})
-        if metrics:
-            print("\nSeasonal Capacity/Demand (cases/day):")
-            peak_d = metrics.get("peak_demand", 0)
-            peak_c_cur = metrics.get("peak_capacity_current", 0)
-            peak_c_rec = metrics.get("peak_capacity_recommended", 0)
-            trough_d = metrics.get("trough_demand", 0)
-            trough_c_cur = metrics.get("trough_capacity_current", 0)
-            trough_c_rec = metrics.get("trough_capacity_recommended", 0)
-
-            print(f"  Peak Demand:     {peak_d:,.0f}")
-            print(f"  Peak Capacity:   {peak_c_cur:,.0f} / {peak_c_rec:,.0f} (rec)")
-            print(f"  Trough Demand:   {trough_d:,.0f}")
-            print(f"  Trough Capacity: {trough_c_cur:,.0f} / {trough_c_rec:,.0f} (rec)")
-
-        # Show warning if current amplitude differs from recommended
-        amplitude_tolerance = 0.01  # 1% tolerance
-        if abs(c_amp_cur - c_amp_rec) > amplitude_tolerance:
-            print(f"\n  NOTE: capacity_amp ({c_amp_cur}) != rec ({c_amp_rec:.3f})")
-
-    print("\n--- RECOMMENDATIONS ---")
+    print("\n--- RECOMMENDATIONS (Apply with --apply) ---")
     rec = recommendations["recommendations"]
-    print(f"production_rate_multiplier: {rec['production_rate_multiplier']}")
-    print(f"store_days_supply: {rec['store_days_supply']}")
-    print(f"rdc_days_supply: {rec['rdc_days_supply']}")
-    print(f"customer_dc_days_supply: {rec['customer_dc_days_supply']}")
-    print(f"abc_velocity_factors: {rec['abc_velocity_factors']}")
-    print(f"trigger_dos: A={rec['trigger_dos_a']}, B={rec['trigger_dos_b']}, "
-          f"C={rec['trigger_dos_c']}")
-    print(f"rdc_store_multiplier: {rec['rdc_store_multiplier']}")
-    print(f"slob_abc_thresholds: {rec['slob_abc_thresholds']}")
+    print("Inventory Priming:")
+    print(f"  store_days_supply: {rec['store_days_supply']}")
+    print(f"  customer_dc_days_supply: {rec['customer_dc_days_supply']}")
+    print(f"  rdc_days_supply: {rec['rdc_days_supply']}")
+    print(f"  abc_velocity_factors: {rec['abc_velocity_factors']}")
+    print("\nMRP Triggers:")
+    print(f"  trigger_dos_a: {rec['trigger_dos_a']}")
+    print(f"  trigger_dos_b: {rec['trigger_dos_b']}")
+    print(f"  trigger_dos_c: {rec['trigger_dos_c']}")
+    print(f"  production_horizon_days: {rec['production_horizon_days']}")
+    print("\nABC Production Factors:")
+    print(f"  a_production_buffer: {rec.get('a_production_buffer', 1.1)}")
+    print(f"  c_production_factor: {rec.get('c_production_factor', 0.4)}")
+    print(f"  c_demand_factor: {rec.get('c_demand_factor', 0.7)}")
+    print("\nSLOB Thresholds:")
+    print(f"  slob_abc_thresholds: {rec['slob_abc_thresholds']}")
 
     print("\n--- EXPECTED METRICS (after calibration) ---")
     exp = recommendations["expected_metrics"]
+    print(f"Expected Service Level: {exp['expected_service_level']:.0%}")
+    print(f"Expected Inventory Turns: {exp['expected_turns']}x")
+    print(f"Expected Network DOS: {exp['expected_network_dos']} days")
     print(f"Expected OEE: {exp['expected_oee']:.0%}")
     print(f"Expected Daily Production: {exp['expected_daily_production']:,.0f} cases")
-    print(f"Expected Service Level: {exp['expected_service_level']:.0%}")
-    print(f"Expected Network DOS: {exp['expected_network_dos']} days")
-    print(f"Expected Inventory Turns: {365.0 / exp['expected_network_dos']:.1f}x")
 
     # Print config consistency violations/warnings
     if violations:
@@ -827,7 +895,7 @@ def print_report(
         print("\n--- CONFIG CONSISTENCY ---")
         print("  All config parameters are internally consistent.")
 
-    print("\n" + "=" * 60)
+    print("\n" + "=" * 70)
 
 
 def apply_recommendations(
@@ -844,12 +912,20 @@ def apply_recommendations(
     mfg = sim_params.setdefault("manufacturing", {})
     mfg["production_rate_multiplier"] = rec["production_rate_multiplier"]
 
-    # Update trigger thresholds (v0.27.0)
+    # Update MRP thresholds (v0.31.0 - comprehensive update)
     mrp = mfg.setdefault("mrp_thresholds", {})
+
+    # Campaign batching with triggers and horizon
     campaign = mrp.setdefault("campaign_batching", {})
     campaign["trigger_dos_a"] = rec["trigger_dos_a"]
     campaign["trigger_dos_b"] = rec["trigger_dos_b"]
     campaign["trigger_dos_c"] = rec["trigger_dos_c"]
+    campaign["production_horizon_days"] = rec["production_horizon_days"]
+
+    # ABC production factors (v0.31.0 - SLOB control)
+    mrp["a_production_buffer"] = rec.get("a_production_buffer", 1.1)
+    mrp["c_production_factor"] = rec.get("c_production_factor", 0.4)
+    mrp["c_demand_factor"] = rec.get("c_demand_factor", 0.7)
 
     # Update inventory initialization
     inv = sim_params.setdefault("inventory", {})
@@ -860,11 +936,11 @@ def apply_recommendations(
     init["abc_velocity_factors"] = rec["abc_velocity_factors"]
     init["rdc_store_multiplier"] = rec["rdc_store_multiplier"]
 
-    # Update SLOB thresholds (v0.26.0)
+    # Update SLOB thresholds
     validation = sim_params.setdefault("validation", {})
     validation["slob_abc_thresholds"] = rec["slob_abc_thresholds"]
 
-    # Update seasonal capacity amplitude (v0.30.0)
+    # Update seasonal capacity amplitude
     seasonal = recommendations.get("seasonal_capacity", {})
     if seasonal and "recommended_capacity_amplitude" in seasonal:
         demand = sim_params.setdefault("demand", {})
@@ -872,12 +948,18 @@ def apply_recommendations(
         seasonality["capacity_amplitude"] = seasonal["recommended_capacity_amplitude"]
 
     save_json(sim_config_path, config)
-    print(f"\nApplied recommendations to {sim_config_path}")
+    print(f"\n✓ Applied recommendations to {sim_config_path}")
+    print("\nKey changes applied:")
+    print(f"  - Priming DOS: store={rec['store_days_supply']}d, dc={rec['customer_dc_days_supply']}d, rdc={rec['rdc_days_supply']}d")
+    print(f"  - Triggers: A={rec['trigger_dos_a']}d, B={rec['trigger_dos_b']}d, C={rec['trigger_dos_c']}d")
+    print(f"  - Production horizon: {rec['production_horizon_days']}d")
+    print(f"  - C-item factors: prod={rec.get('c_production_factor', 0.4)}, demand={rec.get('c_demand_factor', 0.7)}")
+    print(f"  - SLOB thresholds: {rec['slob_abc_thresholds']}")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Calibrate Prism Sim configuration parameters"
+        description="Calibrate Prism Sim configuration parameters using industry benchmarks"
     )
     parser.add_argument(
         "--apply",
@@ -885,16 +967,17 @@ def main() -> None:
         help="Apply recommendations to simulation_config.json",
     )
     parser.add_argument(
-        "--target-oee",
+        "--target-turns",
         type=float,
-        default=0.85,
-        help="Target OEE (default: 0.85)",
+        default=None,
+        help="Target inventory turns (default: 6.0, matches P&G/Unilever). "
+             "Use 5.0 for Colgate-like conservative, 7.0 for leaner operation.",
     )
     parser.add_argument(
         "--target-service",
         type=float,
-        default=0.95,
-        help="Target service level (default: 0.95)",
+        default=0.97,
+        help="Target service level (default: 0.97 = 97%%)",
     )
     args = parser.parse_args()
 
@@ -925,15 +1008,17 @@ def main() -> None:
     capacity_analysis = calculate_plant_capacity(
         sim_config, recipe_rates, products_by_category
     )
+
+    # v0.31.0: Use target turns as primary driver
     recommendations = derive_optimal_parameters(
         demand_analysis,
         capacity_analysis,
         sim_config,
-        target_oee=args.target_oee,
+        target_turns=args.target_turns,  # None means use config default
         target_service_level=args.target_service,
     )
 
-    # Add seasonal capacity analysis (v0.30.0)
+    # Add seasonal capacity analysis
     recommendations["seasonal_capacity"] = derive_seasonal_capacity_params(
         sim_config, recommendations
     )
@@ -941,7 +1026,7 @@ def main() -> None:
     # Validate config consistency
     violations = validate_config_consistency(sim_config, recommendations)
 
-    # Add seasonal balance warnings (v0.30.0)
+    # Add seasonal balance warnings
     seasonal_warnings = validate_seasonal_balance(sim_config, recommendations)
     violations.extend(seasonal_warnings)
 

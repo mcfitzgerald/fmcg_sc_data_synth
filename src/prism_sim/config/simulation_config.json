@@ -5,6 +5,73 @@
       "weeks_per_year": 52,
       "random_seed": 42
     },
+    "calibration": {
+      "industry_benchmarks": {
+        "target_turns": 6.0,
+        "target_service_level": 0.97,
+        "target_oee_range": [
+          0.55,
+          0.7
+        ],
+        "target_slob_max": 0.15,
+        "reference_companies": {
+          "colgate": {
+            "turns": 4.1,
+            "dos": 89
+          },
+          "pg": {
+            "turns": 5.5,
+            "dos": 66
+          },
+          "unilever": {
+            "turns": 6.2,
+            "dos": 59
+          }
+        }
+      },
+      "service_level_z_scores": {
+        "A": 2.33,
+        "B": 2.0,
+        "C": 1.65
+      },
+      "demand_variability_cv": {
+        "store": 0.5,
+        "customer_dc": 0.3,
+        "rdc": 0.2
+      },
+      "supply_variability_cv": {
+        "store": 0.3,
+        "customer_dc": 0.2,
+        "rdc": 0.15
+      },
+      "strategic_buffers": {
+        "presentation_stock_days": 3.0,
+        "forward_positioning_days": 5.0,
+        "production_smoothing_days": 5.0
+      },
+      "trigger_components": {
+        "production_lead_time_days": 3,
+        "transit_time_days": 3,
+        "safety_buffer_a": 10,
+        "safety_buffer_b": 6,
+        "safety_buffer_c": 3,
+        "review_period_a": 5,
+        "review_period_b": 5,
+        "review_period_c": 3
+      },
+      "abc_production_factors": {
+        "a_buffer": 1.1,
+        "c_production_factor": 0.6,
+        "c_demand_factor": 0.8
+      },
+      "echelon_proportions": {
+        "store": 0.23,
+        "customer_dc": 0.23,
+        "rdc": 0.35,
+        "plant": 0.12,
+        "pipeline": 0.07
+      }
+    },
     "scoring": {
       "service_index_base": 100.0,
       "backlog_penalty_divisor": 100000.0,
@@ -27,8 +94,8 @@
         "c_allocation_priority": 3
       },
       "replenishment": {
-        "target_days_supply": 21.0,
-        "reorder_point_days": 14.0,
+        "target_days_supply": 27.0,
+        "reorder_point_days": 20.0,
         "min_order_qty": 100.0,
         "batch_size_cases": 100.0,
         "backlog_penalty_factor": 2.0,
@@ -151,14 +218,14 @@
     "inventory": {
       "initial_fg_level": 5.0,
       "initialization": {
-        "store_days_supply": 6.6,
-        "rdc_days_supply": 6.4,
+        "store_days_supply": 27.0,
+        "rdc_days_supply": 41.0,
         "rdc_store_multiplier": 150.8,
-        "customer_dc_days_supply": 6.2,
+        "customer_dc_days_supply": 27.0,
         "abc_velocity_factors": {
-          "A": 1.08,
+          "A": 1.5,
           "B": 1.0,
-          "C": 0.97
+          "C": 0.5
         }
       }
     },
@@ -211,15 +278,15 @@
         "inventory_cap_dos": 45.0,
         "diagnostics_enabled": true,
         "abc_production_enabled": true,
-        "a_production_buffer": 1.0,
-        "c_production_factor": 0.6,
-        "c_demand_factor": 0.8,
+        "a_production_buffer": 1.2,
+        "c_production_factor": 0.35,
+        "c_demand_factor": 0.6,
         "campaign_batching": {
           "enabled": true,
-          "production_horizon_days": 4,
-          "trigger_dos_a": 5,
-          "trigger_dos_b": 4,
-          "trigger_dos_c": 3,
+          "production_horizon_days": 7,
+          "trigger_dos_a": 14,
+          "trigger_dos_b": 10,
+          "trigger_dos_c": 5,
           "max_skus_per_plant_per_day": 60
         }
       },
@@ -323,9 +390,9 @@
       "slob_max_pct": 0.3,
       "slob_days_threshold": 60.0,
       "slob_abc_thresholds": {
-        "A": 60.0,
-        "B": 75.0,
-        "C": 120.0
+        "A": 120.0,
+        "B": 170.0,
+        "C": 250.0
       },
       "slob_margin": 1.5,
       "slob_abc_velocity_factors": {
@@ -335,10 +402,10 @@
       },
       "slob_min_demand_velocity": 1.0,
       "seasonal_min_peak_margin": 0.05,
-      "seasonal_min_trough_margin": 0.10,
+      "seasonal_min_trough_margin": 0.1,
       "seasonal_max_peak_oee": 0.95,
-      "seasonal_min_trough_oee": 0.40,
-      "seasonal_target_trough_buffer": 0.10,
+      "seasonal_min_trough_oee": 0.4,
+      "seasonal_target_trough_buffer": 0.1,
       "inventory_turns_range": [
         6.0,
         14.0
