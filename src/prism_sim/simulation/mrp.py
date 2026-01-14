@@ -456,12 +456,8 @@ class MRPEngine:
         """
         Calculate maximum daily production capacity across all plants.
 
-        v0.19.8: Used to cap ingredient ordering at plant capacity,
-        breaking the feedback loop where low historical production
-        led to under-ordering ingredients.
-
-        v0.22.0: Now includes production_rate_multiplier to match
-        actual production capacity in TransformEngine.
+        v0.32.0: Updated to use line-based capacity logic (num_lines).
+        Replaces the legacy rate_multiplier hack with explicit line counts.
 
         Returns:
             Total cases/day the network can produce at max capacity.
@@ -473,7 +469,9 @@ class MRPEngine:
         hours_per_day = mfg_config.get("production_hours_per_day", 24.0)
         global_efficiency = mfg_config.get("efficiency_factor", 0.85)
         global_downtime = mfg_config.get("unplanned_downtime_pct", 0.05)
-        # v0.22.0: Include production_rate_multiplier (simulates multiple lines)
+        
+        default_num_lines = mfg_config.get("default_num_lines", 4)
+        # Multiplier should be 1.0 now, but kept for legacy compat if needed
         rate_multiplier = mfg_config.get("production_rate_multiplier", 1.0)
 
         total_capacity = 0.0
@@ -483,12 +481,12 @@ class MRPEngine:
             p_config = plant_params.get(plant_id, {})
             efficiency = p_config.get("efficiency_factor", global_efficiency)
             downtime = p_config.get("unplanned_downtime_pct", global_downtime)
+            num_lines = p_config.get("num_lines", default_num_lines)
 
-            # Effective hours = hours * (1 - downtime) * efficiency
-            effective_hours = hours_per_day * (1.0 - downtime) * efficiency
+            # Effective hours PER LINE = hours * (1 - downtime) * efficiency
+            effective_hours_per_line = hours_per_day * (1.0 - downtime) * efficiency
 
             # Get average run rate for products this plant can make
-            # Use the recipes to find run rates for supported categories
             supported_cats = p_config.get("supported_categories", [])
             run_rates = []
 
@@ -497,20 +495,18 @@ class MRPEngine:
                 if product is None:
                     continue
 
-                # If plant has restrictions, check category
                 if supported_cats:
                     if product.category.name not in supported_cats:
                         continue
 
                 run_rates.append(recipe.run_rate_cases_per_hour)
 
-            # Use average run rate for this plant
             if run_rates:
                 avg_run_rate = sum(run_rates) / len(run_rates)
-                plant_capacity = effective_hours * avg_run_rate
+                # Plant capacity = capacity per line * num_lines
+                plant_capacity = effective_hours_per_line * avg_run_rate * num_lines
                 total_capacity += plant_capacity
 
-        # v0.22.0: Apply rate multiplier (simulates multiple production lines)
         return float(total_capacity * rate_multiplier)
 
     def _cache_node_info(self) -> None:

@@ -218,14 +218,14 @@
     "inventory": {
       "initial_fg_level": 5.0,
       "initialization": {
-        "store_days_supply": 27.0,
-        "rdc_days_supply": 41.0,
+        "store_days_supply": 14.0,
+        "rdc_days_supply": 21.3,
         "rdc_store_multiplier": 150.8,
-        "customer_dc_days_supply": 27.0,
+        "customer_dc_days_supply": 14.0,
         "abc_velocity_factors": {
-          "A": 1.5,
+          "A": 1.2,
           "B": 1.0,
-          "C": 0.5
+          "C": 0.85
         }
       }
     },
@@ -278,15 +278,15 @@
         "inventory_cap_dos": 45.0,
         "diagnostics_enabled": true,
         "abc_production_enabled": true,
-        "a_production_buffer": 1.2,
-        "c_production_factor": 0.35,
-        "c_demand_factor": 0.6,
+        "a_production_buffer": 1.1,
+        "c_production_factor": 0.6,
+        "c_demand_factor": 0.8,
         "campaign_batching": {
           "enabled": true,
           "production_horizon_days": 7,
-          "trigger_dos_a": 14,
-          "trigger_dos_b": 10,
-          "trigger_dos_c": 5,
+          "trigger_dos_a": 21,
+          "trigger_dos_b": 17,
+          "trigger_dos_c": 12,
           "max_skus_per_plant_per_day": 60
         }
       },
@@ -317,17 +317,19 @@
       "min_ingredient_moq": 100.0,
       "production_lead_time_days": 3,
       "production_hours_per_day": 24.0,
-      "production_rate_multiplier": 45.7,
+      "production_rate_multiplier": 1.0,
       "changeover_time_multiplier": 0.1,
       "efficiency_factor": 0.95,
       "unplanned_downtime_pct": 0.05,
       "backup_supplier_cost_premium": 0.25,
       "default_store_count": 100,
+      "default_num_lines": 44,
       "plant_parameters": {
         "PLANT-OH": {
           "description": "Legacy plant - upgraded efficiency, still higher downtime",
           "efficiency_factor": 0.78,
           "unplanned_downtime_pct": 0.1,
+          "num_lines": 44,
           "supported_categories": [
             "HOME_CARE"
           ]
@@ -336,6 +338,7 @@
           "description": "Modern high-speed facility (realistic OEE)",
           "efficiency_factor": 0.88,
           "unplanned_downtime_pct": 0.04,
+          "num_lines": 44,
           "supported_categories": [
             "ORAL_CARE"
           ]
@@ -344,6 +347,7 @@
           "description": "Flexible multi-category facility",
           "efficiency_factor": 0.82,
           "unplanned_downtime_pct": 0.06,
+          "num_lines": 44,
           "supported_categories": [
             "ORAL_CARE",
             "PERSONAL_WASH"
@@ -353,6 +357,7 @@
           "description": "Standard facility",
           "efficiency_factor": 0.8,
           "unplanned_downtime_pct": 0.07,
+          "num_lines": 44,
           "supported_categories": [
             "PERSONAL_WASH",
             "HOME_CARE"
@@ -390,9 +395,9 @@
       "slob_max_pct": 0.3,
       "slob_days_threshold": 60.0,
       "slob_abc_thresholds": {
-        "A": 120.0,
-        "B": 170.0,
-        "C": 250.0
+        "A": 64.0,
+        "B": 91.0,
+        "C": 137.0
       },
       "slob_margin": 1.5,
       "slob_abc_velocity_factors": {
