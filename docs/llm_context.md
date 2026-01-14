@@ -2,7 +2,7 @@
 
 > **System Prompt Context:** This document contains the critical architectural, functional, and physical constraints of the Prism Sim project. Use this as primary context when reasoning about code changes, bug fixes, or feature expansions.
 
-**Version:** 0.32.0 | **Last Updated:** 2026-01-13
+**Version:** 0.32.1 | **Last Updated:** 2026-01-13
 
 ---
 

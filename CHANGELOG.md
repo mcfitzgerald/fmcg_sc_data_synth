@@ -5,6 +5,42 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.32.1] - 2026-01-13
+
+### Fix: Restore v0.31.0 Inventory Calibration
+
+The v0.32.0 release inadvertently overwrote the v0.31.0 empirically-tuned inventory parameters when the calibration script was re-run for multi-line physics. This caused severe metric regression (Service: 82%, SLOB: 85%, Turns: 3.5x).
+
+#### Root Cause
+
+The `calibrate_config.py` script re-derived all parameters from physics formulas, overwriting the manually-tuned v0.31.0 values that achieved the optimal service/turns/SLOB balance.
+
+#### Restored Parameters (`simulation_config.json`)
+
+| Parameter | v0.32.0 (broken) | v0.32.1 (restored) |
+|-----------|------------------|-------------------|
+| `store_days_supply` | 14.0 | **27.0** |
+| `rdc_days_supply` | 21.3 | **41.0** |
+| `customer_dc_days_supply` | 14.0 | **27.0** |
+| `abc_velocity_factors.A` | 1.2 | **1.5** |
+| `abc_velocity_factors.C` | 0.85 | **0.5** |
+| `slob_abc_thresholds.A` | 64 | **120** |
+| `slob_abc_thresholds.B` | 91 | **170** |
+| `slob_abc_thresholds.C` | 137 | **250** |
+| `a_production_buffer` | 1.1 | **1.2** |
+| `c_production_factor` | 0.6 | **0.35** |
+| `c_demand_factor` | 0.8 | **0.6** |
+| `trigger_dos_a` | 21 | **14** |
+| `trigger_dos_b` | 17 | **10** |
+| `trigger_dos_c` | 12 | **5** |
+
+#### Known Issue
+
+The calibration script (`calibrate_config.py`) produces suboptimal ABC velocity factors and SLOB thresholds. Future work needed to:
+1. Add cold-start buffer component to priming formulas
+2. Derive ABC factors from demand distribution, not arbitrary values
+3. Validate calibrated values against simulation results before applying
+
 ## [0.32.0] - 2026-01-13
 
 ### Multi-Line Manufacturing Physics
