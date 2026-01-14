@@ -2,7 +2,7 @@
 
 > **System Prompt Context:** This document contains the critical architectural, functional, and physical constraints of the Prism Sim project. Use this as primary context when reasoning about code changes, bug fixes, or feature expansions.
 
-**Version:** 0.31.0 | **Last Updated:** 2026-01-13
+**Version:** 0.32.0 | **Last Updated:** 2026-01-13
 
 ---
 
@@ -23,7 +23,8 @@ The simulation enforces these constraints - violations indicate bugs:
 2. **Kinematic Consistency:** Travel time = Distance / Speed. Teleportation is banned.
    - **v0.19.12+:** Distances are real Haversine calculations between lat/lon coordinates.
 3. **Little's Law:** Inventory = Throughput × Flow Time.
-4. **Capacity Constraints:** Cannot produce more than Rate × Time.
+4. **Capacity Constraints:** Cannot produce more than Rate × Time. 
+   - **v0.32.0+**: Capacity is modeled as **Discrete Parallel Lines** (e.g., 44 lines/plant) with per-line changeover penalties. The `production_rate_multiplier` hack is deprecated.
 5. **Inventory Positivity:** Cannot ship what you don't have.
 6. **Geospatial Coherence:**
    - Topology is distance-based (Nearest Neighbor).
@@ -684,9 +685,10 @@ Orchestrator
     │         └──→ creates ProductionOrder objects
     │
     ├──→ TransformEngine.execute_production()
+    │         ├──→ select line (sticky vs capacity)
     │         ├──→ check materials (vectorized)
     │         ├──→ consume ingredients
-    │         └──→ produce finished goods
+    │         └──→ produce finished goods (parallel lines)
     │
     ├──→ LogisticsEngine.create_shipments()
     │         ├──→ bin-packing (weight/cube)
@@ -702,6 +704,7 @@ Orchestrator
 
 | Version | Key Changes |
 |---------|-------------|
+| 0.32.0 | **Multi-Line Manufacturing Physics** - Replaced `production_rate_multiplier` hack with explicit parallel production lines; Implemented discrete `LineState` tracking and sticky scheduling; Refined OEE calculation ($A \times P \times Q$); Scaled to 44 lines/plant. |
 | 0.31.0 | **Industry-Calibrated Inventory Tuning** - Revised targets to industry benchmarks (Turns 5-7x, SLOB <15%); Discovered service-turns-SLOB Pareto frontier; **SL 89.4%, Turns 5.0x, SLOB 4.2%**; Documented structural 91% service ceiling |
 | 0.30.0 | **Seasonal Capacity Calibration** - Physics-based `capacity_amplitude` derivation; Asymmetric flex to maintain trough buffer |
 | 0.29.0 | **Flexible Production Capacity** - Seasonal capacity adjustment mirrors real FMCG practices; SLOB improved 83.8% → 26.2% |

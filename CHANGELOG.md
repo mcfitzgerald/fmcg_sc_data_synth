@@ -5,6 +5,36 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.32.0] - 2026-01-13
+
+### Multi-Line Manufacturing Physics
+
+Significant architectural upgrade to the production engine, replacing scalar capacity hacks with explicit discrete production line modeling.
+
+#### Architectural Changes
+
+- **TransformEngine (`transform.py`)**: 
+  - Implemented `LineState` to track capacity, last product, and OEE metrics per discrete production line.
+  - Replaced aggregate plant capacity pools with parallel line scheduling.
+  - Implemented sticky line selection logic to minimize changeover overhead.
+  - Refined OEE calculation to use $Availability \times Performance \times Quality$ per line.
+- **MRPEngine (`mrp.py`)**: 
+  - Updated network capacity calculations to be line-aware, ensuring accurate planning signals.
+
+#### Configuration & Calibration
+
+- **`simulation_config.json`**:
+  - Deprecated `production_rate_multiplier` (set to 1.0) in favor of explicit `num_lines`.
+  - Scaled network to **44 lines per plant** (176 total) to support the 21M case/day industry-scale demand.
+- **`calibrate_config.py`**:
+  - Updated capacity derivation physics to use line counts.
+  - Re-calibrated MRP triggers and inventory priming for the new physics model.
+
+#### Results
+
+- **OEE Realism**: OEE now accurately reflects changeover efficiency (~74% in baseline) rather than aggregate utilization (~36%).
+- **Physics Compliance**: Eliminated the "magic multiplier" hack, making manufacturing throughput fully traceable to line run rates and discrete changeover events.
+
 ## [0.31.0] - 2026-01-13
 
 ### Industry-Calibrated Inventory Tuning
