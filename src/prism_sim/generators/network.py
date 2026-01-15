@@ -13,6 +13,9 @@ if TYPE_CHECKING:
     from numpy.random import Generator
 
 
+EARTH_RADIUS_KM = 6371.0
+
+
 class NetworkGenerator:
     """Generates the physical supply chain network (Nodes and Links)."""
 
@@ -24,7 +27,7 @@ class NetworkGenerator:
 
     def _haversine(self, lat1: float, lon1: float, lat2: float, lon2: float) -> float:
         """Calculate Haversine distance in KM between two points."""
-        R = 6371.0  # Earth radius in KM
+        R = EARTH_RADIUS_KM
         phi1, phi2 = np.radians(lat1), np.radians(lat2)
         dphi = np.radians(lat2 - lat1)
         dlambda = np.radians(lon2 - lon1)

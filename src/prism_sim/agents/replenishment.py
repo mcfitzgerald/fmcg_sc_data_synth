@@ -107,6 +107,7 @@ class MinMaxReplenisher:
         self.min_demand_floor = float(params.get("min_demand_floor", 0.1))
         self.default_min_qty = float(params.get("default_min_qty", 10.0))
         self.store_batch_size = float(params.get("store_batch_size_cases", 20.0))
+        self.rush_threshold_days = float(params.get("rush_threshold_days", 2.0))
 
         # Optimization: Cache Store->Supplier map
         self.store_supplier_map = self._build_supplier_map()
@@ -650,11 +651,36 @@ class MinMaxReplenisher:
         Uses exponential smoothing on the demand signal to dampen bullwhip.
         Includes order staggering to prevent synchronized ordering waves.
         """
-        orders = []
-        week = (day // 7) + 1
+        # 1. Identify Target Nodes
+        target_indices, target_ids = self._identify_target_nodes(day)
+        if not target_indices:
+            return []
 
-        # Order staggering: Stores order daily to improve service level
-        # v0.15.8: Increased to 3-day cycle to consolidate store signals for DCs
+        # 2. Update Demand Smoothing
+        self._update_demand_smoothing(demand_signal)
+
+        # 3. Calculate Average Demand
+        avg_demand = self._calculate_average_demand(target_indices)
+
+        # 4. Calculate Base Order Logic (s,S)
+        needs_order, raw_qty, on_hand_inv, inventory_position = self._calculate_base_order_logic(
+            target_indices, avg_demand
+        )
+
+        # 5. Apply Echelon Logic Override (MEIO)
+        self._apply_echelon_logic(
+            target_indices, inventory_position, needs_order, raw_qty
+        )
+
+        # 6. Finalize Quantities (Min Qty, Masking, Batching)
+        batched_qty = self._finalize_quantities(target_indices, needs_order, raw_qty)
+
+        # 7. Create Order Objects
+        return self._create_order_objects(
+            day, target_indices, target_ids, batched_qty, avg_demand, on_hand_inv
+        )
+
+    def _identify_target_nodes(self, day: int) -> tuple[list[int], list[str]]:
         params = (
             self.config.get("simulation_parameters", {})
             .get("agents", {})
@@ -662,17 +688,8 @@ class MinMaxReplenisher:
         )
         order_cycle_days = int(params.get("order_cycle_days", 3))
 
-        # Identify active promos for this week
-        active_promos = []
-        promotions = self.config.get("promotions", [])
-        for p in promotions:
-            if p["start_week"] <= week <= p["end_week"]:
-                active_promos.append(p)
-
-        # 1. Identify Target Nodes (with staggering for stores)
         target_indices = []
         target_ids = []
-
         valid_targets = set(self.store_supplier_map.keys())
 
         for n_id in valid_targets:
@@ -685,76 +702,54 @@ class MinMaxReplenisher:
                 if idx is None:
                     continue
 
-                # Apply order staggering to reduce bullwhip synchronization
-                # Each node orders on its assigned day in the cycle
-                # v0.15.4: Apply to both stores AND customer DCs
+                # Apply order staggering
                 if node.type == NodeType.STORE:
                     order_day = hash(n_id) % order_cycle_days
                     if day % order_cycle_days != order_day:
-                        continue  # Skip this store today
-                elif idx in self._customer_dc_indices:
-                    # v0.19.2: Customer DCs using echelon logic ALWAYS order daily
-                    # Removing cycle restriction to break negative feedback spiral.
-                    # With 3-day cycles, demand signals accumulate but orders don't
-                    # flow, causing stores to starve while RDCs accumulate inventory.
-                    pass  # Always process Customer DCs, no cycle restriction
-
+                        continue
+                
                 target_indices.append(idx)
                 target_ids.append(n_id)
+        
+        return target_indices, target_ids
 
-        if not target_indices:
-            return []
-
-        target_idx_arr = np.array(target_indices)
-
-        # 2. Update Demand Smoothing (POS-based)
+    def _update_demand_smoothing(self, demand_signal: np.ndarray) -> None:
         if self.smoothed_demand is None:
             self.smoothed_demand = demand_signal.copy()
         else:
-            # S_t = alpha * x_t + (1 - alpha) * S_{t-1}
             self.smoothed_demand = (
                 self.alpha_vec * demand_signal
                 + (1.0 - self.alpha_vec) * self.smoothed_demand
             )
 
-        # 3. Get Inventory & Demand for Targets
-        # v0.16.0: Use Inventory Position (IP) for (s,S) decisions
-        # This is fundamental to (s,S) theory per Zipkin
-        # Using only on-hand causes double-ordering
-        on_hand_inv = self.state.inventory[target_idx_arr, :]
-        in_transit_matrix = self.state.get_in_transit_by_target()
-        in_transit_inv = in_transit_matrix[target_idx_arr, :]
-        inventory_position = on_hand_inv + in_transit_inv  # IP = On-Hand + In-Transit
-
-        # v0.18.2: Use inflow-based demand for ALL nodes (7-day avg)
-        # This replaces exponential smoothing which collapses on sparse signals.
+    def _calculate_average_demand(self, target_indices: list[int]) -> np.ndarray:
         inflow_demand = self.get_inflow_demand()
-
-        # For Day 1-7, inflow_demand might be low, so we blend with POS demand for stores
         pos_demand = self.smoothed_demand
-
-        avg_demand = np.zeros((len(target_indices), self.state.n_products))
+        
+        n_targets = len(target_indices)
+        avg_demand = np.zeros((n_targets, self.state.n_products))
 
         for i, t_idx in enumerate(target_indices):
             if t_idx in self._customer_dc_indices:
-                # Customer DC: use max of inflow and expected throughput
-                # v0.18.0: Expected throughput floor prevents cold-start under-ordering
                 inflow_signal = inflow_demand[t_idx, :]
                 expected = self._expected_throughput.get(t_idx, inflow_signal)
                 avg_demand[i, :] = np.maximum(inflow_signal, expected)
             else:
-                # Store: use max of 7-day inflow and current smoothed POS
-                # This ensures we respond to POS spikes but don't drop to 0 on non-ordering days
-                avg_demand[i, :] = np.maximum(inflow_demand[t_idx, :], pos_demand[t_idx, :])
+                avg_demand[i, :] = np.maximum(inflow_demand[t_idx, :], pos_demand[t_idx, :]) # type: ignore
 
-        # Avoid division by zero or negative targets
-        avg_demand = np.maximum(avg_demand, self.min_demand_floor)
+        return np.maximum(avg_demand, self.min_demand_floor)
 
-        # 4. Calculate Targets (Vectorized)
-        # v0.16.0: Variance-Aware Safety Stock Logic
-        # ROP = LeadTime*Avg + Z*StdDev*sqrt(LeadTime)
+    def _calculate_base_order_logic(
+        self, target_indices: list[int], avg_demand: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        target_idx_arr = np.array(target_indices)
+        
+        on_hand_inv = self.state.inventory[target_idx_arr, :]
+        in_transit_matrix = self.state.get_in_transit_by_target()
+        in_transit_inv = in_transit_matrix[target_idx_arr, :]
+        inventory_position = on_hand_inv + in_transit_inv
 
-        # Get config parameters
+        # Get ROP Parameters
         replenishment_params = (
             self.config.get("simulation_parameters", {})
             .get("agents", {})
@@ -763,12 +758,11 @@ class MinMaxReplenisher:
         lead_time = float(replenishment_params.get("lead_time_days", 3.0))
         min_ss_days = float(replenishment_params.get("min_safety_stock_days", 3.0))
 
-        # Calculate Demand Standard Deviation for target nodes
+        # Variance Logic
         full_sigma = self.get_demand_std()
         sigma = full_sigma[target_idx_arr, :]
 
-        # PERF: Vectorized Lead Time Stats Lookup
-        # Build source index array for all targets, then do single array lookup
+        # Lead Time Stats
         n_targets = len(target_indices)
         source_idx_arr = np.zeros(n_targets, dtype=np.int32)
         has_source = np.zeros(n_targets, dtype=bool)
@@ -782,7 +776,6 @@ class MinMaxReplenisher:
                     source_idx_arr[i] = s_idx
                     has_source[i] = True
 
-        # Vectorized lookup from cache
         mu_L_vec = np.full((n_targets, 1), lead_time, dtype=np.float32)
         sigma_L_vec = np.zeros((n_targets, 1), dtype=np.float32)
 
@@ -792,143 +785,125 @@ class MinMaxReplenisher:
             mu_L_vec[has_source, 0] = self._lt_mu_cache[valid_target_idx, valid_source_idx]
             sigma_L_vec[has_source, 0] = self._lt_sigma_cache[valid_target_idx, valid_source_idx]
 
-        # 1. Cycle Stock = Average Demand * Mean Lead Time
-        # Using realized mean lead time instead of static config
         cycle_stock = avg_demand * mu_L_vec
 
-        # 2. Safety Stock = Full Formula
-        # SS = z * sqrt( mu_L * sigma_D^2 + mu_D^2 * sigma_L^2 )
-        # Protects against both Demand Variability and Supply Variability
-
-        # Check if we have enough history for sigma
+        # Safety Stock Calculation
         repl_config = self.config.get("simulation_parameters", {}).get("agents", {}).get("replenishment", {})
         min_history = int(repl_config.get("min_history_days", 7))
         use_variance_logic = self.history_idx >= min_history
 
         if use_variance_logic:
-            # Variance of demand during lead time
             demand_risk_sq = mu_L_vec * (sigma**2)
-
-            # Variance of supply (lead time) affecting total demand
             supply_risk_sq = (avg_demand**2) * (sigma_L_vec**2)
-
-            # Combined Standard Deviation
             combined_sigma = np.sqrt(demand_risk_sq + supply_risk_sq)
-
-            # Physics Overhaul Phase 3: Use Dynamic Z-Scores (ABC Segmentation)
             safety_stock = self.z_scores_vec * combined_sigma
-
-            # Floor safety stock to minimum days coverage (hybrid approach)
-            # This protects against ultra-low variance artifacts or zero sigma
             min_safety_stock = avg_demand * min_ss_days
             safety_stock = np.maximum(safety_stock, min_safety_stock)
-
+            
             reorder_point = cycle_stock + safety_stock
-
-            # Target Stock (Order-Up-To)
-            # S = max(TargetDays * AvgDemand, ROP + Buffer)
+            
             target_stock_days = self.target_days_vec[target_idx_arr]
             target_stock = np.maximum(
                 avg_demand * target_stock_days,
-                reorder_point + avg_demand  # Ensure at least 1 day gap
+                reorder_point + avg_demand
             )
         else:
-            # Cold start fallback: Use legacy fixed-days logic
             rop_days = self.rop_vec[target_idx_arr]
             target_days = self.target_days_vec[target_idx_arr]
-
             reorder_point = avg_demand * rop_days
             target_stock = avg_demand * target_days
 
+        needs_order = inventory_position < reorder_point
+        raw_qty = target_stock - inventory_position
+        
+        return needs_order, raw_qty, on_hand_inv, inventory_position
+
+    def _apply_echelon_logic(
+        self,
+        target_indices: list[int],
+        inventory_position: np.ndarray,
+        needs_order: np.ndarray,
+        raw_qty: np.ndarray
+    ) -> None:
+        if self.echelon_matrix is None or not self.dc_idx_to_echelon_row:
+            return
+
+        dc_target_indices = []
+        echelon_rows = []
+
+        for i, t_idx in enumerate(target_indices):
+            if t_idx in self.dc_idx_to_echelon_row:
+                dc_target_indices.append(i)
+                echelon_rows.append(self.dc_idx_to_echelon_row[t_idx])
+
+        if not dc_target_indices:
+            return
+
+        dc_indices = np.array(dc_target_indices)
+        row_indices = np.array(echelon_rows)
+        target_idx_arr = np.array(target_indices)
+
+        # Echelon Demand
+        echelon_demand_all = self.echelon_matrix @ self.smoothed_demand # type: ignore
+        current_e_demand = echelon_demand_all[row_indices]
+
+        # Local IP (already passed in as inventory_position[dc_indices])
+        local_ip = inventory_position[dc_indices]
+
+        # Targets
+        dc_target_days = self.target_days_vec[target_idx_arr[dc_indices]]
+        dc_rop_days = self.rop_vec[target_idx_arr[dc_indices]]
+
+        params = (
+            self.config.get("simulation_parameters", {})
+            .get("agents", {})
+            .get("replenishment", {})
+        )
+        echelon_safety_multiplier = float(params.get("echelon_safety_multiplier", 1.3))
+        
+        echelon_target = current_e_demand * dc_target_days * echelon_safety_multiplier
+        echelon_rop = current_e_demand * dc_rop_days * echelon_safety_multiplier
+
+        echelon_qty = echelon_target - local_ip
+        needs_echelon_order = local_ip < echelon_rop
+
+        raw_qty[dc_indices] = echelon_qty
+        needs_order[dc_indices] = needs_echelon_order
+
+    def _finalize_quantities(
+        self,
+        target_indices: list[int],
+        needs_order: np.ndarray,
+        raw_qty: np.ndarray
+    ) -> np.ndarray:
+        target_idx_arr = np.array(target_indices)
         batch_sz = self.batch_vec[target_idx_arr]
         min_qty = self.min_qty_vec[target_idx_arr]
 
-        # 5. Determine Order Quantities (using Inventory Position for (s,S) decision)
-        # v0.16.0: Compare IP against reorder point, order up to target minus IP
-        # This prevents double-ordering when shipments are already in transit
-        needs_order = inventory_position < reorder_point
-        raw_qty = target_stock - inventory_position
-
-        # --- v0.19.0 ECHELON INVENTORY LOGIC (Override for Customer DCs) ---
-        # For Customer DCs, use ECHELON DEMAND (downstream POS) but LOCAL IP.
-        #
-        # BUG FIX (v0.19.1): Original implementation used Echelon IP which included
-        # store inventory. This caused DCs to under-order because the system looked
-        # "well-stocked" even as stores depleted. The DC's ability to ship depends
-        # on its LOCAL inventory, not downstream inventory.
-        #
-        # Correct approach:
-        # - Echelon Demand = M_E @ POS_Demand (aggregate downstream demand)
-        # - Local IP = DC's own inventory + in-transit TO the DC
-        # - Order = Target - Local IP (where Target is based on Echelon Demand)
-
-        if self.echelon_matrix is not None and self.dc_idx_to_echelon_row:
-            # Identify which targets are Customer DCs
-            dc_target_indices = []
-            echelon_rows = []
-
-            for i, t_idx in enumerate(target_indices):
-                if t_idx in self.dc_idx_to_echelon_row:
-                    dc_target_indices.append(i)  # Index in 'target_indices' subset
-                    echelon_rows.append(self.dc_idx_to_echelon_row[t_idx])
-
-            if dc_target_indices:
-                dc_indices = np.array(dc_target_indices)
-                row_indices = np.array(echelon_rows)
-
-                # 1. Calculate Echelon Demand (Aggregated downstream POS)
-                # smoothed_demand is [n_nodes, n_products], stores have data, DCs ~0
-                echelon_demand_all = self.echelon_matrix @ self.smoothed_demand
-
-                # Extract relevant rows for the DCs currently being processed
-                current_e_demand = echelon_demand_all[row_indices]
-
-                # 2. Use LOCAL IP for the DC (NOT Echelon IP)
-                # This is the DC's own inventory + in-transit to the DC
-                # Already calculated above as inventory_position for all targets
-                # dc_indices indexes into the target subset, so use inventory_position[dc_indices]
-                local_ip = inventory_position[dc_indices]
-
-                # 3. Calculate Echelon-based Target and ROP
-                # Target = Echelon_Demand * TargetDays * SafetyMultiplier
-                # This represents how much the DC needs to cover downstream demand
-                dc_target_days = self.target_days_vec[target_idx_arr[dc_indices]]
-                dc_rop_days = self.rop_vec[target_idx_arr[dc_indices]]
-
-                # v0.19.2: Add safety multiplier to account for demand/lead time variance
-                # at echelon level. This provides buffer beyond raw echelon demand.
-                echelon_safety_multiplier = float(
-                    params.get("echelon_safety_multiplier", 1.3)
-                )
-                echelon_target = current_e_demand * dc_target_days * echelon_safety_multiplier
-                echelon_rop = current_e_demand * dc_rop_days * echelon_safety_multiplier
-
-                # 4. Calculate Order Quantity using Local IP
-                # Order = Target - Local IP
-                echelon_qty = echelon_target - local_ip
-
-                # 5. Order trigger: Local IP < Echelon ROP
-                needs_echelon_order = local_ip < echelon_rop
-
-                # Update the main arrays
-                raw_qty[dc_indices] = echelon_qty
-                needs_order[dc_indices] = needs_echelon_order
-
-        # Use vectorized min_qty
         order_qty = np.where(needs_order, np.maximum(raw_qty, min_qty), 0.0)
-
-        # v0.18.1: Explicitly zero out Ingredient orders in Replenisher
-        # Sourcing/Procurement of ingredients is handled by MRPEngine
         order_qty[:, self.ingredient_mask] = 0.0
-
-        # 6. Apply Batching
+        
         batched_qty = np.ceil(order_qty / batch_sz) * batch_sz
+        return batched_qty
 
-        # 7. Create Orders
+    def _create_order_objects(
+        self,
+        day: int,
+        target_indices: list[int],
+        target_ids: list[str],
+        batched_qty: np.ndarray,
+        avg_demand: np.ndarray,
+        on_hand_inv: np.ndarray
+    ) -> list[Order]:
+        week = (day // 7) + 1
+        active_promos = []
+        promotions = self.config.get("promotions", [])
+        for p in promotions:
+            if p["start_week"] <= week <= p["end_week"]:
+                active_promos.append(p)
+
         rows, cols = np.nonzero(batched_qty)
-
-        # Prepare Order Data
-        orders_by_target: dict[int, dict[str, Any]] = {} # target_idx -> {lines: [], type: ...}
+        orders_by_target: dict[int, dict[str, Any]] = {}
 
         for r, c in zip(rows, cols, strict=True):
             qty = batched_qty[r, c]
@@ -938,26 +913,26 @@ class MinMaxReplenisher:
             p_idx = int(c)
             p_id = self.state.product_idx_to_id[p_idx]
 
-            # v0.21.0: Removed pending_orders deduplication check
-            # Inventory Position (on-hand + in-transit) already prevents double-ordering
-            # This matches real retail systems like Walmart's Retail Link
-
             if t_idx not in orders_by_target:
                 orders_by_target[t_idx] = {
                     "lines": [],
-                    "days_supply_min": 999.0,
+                    "days_supply_min": float("inf"),
                     "promo_id": None
                 }
 
             orders_by_target[t_idx]["lines"].append(OrderLine(p_id, qty))
 
-            # Check days supply for Rush classification
-            d_supply = on_hand_inv[r, c] / avg_demand[r, c]
+            # Days Supply Check
+            if avg_demand[r, c] > 0:
+                d_supply = on_hand_inv[r, c] / avg_demand[r, c]
+            else:
+                d_supply = float("inf")
+                
             orders_by_target[t_idx]["days_supply_min"] = min(
                 orders_by_target[t_idx]["days_supply_min"], d_supply
             )
 
-            # Check Promo
+            # Promo Logic
             target_node = self.world.nodes.get(target_ids[r])
             if target_node and not orders_by_target[t_idx]["promo_id"]:
                 for promo in active_promos:
@@ -967,7 +942,6 @@ class MinMaxReplenisher:
                         or self.world.products[p_id].category.name
                         in affected_cats
                     )
-
                     affected_chans = promo.get("affected_channels")
                     chan_match = (
                         not affected_chans
@@ -976,12 +950,11 @@ class MinMaxReplenisher:
                             and target_node.channel.name in affected_chans
                         )
                     )
-
                     if cat_match and chan_match:
                         orders_by_target[t_idx]["promo_id"] = promo["code"]
                         break
 
-        # Generate Objects
+        orders = []
         order_count = 0
         for t_idx, data in orders_by_target.items():
             target_id = self.state.node_idx_to_id[t_idx]
@@ -990,17 +963,15 @@ class MinMaxReplenisher:
 
             target_node = self.world.nodes.get(target_id)
 
-            # Determine Order Type
             o_type = OrderType.STANDARD
             priority = OrderPriority.LOW
             if target_node and target_node.type == NodeType.DC:
-                # DC orders are standard replenishment
                 priority = OrderPriority.STANDARD
 
             if data["promo_id"]:
                 o_type = OrderType.PROMOTIONAL
                 priority = OrderPriority.HIGH
-            elif data["days_supply_min"] < 2.0: # Critical low stock
+            elif data["days_supply_min"] < self.rush_threshold_days:
                 o_type = OrderType.RUSH
                 priority = OrderPriority.RUSH
 
@@ -1015,7 +986,7 @@ class MinMaxReplenisher:
                 promo_id=data["promo_id"],
                 priority=priority
             ))
-
+        
         return orders
 
     # =========================================================================

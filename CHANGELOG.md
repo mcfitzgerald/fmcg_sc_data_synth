@@ -5,6 +5,37 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.34.0] - 2026-01-14
+
+### Replenishment Logic Refactor & Hardcode Fixes
+
+Refactored the core replenishment agent to improve maintainability, fix logic gaps, and enforce strict configuration compliance.
+
+#### Key Changes
+
+- **Refactored `MinMaxReplenisher`:**
+  - Broke down the monolithic `generate_orders` function (154 statements) into 6 focused helper methods:
+    - `_identify_target_nodes`: Handles staggering logic
+    - `_update_demand_smoothing`: Maintains POS averages
+    - `_calculate_average_demand`: Unifies Inflow/POS signal logic
+    - `_calculate_base_order_logic`: Computes standard (s,S) targets
+    - `_apply_echelon_logic`: Overrides targets for Multi-Echelon (MEIO) nodes
+    - `_finalize_quantities`: Applies masking and batching
+    - `_create_order_objects`: Generates Order entities
+  - Resolved complexity violations and improved readability.
+
+- **Config Enforcement (Physics Hardcodes Removed):**
+  - **Rush Threshold:** Replaced hardcoded `2.0` days threshold for rush orders with `rush_threshold_days` (default 2.0) from configuration.
+  - **Burn-In Days:** Removed hardcoded 90-day fallback in `Orchestrator`. Now strictly respects `simulation_config.json` value.
+  - **Earth Radius:** Moved hardcoded `6371.0` km radius to a module constant in `generators/network.py`.
+
+- **Test Infrastructure:**
+  - Added `tests/test_replenishment_refactor.py` covering Store Replenishment and Customer DC Echelon logic to ensure regression safety during refactoring.
+
+#### Validation
+- Verified regression safety with full test suite pass.
+- Verified logic correctness for both standard store ordering and multi-echelon DC replenishment.
+
 ## [0.33.0] - 2026-01-14
 
 ### Automatic Steady-State Checkpointing

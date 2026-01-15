@@ -469,7 +469,7 @@ class MRPEngine:
         hours_per_day = mfg_config.get("production_hours_per_day", 24.0)
         global_efficiency = mfg_config.get("efficiency_factor", 0.85)
         global_downtime = mfg_config.get("unplanned_downtime_pct", 0.05)
-        
+
         default_num_lines = mfg_config.get("default_num_lines", 4)
         # Multiplier should be 1.0 now, but kept for legacy compat if needed
         rate_multiplier = mfg_config.get("production_rate_multiplier", 1.0)

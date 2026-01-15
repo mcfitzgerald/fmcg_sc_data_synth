@@ -754,9 +754,7 @@ class Orchestrator:
         if self._needs_burn_in:
             # Phase 1: Run burn-in (no metrics recording)
             burn_in_days = self._default_burn_in_days
-            if burn_in_days <= 0:
-                # Fallback default if not configured
-                burn_in_days = 90
+            # Removed hardcoded fallback to 90 days. Trust config.
 
             print(f"Running {burn_in_days}-day burn-in (checkpoint not found)...")
 

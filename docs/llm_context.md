@@ -736,6 +736,7 @@ Orchestrator
 
 | Version | Key Changes |
 |---------|-------------|
+| 0.34.0 | **Replenishment Refactor & Config Enforcement** - Broken down monolithic `generate_orders` into 6 helper methods; Fixed hardcoded physics parameters (`rush_threshold`, `burn_in_days`, `EARTH_RADIUS`); Added dedicated replenishment test harness |
 | 0.33.0 | **Automatic Steady-State Checkpointing** - Transparent burn-in and checkpoint management; First run: 90-day burn-in → saves checkpoint → data days; Subsequent runs: load checkpoint → skip burn-in; Config hash validation for checkpoint staleness; `--no-checkpoint`, `--warm-start`, `--skip-hash-check` CLI flags; Day continuation fix (warm-start continues from day 91, not day 1); `_metrics_start_day` excludes burn-in from Triangle Report; New `simulation/snapshot.py` module |
 | 0.32.0 | **Multi-Line Manufacturing Physics** - Replaced `production_rate_multiplier` hack with explicit parallel production lines; Implemented discrete `LineState` tracking and sticky scheduling; Refined OEE calculation ($A \times P \times Q$); Scaled to 44 lines/plant. |
 | 0.31.0 | **Industry-Calibrated Inventory Tuning** - Revised targets to industry benchmarks (Turns 5-7x, SLOB <15%); Discovered service-turns-SLOB Pareto frontier; **SL 89.4%, Turns 5.0x, SLOB 4.2%**; Documented structural 91% service ceiling |
