@@ -59,6 +59,37 @@
         "review_period_b": 5,
         "review_period_c": 3
       },
+      "multi_echelon_lead_times": {
+        "_comment": "v0.33.0: Cumulative lead times by echelon (days) - accounts for multi-tier cascade",
+        "store_from_dc": 1.0,
+        "customer_dc_from_rdc": 3.0,
+        "rdc_from_plant": 5.0,
+        "plant_production": 3.0,
+        "ftl_consolidation_buffer": 2.0,
+        "use_dynamic_calculation": true
+      },
+      "mrp_signal_lag": {
+        "_comment": "v0.33.0: MRP uses rolling windows that create signal lag",
+        "demand_history_days": 14,
+        "effective_lag_days": 7,
+        "include_in_triggers": true
+      },
+      "cold_start": {
+        "_comment": "v0.33.0: Parameters to compensate for cold-start artifacts",
+        "buffer_pct": 0.15,
+        "stabilization_days": 30,
+        "apply_to_priming": true
+      },
+      "baseline_reference": {
+        "_comment": "v0.32.1 empirically-tuned values for validation",
+        "store_days_supply": 27.0,
+        "rdc_days_supply": 41.0,
+        "customer_dc_days_supply": 27.0,
+        "abc_velocity_factors": {"A": 1.5, "B": 1.0, "C": 0.5},
+        "trigger_dos_a": 14,
+        "trigger_dos_b": 10,
+        "trigger_dos_c": 5
+      },
       "abc_production_factors": {
         "a_buffer": 1.1,
         "c_production_factor": 0.6,
@@ -70,6 +101,19 @@
         "rdc": 0.35,
         "plant": 0.12,
         "pipeline": 0.07
+      },
+      "warm_start": {
+        "_comment": "v0.33.0: Configuration for warm-start snapshot system",
+        "enabled": false,
+        "snapshot_path": null,
+        "default_burn_in_days": 90,
+        "validate_config_hash": true,
+        "history_buffer_init": {
+          "_comment": "How to initialize history buffers from derived params",
+          "demand_noise_cv": 0.1,
+          "lead_time_noise_cv": 0.1,
+          "use_derived_abc": true
+        }
       }
     },
     "scoring": {

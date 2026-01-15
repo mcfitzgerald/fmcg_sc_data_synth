@@ -2,7 +2,7 @@
 
 > **System Prompt Context:** This document contains the critical architectural, functional, and physical constraints of the Prism Sim project. Use this as primary context when reasoning about code changes, bug fixes, or feature expansions.
 
-**Version:** 0.32.1 | **Last Updated:** 2026-01-13
+**Version:** 0.33.0 | **Last Updated:** 2026-01-14
 
 ---
 
@@ -81,6 +81,38 @@ The simulation enforces these constraints - violations indicate bugs:
 |--------|---------|
 | `scripts/generate_static_world.py` | Generate static world data (products, recipes, nodes, links) |
 | `scripts/calibrate_config.py` | Derive optimal simulation parameters from world definition using physics |
+| `scripts/generate_warm_start.py` | Generate warm-start snapshot manually (90-day burn-in) |
+
+### Warm-Start & Checkpointing (v0.33.0)
+| Concept | File | Key Classes/Functions |
+|---------|------|----------------------|
+| **Snapshot utilities** | `simulation/snapshot.py` | `capture_minimal_state()`, `save_snapshot()` |
+| **Auto-checkpoint** | `simulation/orchestrator.py` | `_save_checkpoint()`, `_load_warm_start_snapshot()` |
+
+---
+
+## 3.1 Automatic Steady-State Checkpointing (v0.33.0)
+
+The simulation uses automatic checkpointing to eliminate cold-start artifacts:
+
+```bash
+poetry run python run_simulation.py --days 365
+# First run: 90-day burn-in → saves checkpoint → 365 data days
+# Subsequent runs: loads checkpoint → 365 data days (skips burn-in)
+```
+
+**Key Concepts:**
+- `--days N` specifies N days of **steady-state data** (post burn-in)
+- Checkpoints are named by config hash: `steady_state_{hash}.json.gz`
+- Config changes invalidate old checkpoints (new burn-in runs automatically)
+- `_metrics_start_day` excludes burn-in from Triangle Report metrics
+
+**CLI Flags:**
+- `--no-checkpoint` - Disable auto-checkpointing (always cold-start)
+- `--warm-start PATH` - Use specific snapshot file
+- `--skip-hash-check` - Load snapshot even if config changed
+
+**Day Continuation:** Warm-start continues from `burn_in_days + 1` (e.g., day 91) to preserve seasonality patterns and random seed consistency.
 
 ---
 

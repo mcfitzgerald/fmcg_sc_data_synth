@@ -5,6 +5,13 @@ Calibration script for Prism Sim configuration parameters.
 Derives optimal simulation parameters from world definition and static world data
 using supply chain physics and industry benchmarks (FMCG).
 
+v0.33.0: Multi-echelon lead time cascade and MRP signal lag awareness.
+- Calculates cumulative lead times through 4-tier network
+- Accounts for FTL consolidation delays
+- Adds MRP rolling window signal lag to trigger thresholds
+- Derives ABC priming factors from z-scores (no hardcodes)
+- Validates against v0.32.1 baseline for regression prevention
+
 v0.31.0: Major rewrite to use target inventory turns as primary driver,
 matching real FMCG company performance (Colgate 4.1x, P&G 5.5x, Unilever 6.2x).
 
@@ -18,6 +25,7 @@ Usage:
 import argparse
 import csv
 import json
+import math
 from pathlib import Path
 from typing import Any
 
@@ -72,6 +80,215 @@ def get_products_by_category(products_path: Path) -> dict[str, list[str]]:
             if product_id.startswith("SKU-"):
                 categories[cat].append(product_id)
     return categories
+
+
+def calculate_multi_echelon_lead_times(
+    links_path: Path,
+    sim_config: dict[str, Any],
+) -> dict[str, Any]:
+    """
+    v0.33.0: Calculate actual multi-echelon lead times from network topology.
+
+    Analyzes links.csv to compute average lead times for each echelon transition:
+    - Store ← Customer DC
+    - Customer DC ← RDC
+    - RDC ← Plant
+    - Plant ← Supplier
+
+    Also estimates FTL consolidation delays based on logistics config.
+
+    Returns:
+        Dict with lead times by echelon and cumulative totals.
+    """
+    # Load lead times from links
+    echelon_lead_times: dict[str, list[float]] = {
+        "dc_to_store": [],
+        "rdc_to_dc": [],
+        "plant_to_rdc": [],
+        "supplier_to_plant": [],
+    }
+
+    with open(links_path, encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            source_id = row["source_id"]
+            target_id = row["target_id"]
+            lt = float(row["lead_time_days"])
+
+            # Classify by echelon transition
+            if source_id.startswith("RET-DC-") or source_id.startswith("DIST-DC-"):
+                # Customer DC -> Store
+                echelon_lead_times["dc_to_store"].append(lt)
+            elif source_id.startswith("RDC-"):
+                # RDC -> Customer DC or RDC -> Club Store
+                if target_id.startswith("STORE-"):
+                    echelon_lead_times["dc_to_store"].append(lt)
+                else:
+                    echelon_lead_times["rdc_to_dc"].append(lt)
+            elif source_id.startswith("PLANT-"):
+                # Plant -> RDC
+                echelon_lead_times["plant_to_rdc"].append(lt)
+            elif source_id.startswith("SUP-"):
+                # Supplier -> Plant
+                echelon_lead_times["supplier_to_plant"].append(lt)
+
+    # Calculate statistics
+    def stats(values: list[float]) -> dict[str, float]:
+        if not values:
+            return {"mean": 0.0, "min": 0.0, "max": 0.0, "p90": 0.0}
+        sorted_vals = sorted(values)
+        p90_idx = int(len(sorted_vals) * 0.9)
+        return {
+            "mean": sum(values) / len(values),
+            "min": min(values),
+            "max": max(values),
+            "p90": sorted_vals[min(p90_idx, len(sorted_vals) - 1)],
+        }
+
+    echelon_stats = {k: stats(v) for k, v in echelon_lead_times.items()}
+
+    # Get FTL consolidation estimate from config
+    log_config = sim_config.get("simulation_parameters", {}).get("logistics", {})
+    calibration = sim_config.get("simulation_parameters", {}).get("calibration", {})
+    multi_echelon_cfg = calibration.get("multi_echelon_lead_times", {})
+
+    # FTL consolidation adds delay waiting for minimum pallets
+    ftl_consolidation = multi_echelon_cfg.get("ftl_consolidation_buffer", 2.0)
+
+    # Production lead time
+    mfg_config = sim_config.get("simulation_parameters", {}).get("manufacturing", {})
+    prod_lt = mfg_config.get("production_lead_time_days", 3)
+
+    # Calculate cumulative lead times for replenishment paths
+    # Using P90 values to ensure adequate coverage (not just average)
+    store_lt = echelon_stats["dc_to_store"]["p90"]
+    dc_lt = echelon_stats["rdc_to_dc"]["p90"] + ftl_consolidation
+    rdc_lt = echelon_stats["plant_to_rdc"]["p90"] + ftl_consolidation
+
+    # Full cascade: Store replenishment from Plant production
+    # Store <- DC <- RDC <- Plant
+    cumulative = {
+        "store": store_lt,
+        "customer_dc": store_lt + dc_lt,
+        "rdc": store_lt + dc_lt + rdc_lt,
+        "plant": store_lt + dc_lt + rdc_lt + prod_lt,
+    }
+
+    return {
+        "echelon_stats": echelon_stats,
+        "ftl_consolidation": ftl_consolidation,
+        "production_lead_time": prod_lt,
+        "cumulative": cumulative,
+        "network_replenishment_time": cumulative["rdc"],  # RDC sees Plant production after this
+    }
+
+
+def derive_abc_priming_factors(
+    z_scores: dict[str, float],
+) -> dict[str, float]:
+    """
+    v0.33.0: Derive ABC priming factors from service level z-scores.
+
+    The priming factor determines how much inventory buffer each ABC class gets.
+    Higher service level target (higher z-score) = more buffer needed.
+
+    Formula: factor_X = z_X / z_B (B-items are baseline)
+
+    This ensures:
+    - A-items (z=2.33, 99% SL) get ~1.17x buffer
+    - B-items (z=2.00, 97% SL) get 1.0x buffer (baseline)
+    - C-items (z=1.65, 95% SL) get ~0.83x buffer
+
+    CRITICAL: A > B > C must hold for proper service level hierarchy.
+    """
+    z_a = z_scores.get("A", 2.33)
+    z_b = z_scores.get("B", 2.0)
+    z_c = z_scores.get("C", 1.65)
+
+    if z_b == 0:
+        z_b = 2.0  # Prevent division by zero
+
+    factors = {
+        "A": round(z_a / z_b, 3),
+        "B": 1.0,
+        "C": round(z_c / z_b, 3),
+    }
+
+    # Validate hierarchy
+    if not (factors["A"] >= factors["B"] >= factors["C"]):
+        print(f"WARNING: ABC hierarchy violated! A={factors['A']}, B={factors['B']}, C={factors['C']}")
+        # Force correct hierarchy
+        factors["A"] = max(factors["A"], 1.1)
+        factors["C"] = min(factors["C"], 0.9)
+
+    return factors
+
+
+def validate_against_baseline(
+    recommendations: dict[str, Any],
+    sim_config: dict[str, Any],
+) -> list[str]:
+    """
+    v0.33.0: Validate derived values against v0.32.1 baseline.
+
+    Prevents regressions like v0.32.0 where calibration overwrote
+    empirically-tuned values with physics-derived values that were wrong.
+
+    Returns list of warnings if values deviate significantly from baseline.
+    """
+    warnings: list[str] = []
+
+    calibration = sim_config.get("simulation_parameters", {}).get("calibration", {})
+    baseline = calibration.get("baseline_reference", {})
+
+    if not baseline:
+        warnings.append("No baseline_reference in config - cannot validate")
+        return warnings
+
+    rec = recommendations.get("recommendations", {})
+
+    # Check critical parameters against baseline
+    checks = [
+        ("store_days_supply", 0.3),  # Allow 30% deviation
+        ("rdc_days_supply", 0.3),
+        ("customer_dc_days_supply", 0.3),
+        ("trigger_dos_a", 0.5),  # Triggers can vary more
+        ("trigger_dos_b", 0.5),
+        ("trigger_dos_c", 0.5),
+    ]
+
+    for param, max_deviation in checks:
+        baseline_val = baseline.get(param)
+        derived_val = rec.get(param)
+
+        if baseline_val is None or derived_val is None:
+            continue
+
+        if baseline_val == 0:
+            continue
+
+        deviation = abs(derived_val - baseline_val) / baseline_val
+
+        if deviation > max_deviation:
+            warnings.append(
+                f"{param}: derived={derived_val:.1f} vs baseline={baseline_val:.1f} "
+                f"(deviation={deviation:.0%} > {max_deviation:.0%})"
+            )
+
+    # Check ABC factor hierarchy
+    abc_factors = rec.get("abc_velocity_factors", {})
+    if abc_factors:
+        a_factor = abc_factors.get("A", 1.0)
+        b_factor = abc_factors.get("B", 1.0)
+        c_factor = abc_factors.get("C", 1.0)
+
+        if not (a_factor >= b_factor >= c_factor):
+            warnings.append(
+                f"ABC hierarchy VIOLATED: A={a_factor}, B={b_factor}, C={c_factor} "
+                f"(must be A >= B >= C)"
+            )
+
+    return warnings
 
 
 def calculate_daily_demand(
@@ -196,12 +413,19 @@ def derive_optimal_parameters(
     demand_analysis: dict[str, Any],
     capacity_analysis: dict[str, Any],
     sim_config: dict[str, Any],
+    echelon_lead_times: dict[str, Any] | None = None,
     target_turns: float | None = None,
     target_oee: float = 0.65,
     target_service_level: float = 0.97,
 ) -> dict[str, Any]:
     """
     Derive optimal configuration parameters based on physics and industry benchmarks.
+
+    v0.33.0: Multi-echelon lead time awareness and MRP signal lag.
+    - Uses cumulative lead times through 4-tier network
+    - Accounts for FTL consolidation delays
+    - Adds MRP rolling window signal lag to trigger thresholds
+    - Derives ABC priming factors from z-scores (no hardcodes)
 
     v0.31.0: Complete rewrite to use target inventory turns as primary driver.
 
@@ -214,7 +438,7 @@ def derive_optimal_parameters(
     - Network DOS = 365 / Target Turns
     - Network DOS = Store DOS + DC DOS + RDC DOS + Pipeline
     - Each echelon DOS = Lead Time + Safety Stock + Cycle Stock + Strategic Buffer
-    - Trigger DOS = Replenishment Time + Safety Buffer + Review Period
+    - Trigger DOS = Replenishment Time + Safety Buffer + Review Period + MRP Signal Lag
     - SLOB Threshold = Expected DOS × ABC Velocity × Margin
 
     All physics parameters are read from config.calibration section.
@@ -233,6 +457,11 @@ def derive_optimal_parameters(
     trigger_cfg = calibration.get("trigger_components", {})
     abc_prod = calibration.get("abc_production_factors", {})
 
+    # v0.33.0: Load multi-echelon and MRP signal lag config
+    multi_echelon_cfg = calibration.get("multi_echelon_lead_times", {})
+    mrp_signal_cfg = calibration.get("mrp_signal_lag", {})
+    cold_start_cfg = calibration.get("cold_start", {})
+
     # Use config target turns if not specified via CLI
     if target_turns is None:
         target_turns = industry.get("target_turns", 6.0)
@@ -245,10 +474,41 @@ def derive_optimal_parameters(
     log_config = sim_params.get("logistics", {})
     validation_config = sim_params.get("validation", {})
 
-    # Core timing parameters from config
+    # =================================================================
+    # v0.33.0: USE MULTI-ECHELON LEAD TIMES (Major Fix)
+    # =================================================================
+    # Previously: Single lead_time_days = 3.0 used everywhere
+    # Now: Cumulative lead times by echelon from actual network analysis
+    # =================================================================
+    if echelon_lead_times and multi_echelon_cfg.get("use_dynamic_calculation", True):
+        # Use dynamically calculated lead times from links.csv
+        cumulative = echelon_lead_times.get("cumulative", {})
+        store_lt = cumulative.get("store", 1.0)
+        dc_lt = cumulative.get("customer_dc", 3.0)
+        rdc_lt = cumulative.get("rdc", 5.0)
+        network_replenishment_time = echelon_lead_times.get("network_replenishment_time", 7.0)
+        ftl_consolidation = echelon_lead_times.get("ftl_consolidation", 2.0)
+    else:
+        # Use static config values (fallback)
+        store_lt = multi_echelon_cfg.get("store_from_dc", 1.0)
+        dc_lt = multi_echelon_cfg.get("customer_dc_from_rdc", 3.0)
+        rdc_lt = multi_echelon_cfg.get("rdc_from_plant", 5.0)
+        ftl_consolidation = multi_echelon_cfg.get("ftl_consolidation_buffer", 2.0)
+        prod_lt_cfg = multi_echelon_cfg.get("plant_production", 3.0)
+        network_replenishment_time = rdc_lt + prod_lt_cfg
+
+    # Legacy single lead time for backwards compatibility in some formulas
     lead_time_days = log_config.get("default_lead_time_days", 3.0)
     order_cycle_days = replen_config.get("order_cycle_days", 5)
     current_production_horizon = campaign_config.get("production_horizon_days", 4)
+
+    # v0.33.0: MRP signal lag (MRP uses 14-day rolling window)
+    mrp_signal_lag = mrp_signal_cfg.get("effective_lag_days", 7)
+    include_mrp_lag_in_triggers = mrp_signal_cfg.get("include_in_triggers", True)
+
+    # v0.33.0: Cold-start buffer
+    cold_start_buffer_pct = cold_start_cfg.get("buffer_pct", 0.15)
+    apply_cold_start = cold_start_cfg.get("apply_to_priming", True)
 
     # =================================================================
     # STEP 1: DERIVE NETWORK DOS FROM TARGET TURNS (Primary Driver)
@@ -289,9 +549,10 @@ def derive_optimal_parameters(
 
     # =================================================================
     # STEP 3: PHYSICS-BASED VALIDATION OF ECHELON DOS
+    # v0.33.0: Now uses ECHELON-SPECIFIC lead times, not single value
     # =================================================================
     # Ensure each echelon has minimum DOS to cover:
-    # 1. Lead time (replenishment runway)
+    # 1. Lead time (replenishment runway) - NOW ECHELON-SPECIFIC
     # 2. Safety stock (variability buffer)
     # 3. Cycle stock (order cycle average)
     # 4. Strategic buffer (presentation stock, forward positioning)
@@ -303,26 +564,29 @@ def derive_optimal_parameters(
     production_smoothing = buffers.get("production_smoothing_days", 5.0)
 
     # Store minimum: Lead time + Safety + Cycle + Presentation
+    # v0.33.0: Uses store-specific lead time (from DC)
     # Safety = z × √(demand_var² × LT + supply_var² × demand²)
     # Simplified: z × combined_cv × √LT
     combined_cv_store = (demand_cv.get("store", 0.5)**2 + supply_cv.get("store", 0.3)**2)**0.5
-    store_safety_b = z_scores.get("B", 2.0) * combined_cv_store * (lead_time_days ** 0.5)
+    store_safety_b = z_scores.get("B", 2.0) * combined_cv_store * (store_lt ** 0.5)
     store_cycle = order_cycle_days / 2
-    store_min = lead_time_days + store_safety_b + store_cycle + presentation_stock
+    store_min = store_lt + store_safety_b + store_cycle + presentation_stock
 
     # DC minimum: Lead time + Safety + Cycle + Forward positioning
+    # v0.33.0: Uses DC-specific lead time (from RDC, includes FTL delay)
     combined_cv_dc = (demand_cv.get("customer_dc", 0.3)**2 + supply_cv.get("customer_dc", 0.2)**2)**0.5
-    dc_safety_b = z_scores.get("B", 2.0) * combined_cv_dc * (lead_time_days ** 0.5)
+    dc_safety_b = z_scores.get("B", 2.0) * combined_cv_dc * (dc_lt ** 0.5)
     dc_cycle = order_cycle_days / 2
-    dc_min = lead_time_days + dc_safety_b + dc_cycle + forward_positioning
+    dc_min = dc_lt + dc_safety_b + dc_cycle + forward_positioning
 
     # RDC minimum: Lead time + Safety + Production cycle + Smoothing buffer
+    # v0.33.0: Uses RDC-specific lead time (from Plant, includes FTL delay)
     combined_cv_rdc = (demand_cv.get("rdc", 0.2)**2 + supply_cv.get("rdc", 0.15)**2)**0.5
-    rdc_safety_b = z_scores.get("B", 2.0) * combined_cv_rdc * (lead_time_days ** 0.5)
+    rdc_safety_b = z_scores.get("B", 2.0) * combined_cv_rdc * (rdc_lt ** 0.5)
     # Production horizon determines RDC cycle stock
     production_horizon = max(current_production_horizon, 7)  # Recommend at least 7 days
     rdc_cycle = production_horizon / 2
-    rdc_min = lead_time_days + rdc_safety_b + rdc_cycle + production_smoothing
+    rdc_min = rdc_lt + rdc_safety_b + rdc_cycle + production_smoothing
 
     # Apply minimums (ensure physics requirements are met)
     store_dos = max(store_dos_base, store_min)
@@ -335,6 +599,7 @@ def derive_optimal_parameters(
 
     # =================================================================
     # STEP 4: ABC-DIFFERENTIATED DOS (Service level stratification)
+    # v0.33.0: ABC priming factors now DERIVED from z-scores, not hardcoded
     # =================================================================
     # A-items: Higher service target (99%) → MORE buffer (premium service)
     # B-items: Standard service (97%) → base buffer
@@ -344,37 +609,51 @@ def derive_optimal_parameters(
     # The z-score affects safety stock calculation, but for priming factors
     # we want A > B > C to ensure service level hierarchy.
     # =================================================================
-    store_safety_a = z_scores.get("A", 2.33) * combined_cv_store * (lead_time_days ** 0.5)
-    store_safety_c = z_scores.get("C", 1.65) * combined_cv_store * (lead_time_days ** 0.5)
+    # v0.33.0: Use echelon-specific lead times for ABC safety stock
+    store_safety_a = z_scores.get("A", 2.33) * combined_cv_store * (store_lt ** 0.5)
+    store_safety_c = z_scores.get("C", 1.65) * combined_cv_store * (store_lt ** 0.5)
 
-    store_dos_a = round(lead_time_days + store_safety_a + store_cycle + presentation_stock, 1)
+    store_dos_a = round(store_lt + store_safety_a + store_cycle + presentation_stock, 1)
     store_dos_b = round(store_dos, 1)
-    store_dos_c = round(lead_time_days + store_safety_c + store_cycle + presentation_stock * 0.5, 1)
+    store_dos_c = round(store_lt + store_safety_c + store_cycle + presentation_stock * 0.5, 1)
 
-    # ABC velocity factors for priming (relative to base)
-    # CORRECTED v0.31.1: Ensure A > B > C hierarchy for service level priority
-    # A-items: 20% more buffer (premium service target)
-    # B-items: baseline (standard service)
-    # C-items: 15% less buffer (SLOB control, but not too aggressive)
-    abc_priming_factors = {
-        "A": 1.2,  # Premium items get more buffer for 99% service
-        "B": 1.0,  # Standard items at baseline
-        "C": 0.85,  # Slightly less for SLOB control, but not starving
-    }
+    # =================================================================
+    # v0.33.0: DERIVE ABC priming factors from z-scores (no hardcodes!)
+    # =================================================================
+    # Formula: factor_X = z_X / z_B (B-items are baseline)
+    # This ensures the hierarchy A > B > C is mathematically guaranteed
+    # as long as z_A > z_B > z_C in config.
+    # =================================================================
+    abc_priming_factors = derive_abc_priming_factors(z_scores)
+
+    # v0.33.0: Apply cold-start buffer if enabled
+    if apply_cold_start:
+        # Boost all priming factors to compensate for Day 1-30 stabilization
+        abc_priming_factors = {
+            k: round(v * (1.0 + cold_start_buffer_pct), 3)
+            for k, v in abc_priming_factors.items()
+        }
 
     # =================================================================
     # STEP 5: TRIGGER THRESHOLD DERIVATION (Network DOS triggers)
+    # v0.33.0: Now includes MRP signal lag and multi-echelon replenishment time
     # =================================================================
     # Trigger = when to start production for a SKU
-    # Must cover: Replenishment Time + Safety + Review Period
+    # Must cover: Replenishment Time + Safety + Review Period + MRP Signal Lag
     #
-    # Replenishment Time = Production Lead Time + Transit Time
-    # Safety = ABC-differentiated buffer for variability
-    # Review Period = How often MRP checks (order cycle)
+    # v0.33.0 Changes:
+    # - Replenishment Time = NETWORK replenishment time (multi-echelon)
+    # - Added MRP Signal Lag (MRP uses 14-day rolling window → 7-day effective lag)
     # =================================================================
     prod_lead_time = trigger_cfg.get("production_lead_time_days", 3)
     transit_time = trigger_cfg.get("transit_time_days", 3)
-    replenishment_time = prod_lead_time + transit_time
+
+    # v0.33.0: Use network replenishment time from multi-echelon analysis
+    # This is the time from Plant production to RDC availability
+    replenishment_time = max(
+        prod_lead_time + transit_time,  # Config minimum
+        network_replenishment_time,      # Actual network cascade
+    )
 
     safety_a = trigger_cfg.get("safety_buffer_a", 10)
     safety_b = trigger_cfg.get("safety_buffer_b", 6)
@@ -384,9 +663,14 @@ def derive_optimal_parameters(
     review_b = trigger_cfg.get("review_period_b", 5)
     review_c = trigger_cfg.get("review_period_c", 3)
 
-    trigger_a = int(replenishment_time + safety_a + review_a)
-    trigger_b = int(replenishment_time + safety_b + review_b)
-    trigger_c = int(replenishment_time + safety_c + review_c)
+    # v0.33.0: Add MRP signal lag to trigger thresholds
+    # MRP uses 14-day rolling window → production responds to demand with ~7-day lag
+    # Without this buffer, triggers fire too late and inventory runs out
+    mrp_lag_component = mrp_signal_lag if include_mrp_lag_in_triggers else 0
+
+    trigger_a = int(replenishment_time + safety_a + review_a + mrp_lag_component)
+    trigger_b = int(replenishment_time + safety_b + review_b + mrp_lag_component)
+    trigger_c = int(replenishment_time + safety_c + review_c + mrp_lag_component)
 
     # =================================================================
     # STEP 6: SLOB THRESHOLD CALIBRATION
@@ -442,6 +726,17 @@ def derive_optimal_parameters(
             "actual_network_dos": round(actual_network_dos, 1),
             "actual_turns": round(actual_turns, 1),
         },
+        # v0.33.0: Multi-echelon lead time analysis
+        "lead_time_analysis": {
+            "store_lt": round(store_lt, 2),
+            "dc_lt": round(dc_lt, 2),
+            "rdc_lt": round(rdc_lt, 2),
+            "network_replenishment_time": round(network_replenishment_time, 2),
+            "ftl_consolidation": round(ftl_consolidation, 2),
+            "mrp_signal_lag": mrp_signal_lag,
+            "cold_start_buffer_pct": cold_start_buffer_pct,
+            "legacy_single_lt": lead_time_days,
+        },
         "inventory_analysis": {
             "store_dos_a": store_dos_a,
             "store_dos_b": store_dos_b,
@@ -470,7 +765,8 @@ def derive_optimal_parameters(
             "current_trigger_a": campaign_config.get("trigger_dos_a", 5),
             "current_trigger_b": campaign_config.get("trigger_dos_b", 4),
             "current_trigger_c": campaign_config.get("trigger_dos_c", 3),
-            "replenishment_time": replenishment_time,
+            "replenishment_time": round(replenishment_time, 1),
+            "mrp_signal_lag_included": include_mrp_lag_in_triggers,
         },
         "slob_analysis": {
             "current_thresholds": current_slob_thresholds,
@@ -774,9 +1070,26 @@ def print_report(
 ) -> None:
     """Print a nice calibration report."""
     print("\n" + "=" * 70)
-    print("     PRISM SIM CONFIGURATION CALIBRATION REPORT (v0.31.0)")
-    print("     Industry-Benchmark Calibration: Turns-Driven Approach")
+    print("     PRISM SIM CONFIGURATION CALIBRATION REPORT (v0.33.0)")
+    print("     Multi-Echelon Lead Time & MRP Signal Lag Awareness")
     print("=" * 70)
+
+    # v0.33.0: Multi-echelon lead time analysis (NEW)
+    lt_analysis = recommendations.get("lead_time_analysis", {})
+    if lt_analysis:
+        print("\n--- MULTI-ECHELON LEAD TIME ANALYSIS (v0.33.0 NEW) ---")
+        print("Echelon-Specific Lead Times (P90 from links.csv):")
+        print(f"  Store ← DC:     {lt_analysis.get('store_lt', 1.0):5.2f} days")
+        print(f"  DC ← RDC:       {lt_analysis.get('dc_lt', 3.0):5.2f} days (incl FTL)")
+        print(f"  RDC ← Plant:    {lt_analysis.get('rdc_lt', 5.0):5.2f} days (incl FTL)")
+        print(f"  FTL Buffer:     {lt_analysis.get('ftl_consolidation', 2.0):5.2f} days")
+        print(f"\nNetwork Replenishment Time: {lt_analysis.get('network_replenishment_time', 7.0):.1f} days")
+        print(f"MRP Signal Lag:             {lt_analysis.get('mrp_signal_lag', 7)} days")
+        print(f"Cold-Start Buffer:          {lt_analysis.get('cold_start_buffer_pct', 0.15):.0%}")
+        print(f"\nLegacy Single Lead Time:    {lt_analysis.get('legacy_single_lt', 3.0)} days")
+        gap = lt_analysis.get('network_replenishment_time', 7.0) - lt_analysis.get('legacy_single_lt', 3.0)
+        if gap > 2:
+            print(f"  WARNING: Network cascade is {gap:.1f}d longer than legacy assumption!")
 
     # Industry comparison header
     analysis = recommendations["analysis"]
@@ -825,9 +1138,11 @@ def print_report(
     print(f"  Pipeline: {inv.get('pipeline_dos', 0):5.1f}d ({breakdown.get('pipeline_pct', 0):5.1f}%)")
     print(f"\nStore DOS by ABC: A={inv['store_dos_a']}d, B={inv['store_dos_b']}d, C={inv['store_dos_c']}d")
 
-    print("\n--- TRIGGER THRESHOLD ANALYSIS ---")
+    print("\n--- TRIGGER THRESHOLD ANALYSIS (v0.33.0 Enhanced) ---")
     trig = recommendations["trigger_analysis"]
-    print(f"Replenishment Time: {trig.get('replenishment_time', 6)} days (prod + transit)")
+    print(f"Network Replenishment Time: {trig.get('replenishment_time', 6)} days")
+    mrp_lag_included = trig.get('mrp_signal_lag_included', False)
+    print(f"MRP Signal Lag Included:    {mrp_lag_included}")
     print(f"\nDerived Triggers:  A={trig['trigger_a']}d, B={trig['trigger_b']}d, C={trig['trigger_c']}d")
     print(f"Current Triggers:  A={trig['current_trigger_a']}d, B={trig['current_trigger_b']}d, C={trig['current_trigger_c']}d")
 
@@ -1005,6 +1320,14 @@ def main() -> None:
     recipe_rates = get_recipe_run_rates(static_world_dir / "recipes.csv")
     products_by_category = get_products_by_category(static_world_dir / "products.csv")
 
+    # v0.33.0: Calculate multi-echelon lead times from actual network topology
+    links_path = static_world_dir / "links.csv"
+    echelon_lead_times = None
+    if links_path.exists():
+        echelon_lead_times = calculate_multi_echelon_lead_times(links_path, sim_config)
+    else:
+        print("WARNING: links.csv not found - using static lead time config")
+
     # Analyze
     demand_analysis = calculate_daily_demand(
         world_config, sim_config, node_counts, products_by_category
@@ -1013,11 +1336,12 @@ def main() -> None:
         sim_config, recipe_rates, products_by_category
     )
 
-    # v0.31.0: Use target turns as primary driver
+    # v0.33.0: Pass multi-echelon lead times to derive function
     recommendations = derive_optimal_parameters(
         demand_analysis,
         capacity_analysis,
         sim_config,
+        echelon_lead_times=echelon_lead_times,
         target_turns=args.target_turns,  # None means use config default
         target_service_level=args.target_service,
     )
@@ -1033,6 +1357,10 @@ def main() -> None:
     # Add seasonal balance warnings
     seasonal_warnings = validate_seasonal_balance(sim_config, recommendations)
     violations.extend(seasonal_warnings)
+
+    # v0.33.0: Validate against baseline reference values
+    baseline_warnings = validate_against_baseline(recommendations, sim_config)
+    violations.extend(baseline_warnings)
 
     # Report
     print_report(demand_analysis, capacity_analysis, recommendations, violations)

@@ -5,6 +5,105 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.33.0] - 2026-01-14
+
+### Automatic Steady-State Checkpointing
+
+Major UX improvement that eliminates the need for manual warm-start management. The simulation now transparently handles burn-in and checkpointing.
+
+#### Key User Experience Change
+
+**Before (manual 2-step process):**
+```bash
+poetry run python scripts/generate_warm_start.py --burn-in-days 90
+poetry run python run_simulation.py --days 275 --warm-start data/snapshots/warm_start_90d.json.gz
+```
+
+**After (automatic):**
+```bash
+poetry run python run_simulation.py --days 365
+# First run: auto-creates checkpoint after 90-day burn-in, then runs 365 data days
+# Subsequent runs: loads checkpoint, runs 365 data days immediately
+```
+
+#### How It Works
+
+1. **First Run (no checkpoint):** Runs 90-day burn-in phase (configurable via `warm_start.default_burn_in_days`), saves checkpoint to `data/checkpoints/steady_state_{config_hash}.json.gz`, then runs requested data days.
+
+2. **Subsequent Runs:** Loads existing checkpoint (if config hash matches), skips burn-in, runs data days immediately.
+
+3. **Config Change Detection:** Checkpoints are named by config hash. When `simulation_config.json` or `world_definition.json` changes, the old checkpoint is ignored and a new burn-in runs.
+
+#### New CLI Flags
+
+| Flag | Description |
+|------|-------------|
+| `--no-checkpoint` | Disable auto-checkpointing (always cold-start) |
+| `--warm-start PATH` | Use specific snapshot file (legacy behavior) |
+| `--skip-hash-check` | Load snapshot even if config changed (not recommended) |
+
+#### Architecture Changes
+
+- **`simulation/orchestrator.py`:**
+  - Added `auto_checkpoint` parameter to `__init__`
+  - Added `_needs_burn_in` flag for deferred burn-in execution
+  - Added `_metrics_start_day` to exclude burn-in from Triangle Report metrics
+  - Implemented `_save_checkpoint()` method using shared snapshot utilities
+  - Modified `run()` to handle burn-in + data phases transparently
+
+- **`simulation/snapshot.py`** (NEW):
+  - Extracted snapshot utilities from `generate_warm_start.py` for code sharing
+  - `compute_config_hash()` - SHA256 hash of config + manifest
+  - `capture_minimal_state()` - Inventory tensors, active shipments, production orders
+  - `derive_initialization_params()` - History buffer priming values
+  - `save_snapshot()` - Gzipped JSON checkpoint writer
+
+- **`run_simulation.py`:**
+  - Updated docstring with auto-checkpoint behavior
+  - Added `--no-checkpoint`, `--warm-start`, `--skip-hash-check` flags
+
+#### Configuration Additions (`simulation_config.json`)
+
+```json
+"calibration": {
+  "warm_start": {
+    "default_burn_in_days": 90,
+    "validate_config_hash": true,
+    "history_buffer_init": {
+      "demand_noise_cv": 0.1,
+      "lead_time_noise_cv": 0.1,
+      "use_derived_abc": true
+    }
+  },
+  "multi_echelon_lead_times": {
+    "store_from_dc": 1.0,
+    "customer_dc_from_rdc": 3.0,
+    "rdc_from_plant": 5.0,
+    "plant_production": 3.0,
+    "ftl_consolidation_buffer": 2.0
+  }
+}
+```
+
+#### Testing
+
+New test file `tests/test_calibration.py` with 8 regression tests:
+- Checkpoint creation/loading verification
+- `--no-checkpoint` flag behavior
+- Metrics count verification (days flag meaning)
+- Cold-start burn-in exclusion
+- Service level consistency across checkpoint loads
+- Inventory turns consistency
+- Config hash validation
+
+#### Day Continuation Fix
+
+Critical fix: Warm-start simulations now continue from `burn_in_days + 1` (e.g., day 91) instead of resetting to day 1. This preserves:
+- Seasonality patterns (`sin(2*pi*(day-phase)/365)`)
+- Random seed consistency
+- Weekly promo cycles
+- ABC reclassification timing
+
 ## [0.32.1] - 2026-01-13
 
 ### Fix: Restore v0.31.0 Inventory Calibration
