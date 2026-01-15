@@ -75,6 +75,12 @@ class RealismMonitor:
         self.ftl_fill_tracker = WelfordAccumulator()
         self.ltl_shipment_count = 0
 
+        # v0.35.0: Separate inbound vs outbound FTL metrics
+        # Inbound = Supplier->Plant (raw materials, typically low fill)
+        # Outbound = RDC->DC, Plant->RDC (finished goods, target 85%+)
+        self.inbound_fill_tracker = WelfordAccumulator()
+        self.outbound_ftl_tracker = WelfordAccumulator()
+
         # v0.26.0: ABC-class service level tracking
         # Tracks fill rate by ABC class to diagnose service level drift
         self.service_level_a_tracker = WelfordAccumulator()
@@ -123,6 +129,14 @@ class RealismMonitor:
     def record_ltl_shipment(self) -> None:
         """Record an LTL (Less Than Truckload) shipment - counted, not rated."""
         self.ltl_shipment_count += 1
+
+    def record_inbound_fill(self, fill_rate: float) -> None:
+        """Record inbound (Supplier->Plant) fill rate - raw material shipments."""
+        self.inbound_fill_tracker.update(fill_rate)
+
+    def record_outbound_ftl_fill(self, fill_rate: float) -> None:
+        """Record outbound FTL (RDC->DC, Plant->RDC) fill rate - target 85%+."""
+        self.outbound_ftl_tracker.update(fill_rate)
 
     def record_slob(self, slob_pct: float) -> None:
         self.slob_tracker.update(slob_pct)
@@ -198,6 +212,23 @@ class RealismMonitor:
             },
             "ltl_shipments": {
                 "count": self.ltl_shipment_count,
+            },
+            # v0.35.0: Separate inbound vs outbound FTL metrics
+            "inbound_fill": {
+                "mean": self.inbound_fill_tracker.mean,
+                "count": self.inbound_fill_tracker.count,
+                "description": "Supplier->Plant (raw materials)",
+            },
+            "outbound_ftl_fill": {
+                "mean": self.outbound_ftl_tracker.mean,
+                "target": self.truck_fill_target,
+                "count": self.outbound_ftl_tracker.count,
+                "status": (
+                    "OK"
+                    if self.outbound_ftl_tracker.mean >= self.truck_fill_target
+                    else "LOW"
+                ),
+                "description": "RDC->DC, Plant->RDC (finished goods)",
             },
             "slob": {
                 "mean": self.slob_tracker.mean,

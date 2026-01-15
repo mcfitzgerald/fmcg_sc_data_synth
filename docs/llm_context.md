@@ -736,6 +736,7 @@ Orchestrator
 
 | Version | Key Changes |
 |---------|-------------|
+| 0.35.0 | **Truck Fill & OEE Metrics Fixes** - Fixed plant shipments missing weight (0 kg bug); Separated inbound vs outbound FTL metrics (Supplier→Plant vs RDC→DC); Fixed OEE formula to use `efficiency_factor` for Performance and include utilization in Availability; Outbound FTL now shows 97% (was 26%), OEE now realistic 55-70% (was 94%) |
 | 0.34.0 | **Replenishment Refactor & Config Enforcement** - Broken down monolithic `generate_orders` into 6 helper methods; Fixed hardcoded physics parameters (`rush_threshold`, `burn_in_days`, `EARTH_RADIUS`); Added dedicated replenishment test harness |
 | 0.33.0 | **Automatic Steady-State Checkpointing** - Transparent burn-in and checkpoint management; First run: 90-day burn-in → saves checkpoint → data days; Subsequent runs: load checkpoint → skip burn-in; Config hash validation for checkpoint staleness; `--no-checkpoint`, `--warm-start`, `--skip-hash-check` CLI flags; Day continuation fix (warm-start continues from day 91, not day 1); `_metrics_start_day` excludes burn-in from Triangle Report; New `simulation/snapshot.py` module |
 | 0.32.0 | **Multi-Line Manufacturing Physics** - Replaced `production_rate_multiplier` hack with explicit parallel production lines; Implemented discrete `LineState` tracking and sticky scheduling; Refined OEE calculation ($A \times P \times Q$); Scaled to 44 lines/plant. |

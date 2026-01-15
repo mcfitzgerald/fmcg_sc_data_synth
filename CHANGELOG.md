@@ -5,6 +5,61 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.35.0] - 2026-01-15
+
+### Truck Fill Rate & OEE Metrics Fixes
+
+Major metrics accuracy improvements addressing three issues discovered during deep analysis:
+
+#### Issue 1: Plant Shipment Weight Bug (Fixed)
+
+**Problem:** Plant→RDC shipments had `total_weight_kg = 0` because `_create_plant_shipments()` didn't calculate weight/volume.
+
+**Fix:** Added weight/volume calculation using product attributes (`orchestrator.py:1407-1411`).
+
+**Impact:** Plant shipments now correctly contribute to fill rate metrics and CSV exports.
+
+#### Issue 2: FTL Metric Miscategorization (Fixed)
+
+**Problem:** Supplier→Plant inbound shipments (57% of "FTL" volume, 8-20% fill) were mixed with outbound finished goods (97% fill), dragging the combined FTL metric down to 26%.
+
+**Fix:** Separated inbound vs outbound FTL metrics:
+- Added `inbound_fill_tracker` and `outbound_ftl_tracker` to `RealismMonitor`
+- Updated `_record_daily_metrics()` to classify shipments by source node type
+- Triangle Report now shows **Outbound FTL** as the primary truck fill metric
+
+**New Triangle Report format:**
+```
+3. COST (Truck Fill Rate):      97.2%    <-- Outbound FTL (finished goods)
+   - Inbound Fill (raw mat):    4.6%     <-- Supplier→Plant (visible separately)
+```
+
+#### Issue 3: OEE Formula Flaws (Fixed)
+
+**Problem:** OEE showed 94.7% (unrealistic) due to:
+1. Availability = `run/(run+changeover)` ≈ 98% — ignored idle capacity
+2. Performance = 1.0 (hardcoded) — ignored `efficiency_factor` (0.78-0.88)
+3. Idle lines excluded from calculation
+
+**Fix:** Implemented standard OEE formula (`transform.py:379-414`):
+- Availability = `(run + changeover) / total_scheduled` (includes utilization)
+- Performance = plant's `efficiency_factor` from config
+- Stores efficiency factors during `_initialize_plant_states()`
+
+**Expected OEE:** 55-70% (realistic) vs 94.7% (inflated)
+
+#### Additional Fix: Metrics Start Day
+
+**Problem:** `--no-checkpoint` runs set `_metrics_start_day = 91`, causing no metrics to be recorded for short runs.
+
+**Fix:** When `auto_checkpoint=False` and no warm-start, set `_metrics_start_day = 1`.
+
+#### Files Modified
+- `src/prism_sim/simulation/orchestrator.py` — Plant weight, FTL categorization, metrics start day
+- `src/prism_sim/simulation/transform.py` — OEE formula
+- `src/prism_sim/simulation/monitor.py` — Inbound/outbound trackers
+- `tests/test_manufacturing_lines.py` — Updated OEE test expectations
+
 ## [0.34.0] - 2026-01-14
 
 ### Replenishment Logic Refactor & Hardcode Fixes

@@ -175,27 +175,32 @@ class TestTransformEngineLines:
         assert abs(capacities[1] - 10.0) < 0.001 # Used 0 hours
 
     def test_oee_calculation(self, multi_line_world: World, line_config: dict):
-        """Verify OEE aggregates correctly across lines."""
+        """Verify OEE aggregates correctly across lines.
+
+        v0.35.0 FIX: OEE formula now uses standard calculation:
+        - Availability = (run + changeover) / total_scheduled (includes utilization)
+        - Performance = efficiency_factor from config
+        - Quality = yield %
+        """
         state = StateManager(multi_line_world)
         engine = TransformEngine(multi_line_world, state, line_config)
-        
+
         # Order 1: SKU-A, 4000 cases (4 hrs). Line 1.
         o1 = ProductionOrder("PO-1", "PLANT-01", "SKU-A", 4000.0, 1, 1)
-        
+
         # Order 2: SKU-B, 4000 cases (4 hrs). Line 2.
         o2 = ProductionOrder("PO-2", "PLANT-01", "SKU-B", 4000.0, 1, 1)
-        
+
         _, _, plant_oee = engine.process_production_orders([o1, o2], current_day=1)
-        
-        # Line 1: 4h run / 4h scheduled = 100% Availability
-        # Line 2: 4h run / 4h scheduled = 100% Availability
-        # Plant OEE = 1.0 (assuming 100% yield/performance)
-        # Note: If we include changeover, OEE drops.
-        
-        # Let's verify via the return value
-        # OEE = (Avail * Perf * Qual)
-        # Default yield is 98.5% -> 0.985
-        
-        expected_oee = 1.0 * 1.0 * 0.985
+
+        # v0.35.0: New OEE formula includes utilization in Availability
+        # Total scheduled: 2 lines × 10 hours = 20 hours
+        # Total run: 4h + 4h = 8 hours (no changeover since different products)
+        # Availability = 8 / 20 = 0.4
+        # Performance = efficiency_factor = 1.0 (from config)
+        # Quality = yield = 0.985
+        # OEE = 0.4 × 1.0 × 0.985 = 0.394
+
+        expected_oee = 0.4 * 1.0 * 0.985  # = 0.394
         assert abs(plant_oee["PLANT-01"] - expected_oee) < 0.001
         

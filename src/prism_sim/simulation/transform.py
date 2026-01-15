@@ -135,6 +135,7 @@ class TransformEngine:
 
         # Initialize plant states
         self._plant_states: dict[str, PlantState] = {}
+        self._plant_efficiency: dict[str, float] = {}  # Store efficiency for OEE calc
         self._initialize_plant_states()
 
         # Batch tracking
@@ -167,6 +168,9 @@ class TransformEngine:
                 # Calculate effective capacity hours PER LINE
                 # Effective = Total Hours * (1 - Downtime) * Efficiency
                 hours_per_line = self.hours_per_day * (1.0 - downtime) * efficiency
+
+                # Store efficiency factor for OEE Performance calculation
+                self._plant_efficiency[node_id] = efficiency
 
                 # Create lines
                 lines = []
@@ -372,40 +376,40 @@ class TransformEngine:
                 new_batches.append(batch)
                 self.batches.append(batch)
 
-        # Calculate OEE for each plant based on Line metrics
-        # OEE = (Total Run Time) / (Total Scheduled Time) * Yield
-        # Note: We calculate Availability based on run time vs total scheduled time
-        # (run + changeover), but traditional OEE uses Loading Time.
-        # Here we follow the plan: Availability = run_hours / scheduled_hours
+        # Calculate OEE for each plant using standard formula:
+        # OEE = Availability × Performance × Quality
+        #
+        # v0.35.0 FIX: Previous calculation was inflated (~94%) because:
+        # 1. Availability used run/(run+changeover) ≈ 98% - ignoring idle time
+        # 2. Performance was hardcoded to 1.0 - ignoring efficiency losses
+        # 3. Only active lines were counted - excluding unused capacity
+        #
+        # Correct formula:
+        # - Availability = (run + changeover) / total_scheduled (utilization)
+        # - Performance = plant efficiency_factor (0.78-0.88 per config)
+        # - Quality = yield % (98.5%)
         for plant_id, plant_state in self._plant_states.items():
-            line_oees = []
-            total_lines = len(plant_state.lines)
+            total_scheduled = sum(line.max_capacity_hours for line in plant_state.lines)
+            total_run = sum(line.run_hours_today for line in plant_state.lines)
+            total_changeover = sum(
+                line.changeover_hours_today for line in plant_state.lines
+            )
 
-            for line in plant_state.lines:
-                scheduled = line.run_hours_today + line.changeover_hours_today
+            if total_scheduled > 0:
+                # Availability = actual operating time / scheduled time
+                # This captures both changeover losses AND idle capacity
+                actual_operating = total_run + total_changeover
+                availability = actual_operating / total_scheduled
 
-                if scheduled > 0:
-                    # Per-line OEE = Availability * Performance * Quality
-                    # Availability = Run Time / Scheduled Time
-                    availability = line.run_hours_today / scheduled
-                    # Performance = 1.0 (we assume we run at standard rate)
-                    performance = 1.0
-                    # Quality = Yield %
-                    quality = self.default_yield_percent / 100.0
+                # Performance = plant efficiency factor (speed losses, minor stops)
+                # From config: 0.78-0.88 depending on plant
+                performance = self._plant_efficiency.get(plant_id, 0.85)
 
-                    line_oees.append(availability * performance * quality)
-                else:
-                    # If line didn't run, does it count as 0 OEE or exclude?
-                    # Ideally, unused capacity due to no demand shouldn't penalty OEE
-                    # but here we track "Active OEE".
-                    # If we want Utilization, that's different.
-                    pass
+                # Quality = yield (good output / total output)
+                quality = self.default_yield_percent / 100.0
 
-            # Plant OEE is average of active lines? Or 0 if no lines ran?
-            # Let's average only active lines to represent "Efficiency when running"
-            # Utilization is tracked separately via capacity checks.
-            if line_oees:
-                plant_oee[plant_id] = sum(line_oees) / len(line_oees)
+                # OEE = A × P × Q
+                plant_oee[plant_id] = availability * performance * quality
             else:
                 plant_oee[plant_id] = 0.0
 

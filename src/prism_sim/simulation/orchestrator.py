@@ -110,10 +110,14 @@ class Orchestrator:
             burn_in_days = self._warm_start_snapshot["metadata"]["burn_in_days"]
             self._start_day = burn_in_days + 1
             self._metrics_start_day = self._start_day  # No burn-in in warm-start run
-        else:
+        elif self._needs_burn_in:
+            # Cold-start WITH auto-checkpoint: will run burn-in, so exclude those days
             self._start_day = 1
-            # For cold-start: exclude burn-in days from metrics (apples-to-apples with warm-start)
             self._metrics_start_day = default_burn_in + 1 if default_burn_in > 0 else 1
+        else:
+            # Cold-start WITHOUT auto-checkpoint (--no-checkpoint): start metrics immediately
+            self._start_day = 1
+            self._metrics_start_day = 1
 
         # Store burn-in config for later use
         self._default_burn_in_days = default_burn_in
@@ -1146,22 +1150,38 @@ class Orchestrator:
         # v0.26.0: Differentiate FTL vs LTL for truck fill metrics
         # FTL fill rate is the meaningful metric (target 85%)
         # LTL (store deliveries) are intentionally small - last-mile deliveries
+        #
+        # v0.35.0: Further separate inbound vs outbound FTL
+        # - Inbound (Supplier->Plant): raw material deliveries, low fill expected
+        # - Outbound (RDC->DC, Plant->RDC): finished goods, target 85%+
         for s in daily_shipments:
             fill_rate = min(1.0, s.total_weight_kg / max_weight)
             self.monitor.record_truck_fill(fill_rate)
 
-            # Determine if this is an LTL (store) or FTL (DC/RDC) shipment
+            source_node = self.world.nodes.get(s.source_id)
             target_node = self.world.nodes.get(s.target_id)
+
+            # Determine shipment type
             is_store_delivery = (
                 target_node is not None
                 and target_node.type == NodeType.STORE
                 and store_delivery_mode == "LTL"
             )
 
+            is_inbound = (
+                source_node is not None
+                and source_node.type == NodeType.SUPPLIER
+            )
+
             if is_store_delivery:
                 self.monitor.record_ltl_shipment()
+            elif is_inbound:
+                # Supplier->Plant: raw material inbound shipments
+                self.monitor.record_inbound_fill(fill_rate)
             else:
-                self.monitor.record_ftl_fill(fill_rate)
+                # Outbound FTL: RDC->DC, Plant->RDC (finished goods)
+                self.monitor.record_outbound_ftl_fill(fill_rate)
+                self.monitor.record_ftl_fill(fill_rate)  # Legacy compat
 
         # Record OEE
         if plant_oee:
@@ -1280,7 +1300,9 @@ class Orchestrator:
         slob = report.get("slob", {}).get("mean", 0) * 100.0
 
         # v0.26.0: FTL fill rate and ABC service levels
-        ftl_fill = report.get("ftl_fill", {}).get("mean", 0) * truck_scale
+        # v0.35.0: Separate inbound vs outbound FTL (outbound is the meaningful metric)
+        outbound_ftl = report.get("outbound_ftl_fill", {}).get("mean", 0) * truck_scale
+        inbound_fill = report.get("inbound_fill", {}).get("mean", 0) * truck_scale
         ltl_count = report.get("ltl_shipments", {}).get("count", 0)
         abc_svc = report.get("service_level_by_abc", {})
         svc_a = abc_svc.get("A", 0) * 100.0
@@ -1296,8 +1318,8 @@ class Orchestrator:
             f"   - B-Items:                   {svc_b:.1f}%",
             f"   - C-Items:                   {svc_c:.1f}%",
             f"2. CASH (Inventory Turns):      {inv_turns:.2f}x",
-            f"3. COST (Truck Fill Rate):      {truck_fill * truck_scale:.1f}%",
-            f"   - FTL Fill Rate:             {ftl_fill:.1f}%",
+            f"3. COST (Truck Fill Rate):      {outbound_ftl:.1f}%",
+            f"   - Inbound Fill (raw mat):    {inbound_fill:.1f}%",
             f"   - LTL Shipments:             {ltl_count:,}",
             "--------------------------------------------------",
             f"Manufacturing OEE:              {oee * oee_scale:.1f}%",
@@ -1403,6 +1425,12 @@ class Orchestrator:
                     lines=[OrderLine(batch.product_id, qty_for_rdc)],
                     status=ShipmentStatus.IN_TRANSIT,
                 )
+
+                # Calculate shipment weight/volume from product attributes
+                product = self.world.products.get(batch.product_id)
+                if product:
+                    shipment.total_weight_kg = product.weight_kg * qty_for_rdc
+                    shipment.total_volume_m3 = product.volume_m3 * qty_for_rdc
 
                 # Deduct from plant inventory
                 self.state.update_inventory(
