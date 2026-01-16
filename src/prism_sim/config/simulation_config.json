@@ -85,7 +85,11 @@
         "store_days_supply": 27.0,
         "rdc_days_supply": 41.0,
         "customer_dc_days_supply": 27.0,
-        "abc_velocity_factors": {"A": 1.5, "B": 1.0, "C": 0.5},
+        "abc_velocity_factors": {
+          "A": 1.5,
+          "B": 1.0,
+          "C": 0.5
+        },
         "trigger_dos_a": 14,
         "trigger_dos_b": 10,
         "trigger_dos_c": 5

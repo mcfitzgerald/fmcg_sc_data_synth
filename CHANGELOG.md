@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.35.1] - 2026-01-16
+
+### Streaming Mode Bug Fix (Memory Explosion)
+
+**Problem:** 365-day simulations with logging enabled caused memory explosion (30GB+), crashing the simulation.
+
+**Root Cause:** `run_simulation.py` passed `args.streaming` (defaults to `False` with `store_true`) instead of `None` to the Orchestrator. This bypassed the config fallback (`writer.streaming: true`), forcing buffered mode which accumulates all orders/shipments/inventory in memory.
+
+```python
+# Before (broken):
+streaming=args.streaming if enable_logging else False,  # False bypasses config
+
+# After (fixed):
+streaming=args.streaming if args.streaming else None,  # None uses config default
+```
+
+**Impact:**
+- With fix: 365-day simulation completes in ~9 minutes, ~4GB memory
+- Without fix: Memory grows to 30GB+ and crashes
+
+**Files Modified:**
+- `run_simulation.py` — Fixed streaming parameter passthrough
+
+**Documentation:**
+- `docs/llm_context.md` — Added "Setup & Workflow (Order of Operations)" section
+
+---
+
 ## [0.35.0] - 2026-01-15
 
 ### Truck Fill Rate & OEE Metrics Fixes

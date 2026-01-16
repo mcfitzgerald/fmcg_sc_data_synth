@@ -83,6 +83,44 @@ The simulation enforces these constraints - violations indicate bugs:
 | `scripts/calibrate_config.py` | Derive optimal simulation parameters from world definition using physics |
 | `scripts/generate_warm_start.py` | Generate warm-start snapshot manually (90-day burn-in) |
 
+### Setup & Workflow (Order of Operations)
+
+When making configuration changes, follow this sequence to ensure parameters are properly calibrated:
+
+```bash
+# 1. UPDATE CONFIG - Edit simulation_config.json (num_lines, etc.)
+#    Located at: src/prism_sim/config/simulation_config.json
+
+# 2. REGENERATE WORLD (only if topology changed - nodes, links, products)
+poetry run python scripts/generate_static_world.py
+
+# 3. CALIBRATE - Derives safety stock, triggers, priming FOR your config
+poetry run python scripts/calibrate_config.py --apply
+#    Options: --target-turns 6.0 --target-service 0.97
+
+# 4. CLEAR CHECKPOINT (config changes invalidate old checkpoints)
+rm -f data/checkpoints/steady_state_*.json.gz
+
+# 5. RUN SIMULATION
+poetry run python run_simulation.py --days 365
+```
+
+**Critical**: Always re-run calibration after changing capacity parameters (`num_lines`, `production_hours_per_day`, etc.). The calibration script derives planning parameters (safety stock, triggers) based on configured capacity. Changing capacity without recalibrating causes parameter mismatch and service level collapse.
+
+**When to regenerate world:**
+- Changed `world_definition.json` (products, recipes, node counts)
+- Changed network topology or link distances
+- First-time setup
+
+**When to just recalibrate:**
+- Changed `num_lines` or manufacturing parameters
+- Changed inventory targets or service levels
+- Tuning simulation behavior
+
+**Simulation Run Lengths:**
+- **Full diagnostic (365 days):** Required for accurate KPIs. Includes 90-day burn-in + 365 data days. Metrics reflect steady-state behavior after seasonal cycles, inventory stabilization, and demand pattern convergence.
+- **Sanity checks (10-90 days with `--no-checkpoint`):** Fast verification that the simulation runs without errors. Metrics will NOT reflect true system performance (cold-start artifacts, incomplete seasonal cycles). Use only to verify code changes don't break the simulation.
+
 ### Warm-Start & Checkpointing (v0.33.0)
 | Concept | File | Key Classes/Functions |
 |---------|------|----------------------|
@@ -736,6 +774,7 @@ Orchestrator
 
 | Version | Key Changes |
 |---------|-------------|
+| 0.35.1 | **Streaming Mode Bug Fix** - Fixed memory explosion (30GB+) in 365-day runs; `run_simulation.py` now correctly uses config's `writer.streaming: true` setting; Added "Order of Operations" workflow documentation |
 | 0.35.0 | **Truck Fill & OEE Metrics Fixes** - Fixed plant shipments missing weight (0 kg bug); Separated inbound vs outbound FTL metrics (Supplier→Plant vs RDC→DC); Fixed OEE formula to use `efficiency_factor` for Performance and include utilization in Availability; Outbound FTL now shows 97% (was 26%), OEE now realistic 55-70% (was 94%) |
 | 0.34.0 | **Replenishment Refactor & Config Enforcement** - Broken down monolithic `generate_orders` into 6 helper methods; Fixed hardcoded physics parameters (`rush_threshold`, `burn_in_days`, `EARTH_RADIUS`); Added dedicated replenishment test harness |
 | 0.33.0 | **Automatic Steady-State Checkpointing** - Transparent burn-in and checkpoint management; First run: 90-day burn-in → saves checkpoint → data days; Subsequent runs: load checkpoint → skip burn-in; Config hash validation for checkpoint staleness; `--no-checkpoint`, `--warm-start`, `--skip-hash-check` CLI flags; Day continuation fix (warm-start continues from day 91, not day 1); `_metrics_start_day` excludes burn-in from Triangle Report; New `simulation/snapshot.py` module |

@@ -125,7 +125,7 @@ Examples:
     sim = Orchestrator(
         enable_logging=enable_logging,
         output_dir=args.output_dir,
-        streaming=args.streaming if enable_logging else False,
+        streaming=args.streaming if args.streaming else None,  # None = use config default
         output_format=args.format,
         inventory_sample_rate=args.inventory_sample_rate,
         warm_start_path=str(warm_start_path) if warm_start_path else None,
