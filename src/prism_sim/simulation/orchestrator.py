@@ -967,7 +967,7 @@ class Orchestrator:
         )
         shrinkage_qty = sum(e.quantity_lost for e in shrinkage_events)
 
-        # Only record metrics after burn-in period (for fair Triangle Report)
+        # Only record metrics and log data after burn-in period
         if day >= self._metrics_start_day:
             self._record_daily_metrics(
                 daily_demand,
@@ -979,9 +979,9 @@ class Orchestrator:
                 shipped_qty=total_shipped_qty,
                 shrinkage_qty=shrinkage_qty,
             )
-        self._log_daily_data(
-            raw_orders, new_shipments, plant_shipments, new_batches, day
-        )
+            self._log_daily_data(
+                raw_orders, new_shipments, plant_shipments, new_batches, day
+            )
 
         # 13. Logging / Metrics (Simple Print)
         daily_summary = {
