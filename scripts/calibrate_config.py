@@ -5,6 +5,12 @@ Calibration script for Prism Sim configuration parameters.
 Derives optimal simulation parameters from world definition and static world data
 using supply chain physics and industry benchmarks (FMCG).
 
+v0.35.2: Capacity planning - derive num_lines from target OEE.
+- New --derive-lines flag derives num_lines per plant from target OEE
+- Inverts OEE formula: OEE = Availability × Performance × Quality
+- Warns for target OEE > 85% (VUT curve lead time explosion)
+- Errors for target OEE > 95% (physically impossible with downtime)
+
 v0.33.0: Multi-echelon lead time cascade and MRP signal lag awareness.
 - Calculates cumulative lead times through 4-tier network
 - Accounts for FTL consolidation delays
@@ -19,7 +25,7 @@ Usage:
     poetry run python scripts/calibrate_config.py              # Analyze and recommend
     poetry run python scripts/calibrate_config.py --apply      # Apply recommendations
     poetry run python scripts/calibrate_config.py --target-turns 6.0  # Industry benchmark
-    poetry run python scripts/calibrate_config.py --target-turns 5.0  # Conservative (Colgate-like)
+    poetry run python scripts/calibrate_config.py --derive-lines --target-oee 0.60  # Capacity planning
 """
 
 import argparse
@@ -300,12 +306,24 @@ def calculate_daily_demand(
     """
     Calculate expected daily demand from configuration.
 
-    Demand = sum over stores of (base_demand × format_scale × sku_count)
+    Demand = sum over stores of (base_demand × format_scale × sku_count) × realism_factor
+
+    The realism_factor accounts for:
+    - Segment weights (products without value_segment get 0.5 default)
+    - Zipf distribution effects (heavy tail reduces average contribution)
+    - Format scale distribution across store types
+
+    Empirically measured: actual POSEngine demand / theoretical = ~0.41
     """
     sim_params = sim_config.get("simulation_parameters", {})
     demand_config = sim_params.get("demand", {})
     category_profiles = demand_config.get("category_profiles", {})
     format_scales = demand_config.get("format_scale_factors", {})
+
+    # Get demand realism factor from capacity_planning config
+    calibration_config = sim_params.get("calibration", {})
+    capacity_planning = calibration_config.get("capacity_planning", {})
+    demand_realism_factor = capacity_planning.get("demand_realism_factor", 0.41)
 
     # Count stores (all STORE type nodes)
     n_stores = node_counts.get("STORE", 0)
@@ -316,7 +334,7 @@ def calculate_daily_demand(
 
     # Calculate demand per category
     category_demand = {}
-    total_daily_demand = 0.0
+    theoretical_daily_demand = 0.0
 
     for cat, profile in category_profiles.items():
         if cat == "INGREDIENT":
@@ -331,14 +349,19 @@ def calculate_daily_demand(
 
         cat_daily_demand = base_demand * avg_format_scale * n_stores * n_skus
         category_demand[cat] = cat_daily_demand
-        total_daily_demand += cat_daily_demand
+        theoretical_daily_demand += cat_daily_demand
+
+    # Apply realism factor to get effective demand
+    effective_daily_demand = theoretical_daily_demand * demand_realism_factor
 
     return {
         "n_stores": n_stores,
         "total_skus": total_skus,
         "sku_counts": sku_counts,
         "category_demand": category_demand,
-        "total_daily_demand": total_daily_demand,
+        "theoretical_daily_demand": theoretical_daily_demand,
+        "demand_realism_factor": demand_realism_factor,
+        "total_daily_demand": effective_daily_demand,  # Use effective demand for planning
     }
 
 
@@ -407,6 +430,347 @@ def calculate_plant_capacity(
         # With line logic, total_theoretical_capacity IS the total capacity (multiplier should be 1.0)
         "total_with_multiplier": total_theoretical_capacity * current_multiplier,
     }
+
+
+def derive_num_lines_from_oee(
+    target_oee: float,
+    total_daily_demand: float,
+    capacity_analysis: dict[str, Any],
+    sim_config: dict[str, Any],
+    products_by_category: dict[str, list[str]] | None = None,
+) -> dict[str, Any]:
+    """
+    Derive num_lines per plant to achieve target OEE.
+
+    Inverts: OEE = Availability × Performance × Quality
+
+    Where:
+    - Availability = (run + changeover) / total_scheduled
+    - Performance = efficiency_factor (0.78-0.88 per plant)
+    - Quality = yield_percent / 100 (0.985)
+
+    v0.35.3: Now simulates MRP's round-robin product distribution to allocate
+    lines proportionally to actual workload per plant.
+
+    v0.35.4: Fixed changeover calculation for campaign batching. Instead of a
+    simple overhead factor, explicitly calculate changeover hours based on:
+    - num_batches_per_day = num_products / production_horizon_days
+    - changeover_hours = num_batches × avg_changeover_time
+
+    Args:
+        target_oee: Target OEE (e.g., 0.60 for 60%)
+        total_daily_demand: Total daily demand in cases
+        capacity_analysis: Output from calculate_plant_capacity()
+        sim_config: Simulation configuration
+        products_by_category: Product lists per category (for accurate allocation)
+
+    Returns:
+        Dict with derived num_lines and supporting analysis.
+    """
+    mfg = sim_config["simulation_parameters"]["manufacturing"]
+    hours_per_day = mfg.get("production_hours_per_day", 24.0)
+    yield_pct = mfg.get("default_yield_percent", 98.5)
+    quality = yield_pct / 100.0
+
+    # Get capacity planning parameters from config
+    calibration = sim_config["simulation_parameters"].get("calibration", {})
+    cap_planning = calibration.get("capacity_planning", {})
+    min_lines_per_plant = cap_planning.get("min_lines_per_plant", 2)
+    max_oee_target = cap_planning.get("max_oee_target", 0.85)
+
+    # Get campaign batching parameters for changeover calculation
+    mrp_thresholds = mfg.get("mrp_thresholds", {})
+    campaign_config = mrp_thresholds.get("campaign_batching", {})
+    production_horizon_days = campaign_config.get("production_horizon_days", 7)
+
+    # Validate target OEE
+    if target_oee > 0.95:
+        raise ValueError(
+            f"Target OEE {target_oee:.1%} > 95% is physically impossible with downtime"
+        )
+    if target_oee > max_oee_target:
+        print(
+            f"WARNING: Target OEE {target_oee:.1%} > {max_oee_target:.0%} - "
+            f"VUT curve causes lead time explosion at high utilization"
+        )
+
+    # Calculate weighted average efficiency across plants
+    plant_params = mfg.get("plant_parameters", {})
+    efficiencies = [p.get("efficiency_factor", 0.85) for p in plant_params.values()]
+    avg_efficiency = sum(efficiencies) / len(efficiencies) if efficiencies else 0.85
+
+    # Inverse OEE calculation
+    # OEE = Availability × Performance × Quality
+    # target_availability = target_oee / (Performance × Quality)
+    target_availability = target_oee / (avg_efficiency * quality)
+    max_availability = 0.95  # Physical limit with downtime
+
+    if target_availability > max_availability:
+        raise ValueError(
+            f"Target OEE {target_oee:.1%} requires availability "
+            f"{target_availability:.1%} > max {max_availability:.1%}. "
+            f"Lower the target OEE or improve efficiency/quality."
+        )
+
+    # Get average RAW run rate from plant capacities (not adjusted for efficiency/downtime)
+    # This is critical - we need the raw rate since we account for availability separately
+    plant_caps = capacity_analysis["plant_capacities"]
+    current_lines = sum(p["num_lines"] for p in plant_caps.values())
+
+    # Weighted average of raw run rates by number of SKUs per plant
+    total_skus = sum(p["n_supported_skus"] for p in plant_caps.values())
+    if total_skus > 0:
+        avg_run_rate = sum(
+            p["avg_run_rate_per_hour"] * p["n_supported_skus"]
+            for p in plant_caps.values()
+        ) / total_skus
+    else:
+        avg_run_rate = 20000  # Fallback
+
+    # v0.35.4: Calculate operating hours explicitly for campaign batching
+    #
+    # With campaign batching, each product is produced once every production_horizon_days.
+    # This means:
+    # - num_batches_per_day = num_finished_products / production_horizon_days
+    # - changeover_hours = num_batches × avg_changeover_time
+    # - run_hours = total_daily_demand / avg_run_rate
+    # - operating_hours = run_hours + changeover_hours
+    #
+    # IMPORTANT: If demand exceeds capacity, use capacity-constrained production volume.
+    # This reflects what MRP actually produces (it scales down to capacity).
+    #
+    # Count finished products (non-ingredients)
+    num_finished_products = sum(
+        len(prods) for cat, prods in (products_by_category or {}).items()
+        if cat != "INGREDIENT"
+    )
+    if num_finished_products == 0:
+        num_finished_products = total_skus  # Fallback to plant capacity analysis
+
+    # Get current capacity from analysis
+    current_capacity = capacity_analysis["total_theoretical_capacity"]
+
+    # Use capacity-constrained demand if capacity is binding
+    # MRP scales sustainable demand to capacity when constrained
+    capacity_constrained_production = min(total_daily_demand, current_capacity)
+    capacity_constrained = total_daily_demand > current_capacity
+
+    # v0.35.4: Apply campaign batch efficiency factor
+    # Campaign batching means not all products produce every day (DOS > trigger).
+    # Actual production is typically 57-64% of capacity due to DOS cycling.
+    campaign_batch_efficiency = cap_planning.get("campaign_batch_efficiency", 0.60)
+    effective_production = capacity_constrained_production * campaign_batch_efficiency
+
+    # Calculate batches per day (products cycle every production_horizon_days)
+    batches_per_day = num_finished_products / production_horizon_days
+
+    # Get average changeover time from category profiles
+    category_profiles = mfg.get("category_profiles", {})
+    changeover_times = [
+        profile.get("changeover_time_hours", 1.0)
+        for profile in category_profiles.values()
+    ]
+    avg_changeover_time = (
+        sum(changeover_times) / len(changeover_times) if changeover_times else 1.0
+    )
+
+    # Calculate run hours from effective production volume (capacity-constrained if needed)
+    run_hours_needed = effective_production / avg_run_rate
+
+    # Calculate changeover hours from batch count
+    changeover_hours = batches_per_day * avg_changeover_time
+
+    # Total operating hours = run + changeover
+    operating_hours = run_hours_needed + changeover_hours
+
+    # Calculate implied changeover overhead factor (for reporting)
+    changeover_overhead_implied = operating_hours / run_hours_needed if run_hours_needed > 0 else 1.0
+
+    # Derive required scheduled hours and lines
+    # scheduled_hours = operating_hours / target_availability
+    # num_lines = scheduled_hours / hours_per_day
+    scheduled_hours = operating_hours / target_availability
+    total_lines_needed = math.ceil(scheduled_hours / hours_per_day)
+
+    # v0.35.3: Get plant capabilities for accurate allocation
+    plant_capabilities = {
+        pid: params.get("supported_categories", [])
+        for pid, params in plant_params.items()
+    }
+
+    # Allocate lines to plants based on actual product distribution
+    plant_allocations = allocate_lines_to_plants(
+        total_lines_needed,
+        capacity_analysis,
+        min_lines_per_plant,
+        products_by_category,
+        plant_capabilities,
+    )
+
+    # Calculate estimated OEE with derived lines
+    # OEE = A × P × Q, where A = operating_hours / scheduled_hours
+    scheduled_hours_derived = total_lines_needed * hours_per_day
+    estimated_availability = operating_hours / scheduled_hours_derived if scheduled_hours_derived > 0 else 0
+    estimated_oee = estimated_availability * avg_efficiency * quality
+
+    # v0.35.4: Calculate realistic OEE bound for campaign batching
+    # Campaign batching creates natural idle time - not all products produce every day
+    # because DOS stays above trigger between production cycles.
+    # The estimated_oee already incorporates campaign_batch_efficiency, so it should
+    # be realistic. However, warn if target exceeds typical campaign batching limits.
+    # Empirically observed: OEE ≈ 46-50% with typical campaign batching parameters.
+    max_campaign_batch_oee = 0.50  # Practical upper bound for campaign batching
+    realistic_oee = min(estimated_oee, max_campaign_batch_oee)
+    oee_limited_by_batching = target_oee > max_campaign_batch_oee
+
+    return {
+        "target_oee": target_oee,
+        "target_availability": target_availability,
+        "avg_efficiency": avg_efficiency,
+        "quality": quality,
+        "avg_run_rate_per_hour": avg_run_rate,
+        "run_hours_needed": run_hours_needed,
+        "changeover_hours": changeover_hours,
+        "operating_hours": operating_hours,
+        "scheduled_hours": scheduled_hours,
+        "total_lines_needed": total_lines_needed,
+        "current_total_lines": current_lines,
+        "plant_allocations": plant_allocations,
+        "estimated_availability": estimated_availability,
+        "estimated_oee": estimated_oee,
+        # Campaign batching parameters
+        "num_finished_products": num_finished_products,
+        "production_horizon_days": production_horizon_days,
+        "batches_per_day": batches_per_day,
+        "avg_changeover_time": avg_changeover_time,
+        "changeover_overhead_implied": changeover_overhead_implied,
+        # Capacity constraint info
+        "total_daily_demand": total_daily_demand,
+        "capacity_constrained_production": capacity_constrained_production,
+        "campaign_batch_efficiency": campaign_batch_efficiency,
+        "effective_production": effective_production,
+        "capacity_constrained": capacity_constrained,
+        "current_capacity": current_capacity,
+        # Realistic OEE for campaign batching
+        "realistic_oee": realistic_oee,
+        "oee_limited_by_batching": oee_limited_by_batching,
+    }
+
+
+def simulate_product_plant_assignments(
+    products_by_category: dict[str, list[str]],
+    plant_capabilities: dict[str, list[str]],
+) -> dict[str, int]:
+    """
+    Simulate MRP's round-robin plant selection to determine product counts per plant.
+
+    This mirrors the logic in MRPEngine._select_plant() which uses per-category
+    counters to distribute products evenly across eligible plants.
+
+    Args:
+        products_by_category: Dict mapping category name to list of product IDs
+        plant_capabilities: Dict mapping plant_id to list of supported categories
+
+    Returns:
+        Dict mapping plant_id to number of products assigned
+    """
+    plant_product_counts: dict[str, int] = {pid: 0 for pid in plant_capabilities}
+    category_counters: dict[str, int] = {}
+
+    for category, products in products_by_category.items():
+        if category == "INGREDIENT":
+            continue
+
+        # Find eligible plants for this category
+        eligible_plants = [
+            pid for pid, caps in plant_capabilities.items()
+            if category in caps
+        ]
+
+        if not eligible_plants:
+            continue
+
+        # Initialize counter for this category
+        if category not in category_counters:
+            category_counters[category] = 0
+
+        # Round-robin assign products (mirrors MRP logic)
+        for _ in products:
+            plant_idx = category_counters[category] % len(eligible_plants)
+            plant_id = eligible_plants[plant_idx]
+            plant_product_counts[plant_id] += 1
+            category_counters[category] += 1
+
+    return plant_product_counts
+
+
+def allocate_lines_to_plants(
+    total_lines: int,
+    capacity_analysis: dict[str, Any],
+    min_lines: int = 2,
+    products_by_category: dict[str, list[str]] | None = None,
+    plant_capabilities: dict[str, list[str]] | None = None,
+) -> dict[str, int]:
+    """
+    Allocate lines proportionally to plants based on actual product assignments.
+
+    v0.35.3: Now simulates MRP's round-robin product distribution to allocate
+    lines proportionally to actual workload, not theoretical capacity.
+
+    Args:
+        total_lines: Total number of lines to allocate
+        capacity_analysis: Output from calculate_plant_capacity()
+        min_lines: Minimum lines per plant
+        products_by_category: Product lists per category (for accurate allocation)
+        plant_capabilities: Plant-to-category mapping (for accurate allocation)
+
+    Returns:
+        Dict mapping plant_id to allocated num_lines
+    """
+    plant_caps = capacity_analysis["plant_capacities"]
+    num_plants = len(plant_caps)
+
+    # Ensure we have enough lines for minimums
+    if total_lines < num_plants * min_lines:
+        total_lines = num_plants * min_lines
+
+    # v0.35.3: Use actual product distribution if available
+    if products_by_category and plant_capabilities:
+        # Simulate MRP's round-robin to get actual product counts per plant
+        product_counts = simulate_product_plant_assignments(
+            products_by_category, plant_capabilities
+        )
+        weights = {pid: float(count) for pid, count in product_counts.items()}
+    else:
+        # Fallback to theoretical capacity
+        weights = {pid: p["theoretical_capacity_total"] for pid, p in plant_caps.items()}
+
+    total_weight = sum(weights.values())
+    if total_weight == 0:
+        total_weight = 1.0  # Avoid division by zero
+
+    allocations: dict[str, int] = {}
+    remaining = total_lines
+
+    # Sort by weight descending to allocate to larger plants first
+    sorted_plants = sorted(weights.items(), key=lambda x: -x[1])
+
+    for i, (pid, weight) in enumerate(sorted_plants):
+        if i == len(sorted_plants) - 1:
+            # Last plant gets remaining (ensures sum equals total)
+            allocations[pid] = max(min_lines, remaining)
+        else:
+            # Proportional allocation
+            proportion = weight / total_weight if total_weight > 0 else 1.0 / num_plants
+            lines = max(min_lines, round(total_lines * proportion))
+            # Don't exceed remaining minus minimums for other plants
+            plants_left = num_plants - i - 1
+            max_for_this = remaining - plants_left * min_lines
+            lines = min(lines, max_for_this)
+            allocations[pid] = lines
+            remaining -= lines
+
+    return allocations
 
 
 def derive_optimal_parameters(
@@ -1108,10 +1472,16 @@ def print_report(
     print("SKUs by Category:")
     for cat, count in demand_analysis["sku_counts"].items():
         print(f"  {cat}: {count}")
-    print("\nDaily Demand by Category:")
+    print("\nDaily Demand by Category (theoretical):")
     for cat, demand in demand_analysis["category_demand"].items():
         print(f"  {cat}: {demand:,.0f} cases/day")
-    print(f"\nTOTAL DAILY DEMAND: {demand_analysis['total_daily_demand']:,.0f} cases/day")
+
+    theoretical = demand_analysis.get("theoretical_daily_demand", demand_analysis["total_daily_demand"])
+    realism_factor = demand_analysis.get("demand_realism_factor", 1.0)
+    effective = demand_analysis["total_daily_demand"]
+    print(f"\nTheoretical Demand: {theoretical:,.0f} cases/day")
+    print(f"Realism Factor:     {realism_factor:.0%} (segment weights, Zipf, format scales)")
+    print(f"EFFECTIVE DEMAND:   {effective:,.0f} cases/day")
 
     print("\n--- CAPACITY ANALYSIS ---")
     print(f"Total Theoretical Capacity: {capacity_analysis['total_theoretical_capacity']:,.0f} cases/day")
@@ -1177,6 +1547,53 @@ def print_report(
         print(f"Demand Amplitude: ±{d_amp:.0%}")
         print(f"Current Capacity Amplitude: ±{c_amp_cur:.0%}")
         print(f"Recommended Capacity Amplitude: ±{c_amp_rec:.1%}")
+
+    # Capacity planning section (when --derive-lines is used)
+    cap_plan = recommendations.get("capacity_planning")
+    if cap_plan:
+        print("\n" + "=" * 70)
+        print("     CAPACITY PLANNING (--derive-lines)")
+        print("=" * 70)
+        print(f"\nTarget OEE:             {cap_plan['target_oee']:.1%}")
+        print(f"Required Availability:  {cap_plan['target_availability']:.1%}")
+        print(f"Avg Efficiency (P):     {cap_plan['avg_efficiency']:.1%}")
+        print(f"Quality (Q):            {cap_plan['quality']:.1%}")
+        print(f"\nCampaign Batching Parameters:")
+        print(f"  Finished products:    {cap_plan['num_finished_products']}")
+        print(f"  Production horizon:   {cap_plan['production_horizon_days']} days")
+        print(f"  Batches per day:      {cap_plan['batches_per_day']:.1f}")
+        print(f"  Avg changeover time:  {cap_plan['avg_changeover_time']:.2f} hrs")
+        if cap_plan.get('capacity_constrained'):
+            print(f"\n  *** CAPACITY CONSTRAINED ***")
+            print(f"  Demand:               {cap_plan['total_daily_demand']:,.0f} cases/day")
+            print(f"  Capacity:             {cap_plan['current_capacity']:,.0f} cases/day")
+            print(f"  Cap-constrained prod: {cap_plan['capacity_constrained_production']:,.0f} cases/day")
+        print(f"\n  Campaign batch eff:   {cap_plan['campaign_batch_efficiency']:.0%}")
+        print(f"  Effective production: {cap_plan['effective_production']:,.0f} cases/day")
+        print(f"\nDerived Capacity Calculation:")
+        print(f"  Avg run rate:         {cap_plan['avg_run_rate_per_hour']:,.0f} cases/hr/line")
+        print(f"  Run hours needed:     {cap_plan['run_hours_needed']:,.1f} hrs")
+        print(f"  Changeover hours:     {cap_plan['changeover_hours']:,.1f} hrs")
+        print(f"  Operating hours:      {cap_plan['operating_hours']:,.1f} hrs (run + changeover)")
+        print(f"  Changeover overhead:  {cap_plan['changeover_overhead_implied']:.0%} (implied)")
+        print(f"  Scheduled hours:      {cap_plan['scheduled_hours']:,.1f} hrs")
+        print(f"\nLine Count:")
+        print(f"  Current total lines:  {cap_plan['current_total_lines']}")
+        print(f"  Derived total lines:  {cap_plan['total_lines_needed']}")
+        print(f"  Estimated OEE:        {cap_plan['estimated_oee']:.1%}")
+        print(f"  Realistic OEE:        {cap_plan['realistic_oee']:.1%} (campaign batching limit)")
+        if cap_plan.get('oee_limited_by_batching'):
+            print(f"\n  *** WARNING: Target OEE {cap_plan['target_oee']:.0%} exceeds campaign batching limit ***")
+            print(f"  Campaign batching creates natural idle time (DOS cycling).")
+            print(f"  Max achievable OEE with current settings: ~46-50%")
+            print(f"  To increase OEE: reduce production_horizon_days, increase triggers,")
+        print(f"\nPer-Plant Allocation:")
+        for pid, lines in sorted(cap_plan["plant_allocations"].items()):
+            # Get current lines for comparison
+            current = capacity_analysis["plant_capacities"].get(pid, {}).get("num_lines", 0)
+            diff = lines - current
+            diff_str = f"({'+' if diff >= 0 else ''}{diff})" if diff != 0 else "(no change)"
+            print(f"  {pid}: {lines} lines {diff_str}")
 
     print("\n--- RECOMMENDATIONS (Apply with --apply) ---")
     rec = recommendations["recommendations"]
@@ -1266,6 +1683,15 @@ def apply_recommendations(
         seasonality = demand.setdefault("seasonality", {})
         seasonality["capacity_amplitude"] = seasonal["recommended_capacity_amplitude"]
 
+    # Update num_lines from capacity planning (when --derive-lines is used)
+    cap_plan = recommendations.get("capacity_planning")
+    if cap_plan:
+        plant_params = mfg.setdefault("plant_parameters", {})
+        for pid, lines in cap_plan["plant_allocations"].items():
+            if pid not in plant_params:
+                plant_params[pid] = {}
+            plant_params[pid]["num_lines"] = lines
+
     save_json(sim_config_path, config)
     print(f"\n✓ Applied recommendations to {sim_config_path}")
     print("\nKey changes applied:")
@@ -1274,6 +1700,13 @@ def apply_recommendations(
     print(f"  - Production horizon: {rec['production_horizon_days']}d")
     print(f"  - C-item factors: prod={rec.get('c_production_factor', 0.4)}, demand={rec.get('c_demand_factor', 0.7)}")
     print(f"  - SLOB thresholds: {rec['slob_abc_thresholds']}")
+
+    # Print capacity planning changes if applied
+    if cap_plan:
+        print("\nCapacity planning (--derive-lines) applied:")
+        print(f"  - Target OEE: {cap_plan['target_oee']:.0%}")
+        print(f"  - Total lines: {cap_plan['current_total_lines']} → {cap_plan['total_lines_needed']}")
+        print(f"  - Per-plant: {cap_plan['plant_allocations']}")
 
 
 def main() -> None:
@@ -1297,6 +1730,17 @@ def main() -> None:
         type=float,
         default=0.97,
         help="Target service level (default: 0.97 = 97%%)",
+    )
+    parser.add_argument(
+        "--target-oee",
+        type=float,
+        default=None,
+        help="Target OEE (e.g., 0.60 for 60%%). Derives num_lines when --derive-lines is set.",
+    )
+    parser.add_argument(
+        "--derive-lines",
+        action="store_true",
+        help="Derive num_lines from --target-oee instead of reading from config",
     )
     args = parser.parse_args()
 
@@ -1350,6 +1794,22 @@ def main() -> None:
     recommendations["seasonal_capacity"] = derive_seasonal_capacity_params(
         sim_config, recommendations
     )
+
+    # Capacity planning: derive num_lines if requested
+    if args.derive_lines:
+        target_oee = args.target_oee if args.target_oee is not None else 0.60
+        try:
+            capacity_planning_result = derive_num_lines_from_oee(
+                target_oee,
+                demand_analysis["total_daily_demand"],
+                capacity_analysis,
+                sim_config,
+                products_by_category,  # v0.35.3: For accurate plant-workload allocation
+            )
+            recommendations["capacity_planning"] = capacity_planning_result
+        except ValueError as e:
+            print(f"\nERROR: {e}")
+            return
 
     # Validate config consistency
     violations = validate_config_consistency(sim_config, recommendations)

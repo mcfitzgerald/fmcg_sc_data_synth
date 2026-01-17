@@ -200,7 +200,7 @@
         "cases_per_pallet_range": [100, 140],
         "cost_range": [20.0, 40.0],
         "dim_ratios": [2.0, 1.5, 1.0],
-        "run_rate_cases_per_hour": 7500,
+        "run_rate_cases_per_hour": 20000,
         "changeover_time_hours": 0.5
       },
       "PERSONAL_WASH": {
@@ -209,7 +209,7 @@
         "cases_per_pallet_range": [60, 100],
         "cost_range": [15.0, 25.0],
         "dim_ratios": [2.0, 1.3, 1.0],
-        "run_rate_cases_per_hour": 9000,
+        "run_rate_cases_per_hour": 18000,
         "changeover_time_hours": 1.0
       },
       "HOME_CARE": {
@@ -218,7 +218,7 @@
         "cases_per_pallet_range": [30, 50],
         "cost_range": [10.0, 18.0],
         "dim_ratios": [1.2, 0.8, 1.0],
-        "run_rate_cases_per_hour": 6000,
+        "run_rate_cases_per_hour": 15000,
         "changeover_time_hours": 1.5
       }
     }

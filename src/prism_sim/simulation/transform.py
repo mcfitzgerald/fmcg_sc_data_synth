@@ -379,27 +379,32 @@ class TransformEngine:
         # Calculate OEE for each plant using standard formula:
         # OEE = Availability × Performance × Quality
         #
-        # v0.35.0 FIX: Previous calculation was inflated (~94%) because:
-        # 1. Availability used run/(run+changeover) ≈ 98% - ignoring idle time
-        # 2. Performance was hardcoded to 1.0 - ignoring efficiency losses
-        # 3. Only active lines were counted - excluding unused capacity
+        # v0.35.2 FIX: Use RAW scheduled hours (24h × lines), not pre-reduced capacity.
+        # Previous bug: max_capacity_hours already had efficiency baked in, then
+        # efficiency was applied AGAIN as Performance factor = double-counting.
         #
         # Correct formula:
-        # - Availability = (run + changeover) / total_scheduled (utilization)
+        # - Availability = (run + changeover) / (24h × num_lines) - raw utilization
         # - Performance = plant efficiency_factor (0.78-0.88 per config)
         # - Quality = yield % (98.5%)
+        #
+        # Note: unplanned_downtime_pct currently reduces capacity upfront rather than
+        # causing random stoppages. This is a simplification - true OEE would have
+        # downtime events reduce Availability dynamically.
         for plant_id, plant_state in self._plant_states.items():
-            total_scheduled = sum(line.max_capacity_hours for line in plant_state.lines)
+            num_lines = len(plant_state.lines)
+            # Use RAW scheduled hours: 24h × num_lines (not pre-reduced capacity)
+            total_scheduled_raw = self.hours_per_day * num_lines
             total_run = sum(line.run_hours_today for line in plant_state.lines)
             total_changeover = sum(
                 line.changeover_hours_today for line in plant_state.lines
             )
 
-            if total_scheduled > 0:
-                # Availability = actual operating time / scheduled time
+            if total_scheduled_raw > 0:
+                # Availability = actual operating time / raw scheduled time
                 # This captures both changeover losses AND idle capacity
                 actual_operating = total_run + total_changeover
-                availability = actual_operating / total_scheduled
+                availability = actual_operating / total_scheduled_raw
 
                 # Performance = plant efficiency factor (speed losses, minor stops)
                 # From config: 0.78-0.88 depending on plant

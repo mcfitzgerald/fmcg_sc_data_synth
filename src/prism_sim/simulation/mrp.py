@@ -1312,8 +1312,21 @@ class MRPEngine:
             # We'll stick to robust fallback.
             eligible_plants = self._plant_ids
 
-        # Round-robin based on order counter within eligible plants
-        plant_idx = self._po_counter % len(eligible_plants)
+        # Round-robin based on per-category counter within eligible plants
+        # Bug fix (v0.35.3): Use a separate counter per category to ensure even
+        # distribution across plants. Previously, all products in a category
+        # went to the same plant because _po_counter wasn't incremented until
+        # _generate_po_id was called (much later in campaign batching).
+        if not hasattr(self, "_plant_selection_counters"):
+            self._plant_selection_counters: dict[str, int] = {}
+
+        counter_key = cat_name
+        if counter_key not in self._plant_selection_counters:
+            self._plant_selection_counters[counter_key] = 0
+
+        plant_idx = self._plant_selection_counters[counter_key] % len(eligible_plants)
+        self._plant_selection_counters[counter_key] += 1
+
         return eligible_plants[plant_idx]
 
     def _generate_po_id(self, current_day: int) -> str:

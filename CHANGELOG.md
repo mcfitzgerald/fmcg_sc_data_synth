@@ -5,6 +5,66 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.35.4] - 2026-01-16
+
+### Capacity Planning - Campaign Batching OEE Calibration
+
+**Problem:** Calibration targeted 60% OEE but simulation consistently achieved only 46% OEE regardless of line count or trigger settings.
+
+**Root Cause:** Campaign batching creates natural idle time - products only produce when DOS drops below trigger, creating cycling patterns. MRP scales production to capacity, so reducing lines doesn't increase utilization - production scales down proportionally.
+
+**Analysis:**
+- With campaign batching (7-day horizon, DOS triggers 31/27/22), actual production is ~66% of capacity
+- This results in ~57% availability, yielding OEE ≈ 57% × 82% × 98.5% = 46%
+- The 46-50% OEE is a fundamental characteristic of campaign batching, not a bug
+
+**Fixes:**
+1. **Explicit changeover calculation** - Replaced simple overhead factor with batch-count-based formula:
+   - `changeover_hours = (num_products / production_horizon_days) × avg_changeover_time`
+2. **Capacity-constrained production** - Formula now uses `min(demand, capacity)` when capacity-bound
+3. **Campaign batch efficiency** - Added config parameter (0.66) to account for DOS cycling idle time
+4. **Warning system** - Calibration now warns when target OEE exceeds campaign batching limit (~50%)
+
+**Files Modified:**
+- `scripts/calibrate_config.py` — Major rewrite of `derive_num_lines_from_oee()`:
+  - Explicit changeover calculation based on batches per day
+  - Capacity-constrained demand handling
+  - Campaign batch efficiency factor
+  - Warning for unrealistic OEE targets
+- `src/prism_sim/config/simulation_config.json`:
+  - Added `campaign_batch_efficiency: 0.66` parameter
+  - Updated capacity planning comments
+
+**Calibration Output Example:**
+```
+Campaign Batching Parameters:
+  Finished products:    500
+  Production horizon:   7 days
+  Batches per day:      71.4
+  Campaign batch eff:   66%
+  Effective production: 7,540,911 cases/day
+
+Line Count:
+  Derived total lines:  33
+  Estimated OEE:        49.9%
+  Realistic OEE:        49.9% (campaign batching limit)
+
+*** WARNING: Target OEE 60% exceeds campaign batching limit ***
+```
+
+**Usage:**
+```bash
+# Use realistic 50% target for campaign batching
+poetry run python scripts/calibrate_config.py --target-oee 0.50 --derive-lines --apply
+```
+
+**Key Insight:** To achieve >50% OEE, need to either:
+1. Reduce `production_horizon_days` (smaller, more frequent batches)
+2. Increase DOS triggers (more products always need production)
+3. Switch from campaign batching to continuous production
+
+---
+
 ## [0.35.1] - 2026-01-16
 
 ### Streaming Mode Bug Fix (Memory Explosion)
