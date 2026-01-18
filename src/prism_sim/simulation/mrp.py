@@ -977,11 +977,30 @@ class MRPEngine:
                 candidates.append((product_id, plant_id, dos_position, batch_qty, abc))
 
         # ================================================================
-        # PHASE 2: Sort by priority (lowest DOS first, then ABC)
+        # PHASE 2: Sort by priority (lowest Critical Ratio first)
         # ================================================================
-        # Sort by: ABC class (A first), then DOS (lowest first)
-        # This ensures A-items with critical DOS get produced first
-        candidates.sort(key=lambda x: (x[4], x[2]))  # (abc, dos)
+        # CRITICAL FIX (v0.36.1): Use Critical Ratio (DOS / Trigger) for sorting.
+        # Previously sorted by (ABC, DOS), which meant A-items ALWAYS beat C-items.
+        # This caused "Starvation" where C-items were never produced because A-items
+        # constantly filled the daily SKU slots.
+        #
+        # New Sort: ratio = dos / trigger_dos
+        # - Ratio < 1.0 means below trigger (urgent)
+        # - Ratio << 1.0 means imminent stockout (most urgent)
+        # - This creates a "Fairness" mechanic where a C-item at 10% inventory
+        #   prioritizes above an A-item at 90% inventory.
+
+        def get_trigger(abc_code: int) -> float:
+            if abc_code == 0: return float(self.trigger_dos_a)
+            if abc_code == 1: return float(self.trigger_dos_b)
+            return float(self.trigger_dos_c)
+
+        # v0.36.2: Shuffle to break ties (e.g. multiple items with 0 inventory)
+        # Without shuffle, the same "tail" items always lose the tie-break and never run.
+        np.random.shuffle(candidates)
+
+        # Sort by Critical Ratio ascending (lowest ratio = most critical)
+        candidates.sort(key=lambda x: x[2] / get_trigger(x[4]))
 
         # ================================================================
         # PHASE 3: Select top N per plant (limit changeovers)

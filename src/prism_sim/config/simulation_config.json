@@ -342,11 +342,11 @@
         "c_demand_factor": 0.8,
         "campaign_batching": {
           "enabled": true,
-          "production_horizon_days": 7,
+          "production_horizon_days": 14,
           "trigger_dos_a": 31,
           "trigger_dos_b": 27,
           "trigger_dos_c": 22,
-          "max_skus_per_plant_per_day": 60
+          "max_skus_per_plant_per_day": 20
         }
       },
       "inventory_policies": {
@@ -390,14 +390,16 @@
           "unplanned_downtime_pct": 0.1,
           "num_lines": 2,
           "supported_categories": [
-            "HOME_CARE"
+            "HOME_CARE",
+            "PERSONAL_WASH"
           ]
         },
+
         "PLANT-TX": {
           "description": "Modern high-speed facility (realistic OEE)",
           "efficiency_factor": 0.88,
           "unplanned_downtime_pct": 0.04,
-          "num_lines": 2,
+          "num_lines": 6,
           "supported_categories": [
             "ORAL_CARE"
           ]
@@ -406,7 +408,7 @@
           "description": "Flexible multi-category facility",
           "efficiency_factor": 0.82,
           "unplanned_downtime_pct": 0.06,
-          "num_lines": 5,
+          "num_lines": 7,
           "supported_categories": [
             "ORAL_CARE",
             "PERSONAL_WASH"
@@ -416,7 +418,7 @@
           "description": "Standard facility",
           "efficiency_factor": 0.8,
           "unplanned_downtime_pct": 0.07,
-          "num_lines": 4,
+          "num_lines": 7,
           "supported_categories": [
             "PERSONAL_WASH",
             "HOME_CARE"
