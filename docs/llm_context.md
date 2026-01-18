@@ -85,45 +85,45 @@ The simulation enforces these constraints - violations indicate bugs:
 
 ---
 
-## 4. Order of Operations (CRITICAL)
+## 4. Setup & Workflow (Order of Operations)
 
-When making configuration changes, follow this sequence **exactly**:
+The standard workflow enforces configuration integrity and consistent initialization. Always use `scripts/run_standard_sim.py` for reproducible runs.
+
+### Standard Simulation Flow
 
 ```bash
-# 1. UPDATE CONFIG - Edit simulation_config.json
-#    Located at: src/prism_sim/config/simulation_config.json
-#    Change: num_lines, demand parameters, inventory targets, etc.
+# 1. Full Pipeline (Rebuild -> Calibrate -> Simulate)
+#    Use this after changing world_definition.json or simulation_config.json
+poetry run python scripts/run_standard_sim.py --rebuild --recalibrate --days 365
 
-# 2. REGENERATE WORLD (only if topology changed)
+# 2. Fast Diagnostic (Uses existing checkpoint)
+#    Use this for quick iterations if config hasn't changed
+poetry run python scripts/run_standard_sim.py --days 30 --no-logging
+```
+
+### Manual Steps (for debugging only)
+
+If you need to run steps individually:
+
+```bash
+# A. Generate World (if topology/products changed)
 poetry run python scripts/generate_static_world.py
-#    Required when: products, recipes, node counts, or link distances change
 
-# 3. CALIBRATE - Derives safety stock, triggers, priming FOR your config
+# B. Calibrate Physics (if capacity/demand changed)
 poetry run python scripts/calibrate_config.py --apply
-#    This step is MANDATORY after changing capacity parameters!
-#    The calibration script derives planning parameters based on configured capacity.
-#    Skipping this causes parameter mismatch and service level collapse.
 
-# 4. CLEAR CHECKPOINT (config changes invalidate old checkpoints)
-rm -f data/checkpoints/steady_state_*.json.gz
-
-# 5. RUN SIMULATION
+# C. Run Simulation (Orchestrator handles burn-in/checkpointing)
 poetry run python run_simulation.py --days 365
 ```
 
-**When to regenerate world:**
-- Changed `world_definition.json` (products, recipes, node counts)
-- Changed network topology or link distances
-- First-time setup
-
-**When to just recalibrate:**
-- Changed `num_lines` or manufacturing parameters
-- Changed inventory targets or service levels
-- Tuning simulation behavior
+**Key Concepts:**
+- **Auto-Checkpointing:** The Orchestrator automatically detects config changes (hash check). If changed, it runs a 90-day burn-in and saves a snapshot. If unchanged, it loads the snapshot and runs immediately.
+- **Demand Sensing:** Agents (MRP/Replenishment) now use proactive demand forecasts from `POSEngine` to build stock ahead of promotions and seasonality.
+- **P&G Scale:** The simulation is calibrated to ~4M cases/day (realistic North American FMCG volume) with ~32 production lines network-wide.
 
 **Simulation Run Lengths:**
 - **Full diagnostic (365 days):** Required for accurate KPIs. Includes 90-day burn-in + 365 data days.
-- **Sanity checks (30 days with `--no-checkpoint`):** Fast verification only. Metrics will NOT reflect true system performance.
+- **Sanity checks (30 days with `--no-logging`):** Fast verification only.
 
 ---
 

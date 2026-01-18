@@ -85,8 +85,8 @@ class NetworkGenerator:
         supplier_cities = self.pool.sample_cities(n_suppliers)
         for i, city_data in enumerate(supplier_cities):
             node_id = f"SUP-{i+1:03d}"
-            # Plant-TX is often a SPOF for surfactant in this twin
-            capacity = 500000.0 if i == 0 else float("inf")
+            # v0.35.6: All suppliers have infinite capacity. SPOF uses dedicated supplier.
+            capacity = float("inf")
             suppliers.append(Node(
                 id=node_id,
                 name=f"Supplier {i+1}",
@@ -301,7 +301,9 @@ class NetworkGenerator:
         cities = self.pool.sample_cities(n)
         for i in range(n):
             node_id = f"SUP-{i + 1:03d}"
-            capacity = 500000.0 if i == 0 else float("inf")
+            # v0.35.6: All suppliers have infinite capacity to prevent artificial
+            # bottleneck. SPOF testing uses dedicated SUP-SURF-SPEC supplier.
+            capacity = float("inf")
             city_data = cities[i]
             nodes.append(
                 Node(

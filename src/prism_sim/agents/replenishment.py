@@ -65,12 +65,14 @@ class MinMaxReplenisher:
         world: World,
         state: StateManager,
         config: dict[str, Any],
+        pos_engine: Any = None,
         warm_start_demand: float = 0.0,
         base_demand_matrix: np.ndarray | None = None,
     ) -> None:
         self.world = world
         self.state = state
         self.config = config
+        self.pos_engine = pos_engine
 
         params = (
             config.get("simulation_parameters", {})
@@ -651,6 +653,7 @@ class MinMaxReplenisher:
         Uses exponential smoothing on the demand signal to dampen bullwhip.
         Includes order staggering to prevent synchronized ordering waves.
         """
+        self.current_day = day
         # 1. Identify Target Nodes
         target_indices, target_ids = self._identify_target_nodes(day)
         if not target_indices:
@@ -726,6 +729,18 @@ class MinMaxReplenisher:
         inflow_demand = self.get_inflow_demand()
         pos_demand = self.smoothed_demand
         
+        # v0.36.0 Proactive Demand Sensing
+        if hasattr(self, "pos_engine") and self.pos_engine is not None:
+            # Look ahead by 14 days to capture upcoming structure
+            forecast_horizon = 14
+            proactive_matrix = self.pos_engine.get_deterministic_forecast(
+                self.current_day, forecast_horizon, aggregated=False
+            )
+            # Planning rate = Average daily volume over horizon
+            proactive_rate_matrix = proactive_matrix / forecast_horizon
+        else:
+            proactive_rate_matrix = None
+
         n_targets = len(target_indices)
         avg_demand = np.zeros((n_targets, self.state.n_products))
 
@@ -733,9 +748,16 @@ class MinMaxReplenisher:
             if t_idx in self._customer_dc_indices:
                 inflow_signal = inflow_demand[t_idx, :]
                 expected = self._expected_throughput.get(t_idx, inflow_signal)
-                avg_demand[i, :] = np.maximum(inflow_signal, expected)
+                base_signal = np.maximum(inflow_signal, expected)
             else:
-                avg_demand[i, :] = np.maximum(inflow_demand[t_idx, :], pos_demand[t_idx, :]) # type: ignore
+                base_signal = np.maximum(inflow_demand[t_idx, :], pos_demand[t_idx, :]) # type: ignore
+            
+            # Blending logic: 50% Reactive (History) + 50% Proactive (Structure)
+            if proactive_rate_matrix is not None:
+                proactive_signal = proactive_rate_matrix[t_idx, :]
+                avg_demand[i, :] = 0.5 * base_signal + 0.5 * proactive_signal
+            else:
+                avg_demand[i, :] = base_signal
 
         return np.maximum(avg_demand, self.min_demand_floor)
 
@@ -882,7 +904,23 @@ class MinMaxReplenisher:
 
         order_qty = np.where(needs_order, np.maximum(raw_qty, min_qty), 0.0)
         order_qty[:, self.ingredient_mask] = 0.0
-        
+
+        # v0.35.6 FIX: Cap order quantity to prevent runaway order accumulation.
+        # When orders exceed a reasonable multiple of target stock, it indicates
+        # persistent upstream shortage. Ordering more won't help - it just creates
+        # backlog that compounds the problem. Cap at 2x target_days_supply worth.
+        #
+        # This breaks the feedback loop where:
+        # 1. Shortage → low IP → large order
+        # 2. Order not fulfilled → IP stays low
+        # 3. Next cycle: another large order
+        # 4. Orders accumulate exponentially
+        target_days = self.target_days_vec[target_idx_arr]
+        avg_demand = self.get_inflow_demand()[target_idx_arr, :]
+        max_order = avg_demand * target_days * 2.0  # Cap at 2x target stock
+        max_order = np.maximum(max_order, min_qty)  # But at least min_qty
+        order_qty = np.minimum(order_qty, max_order)
+
         batched_qty = np.ceil(order_qty / batch_sz) * batch_sz
         return batched_qty
 

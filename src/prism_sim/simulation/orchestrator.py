@@ -138,7 +138,7 @@ class Orchestrator:
         # Initialize Manufacturing Engines (Milestone 5)
         # MOVED UP: Initialize MRP Engine EARLY to get ABC classification for inventory priming
         self.mrp_engine = MRPEngine(
-            self.world, self.state, self.config, base_demand_matrix
+            self.world, self.state, self.config, self.pos_engine, base_demand_matrix
         )
 
         # Initialize inventory: either from warm-start or cold-start priming
@@ -151,6 +151,7 @@ class Orchestrator:
             self.world,
             self.state,
             self.config,
+            self.pos_engine,
             warm_start_demand=warm_start_demand,
             base_demand_matrix=base_demand_matrix,
         )
@@ -720,17 +721,16 @@ class Orchestrator:
                         self.state.actual_inventory[node_idx, :] = dc_levels
 
             # Seed raw materials at Plants
-            # v0.20.0: Sized for ~120 days supply to ensure 90-day production stability.
-            # Some ingredients are consumed much faster due to recipe clustering.
-            # Using 50M per ingredient to provide sufficient buffer for high-demand
-            # ingredients while MRP ingredient ordering catches up.
-            # NOTE: Long-term fix needed in MRP ingredient ordering to maintain supply.
+            # v0.20.0: Sized for safety supply to ensure production stability.
+            # v0.36.0: Moved to config to allow scaling.
             elif node.type == NodeType.PLANT:
                 node_idx = self.state.node_id_to_idx.get(node_id)
                 if node_idx is not None:
+                    # Get default from config or fallback to a sensible ratio of daily demand
+                    default_qty = init_config.get("plant_ingredient_buffer", 5000000.0)
                     for product in self.world.products.values():
                         if product.category == ProductCategory.INGREDIENT:
-                            qty = initial_plant_inv.get(product.id, 50000000.0)
+                            qty = initial_plant_inv.get(product.id, default_qty)
                             self.state.update_inventory(node_id, product.id, qty)
 
     def _build_finished_goods_mask(self) -> np.ndarray:

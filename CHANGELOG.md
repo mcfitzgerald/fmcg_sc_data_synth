@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.36.0] - 2026-01-18
+
+### P&G Scale Recalibration & Demand Sensing
+
+This release implements a structural pivot to realistic North American FMCG scale and introduces proactive demand sensing to fix 365-day inventory drift.
+
+#### 1. P&G Scale Alignment (Downsizing)
+- **Volume:** Reduced network demand from ~21M cases/day to **~4M cases/day**. This aligns with P&G North America (~$42B revenue/year).
+- **Capacity:** Reduced production lines from 176 (44/plant) to **32 (8/plant)**.
+- **Inventory:** Tightened inventory buffers (Stores 14d, RDCs 21d) to reflect the new stable flow.
+- **Rationale:** The previous 21M scale was a "Hyper-Enterprise" that amplified computational friction. Downsizing makes physics traceable and realistic.
+
+#### 2. Proactive Demand Sensing
+- **MRP & Replenishment:** Agents now query `POSEngine` for deterministic future demand (forecasts) rather than relying solely on reactive history.
+- **Drift Fix:** This allows the system to build inventory *ahead* of promotional peaks and seasonal shifts, preventing the "slow bleed" of A-item inventory observed in previous versions.
+- **Implementation:** Added `get_deterministic_forecast()` to POSEngine and integrated it into `MRPEngine` batch sizing and `MinMaxReplenisher` demand smoothing.
+
+#### 3. Codified Workflow
+- **New Runner:** Added `scripts/run_standard_sim.py` which enforces the standard pipeline:
+  - `python scripts/run_standard_sim.py --rebuild --recalibrate --days 365`
+- **Automation:** Handles config validation, world generation, calibration, and checkpointing in a single command.
+
+#### 4. Physics Fixes
+- **Ingredient Scaling:** Moved `plant_ingredient_buffer` to config to scale with network demand (prevents 8B unit memory usage).
+- **Unbound Local Fix:** Resolved variable scope issue in MRP campaign batching logic.
+
+---
+
 ## [0.35.4] - 2026-01-16
 
 ### Capacity Planning - Campaign Batching OEE Calibration

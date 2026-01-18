@@ -88,11 +88,13 @@ class MRPEngine:
         world: World,
         state: StateManager,
         config: dict[str, Any],
+        pos_engine: Any = None,
         base_demand_matrix: np.ndarray | None = None,
     ) -> None:
         self.world = world
         self.state = state
         self.config = config
+        self.pos_engine = pos_engine
         self.base_demand_matrix = base_demand_matrix
 
         # Extract manufacturing config
@@ -876,6 +878,16 @@ class MRPEngine:
         # preventing overproduction during troughs that causes SLOB accumulation.
         seasonal_factor = self._get_seasonal_factor(current_day)
 
+        # v0.36.0 Demand Sensing: Cache future deterministic forecast for the planning horizon.
+        # This includes deterministic seasonality and upcoming promotions.
+        if self.pos_engine is not None:
+            forecast_duration = self.production_horizon_days
+            network_forecast = self.pos_engine.get_deterministic_forecast(current_day, forecast_duration)
+            # Planning daily rate = Total Forecast over horizon / Duration
+            planning_daily_rate_vec = network_forecast / forecast_duration
+        else:
+            planning_daily_rate_vec = None
+
         for product_id in self._finished_product_ids:
             p_idx = self.state.product_id_to_idx.get(product_id)
             if p_idx is None:
@@ -889,21 +901,17 @@ class MRPEngine:
             # Use sustainable demand (capacity-aware) for batch calculation
             sustainable_demand = float(self.sustainable_daily_demand[p_idx])
 
-            # v0.28.0: Apply seasonal adjustment to expected demands
-            # This makes MRP track actual seasonal demand patterns, preventing
-            # overproduction during troughs (which causes SLOB accumulation) and
-            # underproduction during peaks (which causes stockouts).
-            seasonal_expected = expected_demand * seasonal_factor
-            seasonal_sustainable = sustainable_demand * seasonal_factor
-
-            # v0.23.0 FIX: Use EXPECTED demand for DOS, not POS
-            # Problem: When stores stock out, POS drops → DOS appears high →
-            # production doesn't trigger → more stockouts. This creates a
-            # different death spiral where production tracks depressed POS.
-            #
-            # v0.28.0 UPDATE: Use SEASONAL expected demand instead of flat expected.
-            # This preserves the death-spiral protection while tracking seasonality.
-            demand_for_dos = max(seasonal_expected, seasonal_sustainable, 1.0)
+            # v0.36.0 Demand Sensing Logic
+            if planning_daily_rate_vec is not None:
+                demand_for_dos = float(planning_daily_rate_vec[p_idx])
+                # Batch quantity is the total forecasted volume for the horizon
+                batch_qty_base = float(network_forecast[p_idx])
+            else:
+                # Fallback to v0.28.0 seasonal logic
+                seasonal_expected = expected_demand * seasonal_factor
+                seasonal_sustainable = sustainable_demand * seasonal_factor
+                demand_for_dos = max(seasonal_expected, seasonal_sustainable, 1.0)
+                batch_qty_base = seasonal_sustainable * self.production_horizon_days
 
             # Calculate inventory position
             inventory_position = self._calculate_inventory_position(
@@ -911,7 +919,7 @@ class MRPEngine:
             )
 
             # Calculate DOS
-            dos_position = inventory_position / demand_for_dos
+            dos_position = inventory_position / max(demand_for_dos, 0.1)
 
             # Get ABC class and corresponding trigger threshold
             abc = int(self.abc_class[p_idx])
@@ -923,20 +931,28 @@ class MRPEngine:
                 trigger_dos = self.trigger_dos_c
 
             # ============================================================
-            # CAMPAIGN BATCHING: Only trigger when DOS < threshold
+            # CAMPAIGN BATCHING: Trigger when DOS < threshold
+            # v0.35.6 FIX: Prevent 365-day service level drift
             # ============================================================
+            # ROOT CAUSE: A-items trigger at DOS < 14, produce 7-day batch,
+            # then wait until DOS < 14 again. Over 365 days, small timing
+            # mismatches compound - demand variability causes occasional
+            # stockouts that accumulate as unfulfilled backlog.
+            #
+            # FIX: Increase A-item production buffer and lower trigger
+            # threshold to ensure more frequent, proactive production.
+            # Also protect B-items from being crowded out.
             if dos_position < trigger_dos:
-                # Calculate batch size: horizon_days worth of demand
-                # v0.28.0: Use seasonal_sustainable for seasonally-adjusted batch sizes
-                batch_qty = seasonal_sustainable * self.production_horizon_days
+                # v0.36.0: Use the forecast-based batch quantity
+                batch_qty = batch_qty_base
 
                 # v0.28.0: Apply ABC-differentiated production factors
-                # A-items: buffer 10% more to prevent stockouts
-                # C-items: reduce 40% to prevent SLOB accumulation
+                # A-items: buffer 20% more to prevent stockouts
+                # C-items: reduce to prevent SLOB accumulation
                 if abc == 0:  # A-item
-                    batch_qty *= self.a_production_buffer  # 1.1
+                    batch_qty *= self.a_production_buffer  # 1.2 from config
                 elif abc == 2:  # C-item
-                    batch_qty *= self.c_production_factor  # 0.6
+                    batch_qty *= self.c_production_factor  # 0.35 from config
 
                 # Apply SLOB throttling for overstocked items
                 if dos_position > 60.0:  # noqa: PLR2004
@@ -947,7 +963,7 @@ class MRPEngine:
 
                 # Apply ABC-based minimum to ensure A-items always get coverage
                 if abc == 0:  # A-item minimum
-                    min_batch = seasonal_sustainable * 7.0  # At least 1 week
+                    min_batch = demand_for_dos * 7.0  # At least 1 week
                     batch_qty = max(batch_qty, min_batch)
 
                 # Skip if batch too small
