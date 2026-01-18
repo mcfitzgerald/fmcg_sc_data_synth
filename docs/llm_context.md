@@ -424,7 +424,62 @@ When simulation behaves unexpectedly:
 
 ---
 
-## 20. Architecture Diagrams
+## 20. First-Principles Debugging & Tuning
+
+**STOP:** Do not guess configuration values (e.g., `num_lines`, `safety_stock`).
+**LOOK:** The simulation is a closed system governed by physics. Use Mass Balance to isolate the bottleneck.
+
+### Phase 1: The Hierarchy of Constraints (Check in Order)
+
+1.  **Global Mass Balance (Supply vs. Demand)**
+    *   *Equation:* `Total_Capacity (Cases/Day)` vs. `Total_Demand (Cases/Day)`
+    *   *Check:* Is `Demand > Capacity`?
+    *   *Fix:* Increase `num_lines` or `production_hours`. No amount of logic tuning can fix a physics deficit.
+
+2.  **Utilization Balance (Plant Load)**
+    *   *Symptom:* Global capacity looks fine, but service is low.
+    *   *Check:* Compare `batches.csv` counts by `plant_id`.
+    *   *Red Flag:* One plant has 20k batches, another has 2k.
+    *   *Fix:* Adjust `supported_categories` in `simulation_config.json` to offload work to the idle plant.
+
+3.  **Flow & Location (Trapped Inventory)**
+    *   *Symptom:* High Global Inventory (Days of Supply > 60) but Low Service Level.
+    *   *Check:* Where is the inventory? (Plant vs. RDC vs. Store).
+    *   *Diagnosis:*
+        *   Stuck at Plant? -> Logistics/Deployment failure.
+        *   Stuck at RDC? -> Allocation failure.
+        *   Stuck at Customer DC? -> Replenishment signal failure.
+        *   **Empty Stores?** -> **Distribution failure.**
+
+4.  **Starvation & Exclusion (The "Long Tail")**
+    *   *Symptom:* Service Level is 50-60%. Top items are 98%, Bottom items are 0%.
+    *   *Check:* Count unique `product_id` in `batches.csv` vs. Total SKUs.
+    *   *Red Flag:* 500 Total SKUs, but only 370 ever produced.
+    *   *Fix:* The sorting logic is starving C-items. Implement **Fairness Sorting** (Critical Ratio) or **Randomized Tie-Breaking** to force rotation.
+
+### Phase 2: The Tuning Cycle
+
+Once physics are valid (Capacity > Demand) and flow is moving:
+
+1.  **OEE Too Low (<50%)?**
+    *   *Cause:* Too many changeovers.
+    *   *Fix:* Increase `production_horizon_days` (7 -> 14) or reduce `max_skus_per_plant`.
+    *   *Trade-off:* Higher Inventory (Cash) for Higher OEE (Service).
+
+2.  **Inventory Too High (>6 Turns)?**
+    *   *Cause:* Batches are too big.
+    *   *Fix:* Reduce `production_horizon_days` (14 -> 7).
+    *   *Risk:* OEE will drop. Ensure you have spare capacity (Lines) to handle the friction.
+
+### Key Diagnostic Scripts
+
+*   `scripts/analysis/check_plant_balance.py`: Reveals idle plants.
+*   `scripts/analysis/find_missing_skus.py`: Reveals starving products.
+*   `scripts/analysis/find_trapped_inventory.py`: Reveals where stock is stuck.
+
+---
+
+## 21. Architecture Diagrams
 
 ### System Layers
 ```

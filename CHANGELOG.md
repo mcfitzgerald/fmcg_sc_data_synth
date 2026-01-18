@@ -5,6 +5,35 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.36.2] - 2026-01-18
+
+### System Stabilization & Load Balancing
+
+Resolved the critical production starvation and plant load imbalance issues, achieving **87.7% Service Level** (up from 56%).
+
+#### 1. Starvation Fix: Shuffle Tie-Breaker
+- **Problem:** "Campaign Batching" logic sorted production candidates by `(ABC, DOS)`. When capacity was tight, C-items with `DOS=0` were always at the bottom of the list and never produced.
+- **Fix:** Implemented **Critical Ratio Sorting** (`DOS/Trigger`) and added a **Random Shuffle** tie-breaker. This ensures that starving items rotate into the production schedule fairly.
+
+#### 2. Load Balancing: Ohio Plant Activation
+- **Problem:** `PLANT-OH` was idle (4% load) while `PLANT-GA` and `PLANT-CA` were capped (33% load). `PLANT-OH` was restricted to `HOME_CARE` only.
+- **Fix:** Updated `simulation_config.json` to allow `PLANT-OH` to produce `PERSONAL_WASH`. This offloaded ~15% of network volume to Ohio, balancing utilization.
+
+#### 3. Capacity Optimization
+- **Lines:** Increased to **19 Lines** (derived from 40% OEE target) to handle changeover friction.
+- **Horizon:** Set `production_horizon_days` to **14** to prioritize stability over inventory turns.
+- **Result:** System successfully meets 4M case/day demand with stable 46% OEE.
+
+---
+
+## [0.36.1] - 2026-01-18
+
+### Critical Ratio Sorting (Phase 1)
+
+Initial attempt to fix C-item starvation by replacing ABC hierarchy with Critical Ratio (`DOS/Trigger`) sorting. This improved fairness but revealed the secondary plant imbalance issue.
+
+---
+
 ## [0.36.0] - 2026-01-18
 
 ### P&G Scale Recalibration & Demand Sensing
