@@ -5,6 +5,40 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.36.3] - 2026-01-19
+
+### Capacity Planning - Physics-Based Efficiency Decomposition
+
+**Problem:** The `--derive-lines` calibration derived **11 lines** but empirically **22 lines** were needed to achieve 87% service level. The 2x gap stemmed from overly optimistic assumptions about campaign batching efficiency.
+
+**Root Cause:** The single `campaign_batch_efficiency: 0.66` factor assumed 66% of theoretical capacity is utilized. In reality, DOS cycling idle time and demand variability reduce actual utilization to ~40-45%.
+
+**Solution:** Replaced single efficiency factor with physics-based decomposition:
+
+1. **DOS Cycling Factor (~50%)** - Lines sit idle when DOS > trigger. The production cycle is:
+   - Produce when DOS < trigger (e.g., 31 days)
+   - After producing 14-day horizon, DOS jumps to ~45
+   - Wait ~31 days for DOS to drop below trigger again
+   - Formula: `dos_coverage = production_horizon / (production_horizon + weighted_avg_trigger) × stagger_benefit`
+
+2. **Variability Buffer (~1.25x)** - Point estimate of demand doesn't account for ±2σ swings:
+   - Formula: `buffer = 1 / (1 - safety_z × combined_cv)`
+   - With seasonality 12% + noise 10%, CV≈0.16, z=1.28: buffer = 1.25
+
+**Combined Effect:** Old: 66% efficiency → 11 lines. New: 45% efficiency × 1.25x buffer → ~20-24 lines.
+
+**Files Modified:**
+- `scripts/calibrate_config.py`:
+  - Added `calculate_campaign_efficiency()` - DOS cycling efficiency calculation
+  - Added `calculate_variability_buffer()` - demand variability reserve capacity
+  - Updated `derive_num_lines_from_oee()` to use physics-based decomposition
+  - Added efficiency decomposition to output report
+- `src/prism_sim/config/simulation_config.json`:
+  - Added `variability_safety_z: 1.28` parameter
+  - Removed static `campaign_batch_efficiency` (now calculated dynamically)
+
+---
+
 ## [0.36.2] - 2026-01-18
 
 ### System Stabilization & Load Balancing

@@ -432,6 +432,80 @@ def calculate_plant_capacity(
     }
 
 
+def calculate_campaign_efficiency(
+    production_horizon_days: int,
+    trigger_dos_a: int,
+    trigger_dos_b: int,
+    trigger_dos_c: int,
+    abc_mix: dict[str, float] | None = None,
+) -> tuple[float, float]:
+    """
+    v0.36.3: Calculate DOS cycling efficiency for campaign batching.
+
+    Campaign batching creates idle time because products only produce when
+    DOS < trigger. After producing production_horizon_days worth, DOS jumps
+    above trigger and the product waits until DOS drops again.
+
+    The production cycle for each product is:
+    - Produce when DOS < trigger (e.g., 31 days)
+    - After producing 14-day horizon, DOS jumps to ~45
+    - Wait ~31 days for DOS to drop below trigger again
+
+    Returns:
+        (dos_coverage_factor, effective_efficiency)
+    """
+    if abc_mix is None:
+        abc_mix = {"A": 0.80, "B": 0.15, "C": 0.05}
+
+    # Weighted average trigger based on ABC mix
+    avg_trigger = (
+        trigger_dos_a * abc_mix["A"]
+        + trigger_dos_b * abc_mix["B"]
+        + trigger_dos_c * abc_mix["C"]
+    )
+
+    # Theoretical: fraction of cycle spent producing
+    # cycle_length = production_horizon + avg_trigger (time until DOS drops again)
+    theoretical = production_horizon_days / (production_horizon_days + avg_trigger)
+
+    # Empirical correction: staggered product cycles + scheduling friction
+    # Calibrated from empirical data: theoretical ~0.32, actual ~0.45-0.50
+    # The network-wide effect is better than per-product due to staggering
+    stagger_benefit = 1.5
+
+    dos_coverage = min(theoretical * stagger_benefit, 0.65)
+
+    return dos_coverage, dos_coverage
+
+
+def calculate_variability_buffer(
+    seasonality_amplitude: float,
+    noise_cv: float,
+    safety_z: float = 1.28,
+) -> float:
+    """
+    v0.36.3: Calculate capacity buffer for demand variability.
+
+    Point estimate of demand doesn't account for ±2σ swings. Need reserve
+    capacity to handle peaks without stockouts.
+
+    Args:
+        seasonality_amplitude: e.g., 0.12 for ±12%
+        noise_cv: coefficient of variation for random demand
+        safety_z: z-score for capacity planning (1.28 = 90%)
+
+    Returns:
+        Multiplier for required capacity (e.g., 1.25 = need 25% more)
+    """
+    combined_cv = (seasonality_amplitude**2 + noise_cv**2) ** 0.5
+
+    # Ensure no divide-by-zero and cap at 2x
+    if safety_z * combined_cv >= 0.95:
+        return 2.0
+
+    return 1.0 / (1.0 - safety_z * combined_cv)
+
+
 def derive_num_lines_from_oee(
     target_oee: float,
     total_daily_demand: float,
@@ -555,11 +629,35 @@ def derive_num_lines_from_oee(
     capacity_constrained_production = min(total_daily_demand, current_capacity)
     capacity_constrained = total_daily_demand > current_capacity
 
-    # v0.35.4: Apply campaign batch efficiency factor
-    # Campaign batching means not all products produce every day (DOS > trigger).
-    # Actual production is typically 57-64% of capacity due to DOS cycling.
-    campaign_batch_efficiency = cap_planning.get("campaign_batch_efficiency", 0.60)
-    effective_production = capacity_constrained_production * campaign_batch_efficiency
+    # v0.36.3: Physics-based campaign efficiency decomposition
+    # Campaign batching creates idle time because DOS > trigger between production cycles.
+    campaign_enabled = campaign_config.get("enabled", True)
+    if campaign_enabled:
+        dos_coverage, campaign_efficiency = calculate_campaign_efficiency(
+            production_horizon_days=production_horizon_days,
+            trigger_dos_a=campaign_config.get("trigger_dos_a", 31),
+            trigger_dos_b=campaign_config.get("trigger_dos_b", 27),
+            trigger_dos_c=campaign_config.get("trigger_dos_c", 22),
+        )
+    else:
+        dos_coverage = 0.85
+        campaign_efficiency = 0.85
+
+    # v0.36.3: Demand variability buffer
+    # Point estimate of demand doesn't account for ±2σ swings. Need reserve capacity.
+    demand_config = sim_config["simulation_parameters"].get("demand", {})
+    season_config = demand_config.get("seasonality", {})
+    variability_buffer = calculate_variability_buffer(
+        seasonality_amplitude=season_config.get("amplitude", 0.12),
+        noise_cv=0.10,  # Typical demand noise CV
+        safety_z=cap_planning.get("variability_safety_z", 1.28),
+    )
+
+    # v0.36.3: Apply campaign efficiency
+    # Efficiency represents fraction of capacity actually used due to DOS cycling.
+    # Lower efficiency with multiplication gives fewer effective production hours,
+    # but the variability buffer compensates by requiring more total lines.
+    effective_production = capacity_constrained_production * campaign_efficiency
 
     # Calculate batches per day (products cycle every production_horizon_days)
     batches_per_day = num_finished_products / production_horizon_days
@@ -591,6 +689,12 @@ def derive_num_lines_from_oee(
     # num_lines = scheduled_hours / hours_per_day
     scheduled_hours = operating_hours / target_availability
     total_lines_needed = math.ceil(scheduled_hours / hours_per_day)
+
+    # v0.36.3: Apply efficiency compensation and variability buffer
+    # Lower campaign efficiency means we need MORE capacity to meet demand.
+    # The multiplication formula gives base_lines = f(demand * efficiency).
+    # To get capacity needed for full demand: base_lines / efficiency * buffer
+    total_lines_needed = math.ceil(total_lines_needed / campaign_efficiency * variability_buffer)
 
     # v0.35.3: Get plant capabilities for accurate allocation
     plant_capabilities = {
@@ -647,13 +751,16 @@ def derive_num_lines_from_oee(
         # Capacity constraint info
         "total_daily_demand": total_daily_demand,
         "capacity_constrained_production": capacity_constrained_production,
-        "campaign_batch_efficiency": campaign_batch_efficiency,
+        "campaign_batch_efficiency": campaign_efficiency,  # v0.36.3: Now calculated dynamically
         "effective_production": effective_production,
         "capacity_constrained": capacity_constrained,
         "current_capacity": current_capacity,
         # Realistic OEE for campaign batching
         "realistic_oee": realistic_oee,
         "oee_limited_by_batching": oee_limited_by_batching,
+        # v0.36.3: Decomposed efficiency factors
+        "dos_coverage_factor": dos_coverage,
+        "variability_buffer": variability_buffer,
     }
 
 
@@ -1594,6 +1701,11 @@ def print_report(
             diff = lines - current
             diff_str = f"({'+' if diff >= 0 else ''}{diff})" if diff != 0 else "(no change)"
             print(f"  {pid}: {lines} lines {diff_str}")
+
+        # v0.36.3: Decomposed efficiency factors
+        print(f"\nEfficiency Decomposition (v0.36.3):")
+        print(f"  DOS coverage factor:    {cap_plan.get('dos_coverage_factor', 'N/A'):.1%}")
+        print(f"  Variability buffer:     {cap_plan.get('variability_buffer', 1.0):.2f}x")
 
     print("\n--- RECOMMENDATIONS (Apply with --apply) ---")
     rec = recommendations["recommendations"]

@@ -120,14 +120,13 @@
         }
       },
       "capacity_planning": {
-        "_comment": "Parameters for --derive-lines capacity planning (v0.35.4)",
-        "changeover_overhead_factor": 1.1,
+        "_comment": "Parameters for --derive-lines capacity planning (v0.36.3)",
         "min_lines_per_plant": 2,
         "max_oee_target": 0.85,
         "demand_realism_factor": 0.41,
         "_demand_factor_note": "Accounts for segment weights (0.5 default), Zipf distribution, and format scaling. Measured: actual/calibrated = 22M/54M = 0.41",
-        "campaign_batch_efficiency": 0.66,
-        "_batch_efficiency_note": "Campaign batching means not all products produce every day (DOS > trigger). Factor = actual_production / capacity. Measured: 7.5M / 11.4M = 0.66"
+        "variability_safety_z": 1.28,
+        "_variability_note": "z=1.28 (90%), z=1.65 (95%), z=2.0 (97.5%). Used for capacity buffer against demand peaks."
       }
     },
     "scoring": {
@@ -277,7 +276,7 @@
       "initial_fg_level": 5.0,
       "initialization": {
         "store_days_supply": 14.0,
-        "rdc_days_supply": 21.3,
+        "rdc_days_supply": 22.9,
         "rdc_store_multiplier": 150.8,
         "customer_dc_days_supply": 14.0,
         "plant_ingredient_buffer": 5000000.0,
@@ -394,7 +393,6 @@
             "PERSONAL_WASH"
           ]
         },
-
         "PLANT-TX": {
           "description": "Modern high-speed facility (realistic OEE)",
           "efficiency_factor": 0.88,
@@ -456,9 +454,9 @@
       "slob_max_pct": 0.3,
       "slob_days_threshold": 60.0,
       "slob_abc_thresholds": {
-        "A": 64.0,
-        "B": 91.0,
-        "C": 137.0
+        "A": 66.0,
+        "B": 94.0,
+        "C": 140.0
       },
       "slob_margin": 1.5,
       "slob_abc_velocity_factors": {

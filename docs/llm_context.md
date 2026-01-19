@@ -249,15 +249,28 @@ Products are dynamically classified every 7 days based on cumulative sales volum
 Instead of producing all SKUs daily, use campaign-style production:
 
 1. **Trigger-Based Production:** Only produce when DOS < threshold
-   - Configurable per ABC class (e.g., A=14, B=10, C=5 days)
+   - Configurable per ABC class (e.g., A=31, B=27, C=22 days)
 
 2. **Batch Sizing:** Produce `production_horizon_days` worth per SKU
 
 3. **SKU Limit:** Max SKUs/plant/day to cap changeover overhead
 
-4. **Priority Sorting:** Lowest DOS first (most critical items)
+4. **Priority Sorting:** Critical Ratio (`DOS/Trigger`) with shuffle tie-breaker
 
 **Configuration:** `simulation_config.json` → `manufacturing.mrp_thresholds.campaign_batching`
+
+### Capacity Planning (v0.36.3)
+
+The `--derive-lines` calibration uses physics-based efficiency decomposition:
+
+1. **DOS Cycling Factor (~50%):** Lines sit idle when DOS > trigger. Products cycle through production when DOS drops below trigger, then wait until DOS falls again.
+   - Formula: `dos_coverage = horizon / (horizon + avg_trigger) × stagger_benefit`
+
+2. **Variability Buffer (~1.25x):** Reserve capacity for demand peaks (seasonality + noise).
+   - Formula: `buffer = 1 / (1 - safety_z × combined_cv)`
+
+**Parameters:** `simulation_config.json` → `calibration.capacity_planning`:
+- `variability_safety_z`: Z-score for capacity buffer (1.28 = 90%)
 
 ---
 
