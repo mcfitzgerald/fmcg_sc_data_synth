@@ -17,6 +17,7 @@ from prism_sim.network.core import (
     OrderLine,
     ProductionOrder,
     ProductionOrderStatus,
+    Return,
     Shipment,
     ShipmentStatus,
 )
@@ -723,15 +724,37 @@ class Orchestrator:
             # Seed raw materials at Plants
             # v0.20.0: Sized for safety supply to ensure production stability.
             # v0.36.0: Moved to config to allow scaling.
+            # v0.37.0: Demand-driven initialization (Velocity * Days) to fix flat buffer issues
             elif node.type == NodeType.PLANT:
                 node_idx = self.state.node_id_to_idx.get(node_id)
                 if node_idx is not None:
-                    # Get default from config or fallback to a sensible ratio of daily demand
-                    default_qty = init_config.get("plant_ingredient_buffer", 5000000.0)
+                    # Calculate global demand per product
+                    global_product_demand = np.sum(base_demand_matrix, axis=0)
+
+                    # Calculate derived ingredient demand: Product Demand @ Recipe Matrix
+                    # This tells us how much of each ingredient is needed globally per day
+                    ingredient_demand = global_product_demand @ self.state.recipe_matrix
+
+                    # Target days supply for ingredients (default 14 from policy)
+                    target_days = 14.0
+                    ing_policy = mfg_config.get("inventory_policies", {}).get("INGREDIENT")
+                    if ing_policy:
+                        target_days = ing_policy.get("target_days_supply", 14.0)
+
+                    # Calculate target levels
+                    target_levels = ingredient_demand * target_days
+
+                    # Safety floor from config (plant_ingredient_buffer)
+                    min_floor = init_config.get("plant_ingredient_buffer", 200000.0)
+
+                    # Apply to state
                     for product in self.world.products.values():
                         if product.category == ProductCategory.INGREDIENT:
-                            qty = initial_plant_inv.get(product.id, default_qty)
-                            self.state.update_inventory(node_id, product.id, qty)
+                            p_idx = self.state.product_id_to_idx.get(product.id)
+                            if p_idx is not None:
+                                # Start with Target + Floor to be safe against lead time variance
+                                qty = max(target_levels[p_idx], min_floor)
+                                self.state.update_inventory(node_id, product.id, qty)
 
     def _build_finished_goods_mask(self) -> np.ndarray:
         """
@@ -880,6 +903,9 @@ class Orchestrator:
         self._process_arrivals(arrived)
         self.auditor.record_receipts(arrived)
 
+        # 7a. Generate Returns (Phase 3d)
+        new_returns = self.logistics.generate_returns_from_arrivals(arrived, day)
+
         # 8. Manufacturing: MRP (Milestone 5.1)
         # Filter for RDC -> Store shipments (Pull signal for MRP)
         rdc_store_shipments = [
@@ -980,7 +1006,13 @@ class Orchestrator:
                 shrinkage_qty=shrinkage_qty,
             )
             self._log_daily_data(
-                raw_orders, new_shipments, plant_shipments, new_batches, day
+                raw_orders,
+                new_shipments,
+                plant_shipments,
+                new_batches,
+                new_production_orders,
+                new_returns,
+                day,
             )
 
         # 13. Logging / Metrics (Simple Print)
@@ -1210,12 +1242,24 @@ class Orchestrator:
         new_shipments: list[Shipment],
         plant_shipments: list[Shipment],
         new_batches: list[Batch],
+        new_production_orders: list[ProductionOrder],
+        new_returns: list[Return],
         day: int,
     ) -> None:
         """Log data to the simulation writer."""
         self.writer.log_orders(raw_orders, day)
+        self.writer.log_production_orders(new_production_orders, day)
         self.writer.log_shipments(new_shipments + plant_shipments, day)
         self.writer.log_batches(new_batches, day)
+        self.writer.log_returns(new_returns, day)
+
+        # v0.38.0: Log 14-day deterministic forecast (S&OP Export)
+        # This represents the "Consensus Forecast" for the planning horizon
+        forecast_vec = self.pos_engine.get_deterministic_forecast(
+            start_day=day + 1, duration=14, aggregated=True
+        )
+        self.writer.log_forecasts(forecast_vec, self.state, day)
+
         if day % 7 == 0:
             self.writer.log_inventory(self.state, self.world, day)
 

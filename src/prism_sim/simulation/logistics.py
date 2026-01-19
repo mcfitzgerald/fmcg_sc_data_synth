@@ -8,6 +8,9 @@ from prism_sim.network.core import (
     NodeType,
     Order,
     OrderLine,
+    Return,
+    ReturnLine,
+    ReturnStatus,
     Shipment,
     ShipmentStatus,
 )
@@ -364,3 +367,53 @@ class LogisticsEngine:
             for line in order.lines:
                 staged[line.product_id] = staged.get(line.product_id, 0.0) + line.quantity
         return staged
+
+    def generate_returns_from_arrivals(self, arrived_shipments: list[Shipment], day: int) -> list[Return]:
+        """
+        Generate returns (RMAs) from recently arrived shipments.
+        Simulates 'Damage on Arrival' or immediate rejection.
+        """
+        returns: list[Return] = []
+
+        # Configurable return rate (e.g. 1% of shipments have returns)
+        # return_prob = 0.01
+        # For simulation visibility, let's make it 5% for now
+        return_prob = 0.05
+
+        for shipment in arrived_shipments:
+            # Only consider deliveries to Stores (Customer Returns)
+            target_node = self.world.nodes.get(shipment.target_id)
+            if not target_node or target_node.type != NodeType.STORE:
+                continue
+
+            if np.random.random() < return_prob:
+                # Generate a return
+                # Pick 1 random line to return
+                if not shipment.lines: continue
+
+                line = shipment.lines[np.random.randint(0, len(shipment.lines))]
+
+                # Return 10-50% of the quantity (damaged/expired)
+                return_qty = line.quantity * np.random.uniform(0.1, 0.5)
+                if return_qty < 1: return_qty = 1.0
+
+                # Disposition logic: 80% Restock (good), 20% Scrap (damaged)
+                disposition = "restock" if np.random.random() < 0.8 else "scrap"
+
+                rma_id = f"RMA-{day:03d}-{shipment.id[-6:]}"
+
+                ret = Return(
+                    id=rma_id,
+                    rma_number=rma_id,
+                    order_id=None, # Could link if we tracked it
+                    source_id=shipment.target_id, # Store returning
+                    target_id=shipment.source_id, # DC receiving
+                    creation_day=day,
+                    lines=[ReturnLine(line.product_id, return_qty, disposition)],
+                    status=ReturnStatus.RECEIVED, # Auto-receive for simplicity
+                    received_day=day,
+                    processed_day=day
+                )
+                returns.append(ret)
+
+        return returns

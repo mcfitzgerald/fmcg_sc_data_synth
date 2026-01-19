@@ -207,3 +207,41 @@ class Batch:
     # Quality
     yield_percent: float = 100.0
     notes: str = ""
+
+
+# --- Returns Primitives ---
+
+
+class ReturnStatus(enum.Enum):
+    REQUESTED = "requested"
+    APPROVED = "approved"
+    RECEIVED = "received"
+    PROCESSED = "processed"
+    REJECTED = "rejected"
+
+
+@dataclass
+class ReturnLine:
+    product_id: str
+    quantity_cases: float
+    disposition: str = "restock"  # restock, scrap, donate
+
+
+@dataclass
+class Return:
+    """
+    A return request (RMA) from a store/customer back to a DC.
+    """
+
+    id: str
+    rma_number: str
+    order_id: str | None
+    source_id: str  # Store (Returning)
+    target_id: str  # DC (Receiving)
+    creation_day: int
+    lines: list[ReturnLine] = field(default_factory=list)
+    status: ReturnStatus = ReturnStatus.REQUESTED
+
+    received_day: int | None = None
+    processed_day: int | None = None
+    credit_amount: float = 0.0

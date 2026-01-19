@@ -710,10 +710,10 @@ class MinMaxReplenisher:
                     order_day = hash(n_id) % order_cycle_days
                     if day % order_cycle_days != order_day:
                         continue
-                
+
                 target_indices.append(idx)
                 target_ids.append(n_id)
-        
+
         return target_indices, target_ids
 
     def _update_demand_smoothing(self, demand_signal: np.ndarray) -> None:
@@ -728,7 +728,7 @@ class MinMaxReplenisher:
     def _calculate_average_demand(self, target_indices: list[int]) -> np.ndarray:
         inflow_demand = self.get_inflow_demand()
         pos_demand = self.smoothed_demand
-        
+
         # v0.36.0 Proactive Demand Sensing
         if hasattr(self, "pos_engine") and self.pos_engine is not None:
             # Look ahead by 14 days to capture upcoming structure
@@ -751,7 +751,7 @@ class MinMaxReplenisher:
                 base_signal = np.maximum(inflow_signal, expected)
             else:
                 base_signal = np.maximum(inflow_demand[t_idx, :], pos_demand[t_idx, :]) # type: ignore
-            
+
             # Blending logic: 50% Reactive (History) + 50% Proactive (Structure)
             if proactive_rate_matrix is not None:
                 proactive_signal = proactive_rate_matrix[t_idx, :]
@@ -765,7 +765,7 @@ class MinMaxReplenisher:
         self, target_indices: list[int], avg_demand: np.ndarray
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         target_idx_arr = np.array(target_indices)
-        
+
         on_hand_inv = self.state.inventory[target_idx_arr, :]
         in_transit_matrix = self.state.get_in_transit_by_target()
         in_transit_inv = in_transit_matrix[target_idx_arr, :]
@@ -821,9 +821,9 @@ class MinMaxReplenisher:
             safety_stock = self.z_scores_vec * combined_sigma
             min_safety_stock = avg_demand * min_ss_days
             safety_stock = np.maximum(safety_stock, min_safety_stock)
-            
+
             reorder_point = cycle_stock + safety_stock
-            
+
             target_stock_days = self.target_days_vec[target_idx_arr]
             target_stock = np.maximum(
                 avg_demand * target_stock_days,
@@ -837,7 +837,7 @@ class MinMaxReplenisher:
 
         needs_order = inventory_position < reorder_point
         raw_qty = target_stock - inventory_position
-        
+
         return needs_order, raw_qty, on_hand_inv, inventory_position
 
     def _apply_echelon_logic(
@@ -882,7 +882,7 @@ class MinMaxReplenisher:
             .get("replenishment", {})
         )
         echelon_safety_multiplier = float(params.get("echelon_safety_multiplier", 1.3))
-        
+
         echelon_target = current_e_demand * dc_target_days * echelon_safety_multiplier
         echelon_rop = current_e_demand * dc_rop_days * echelon_safety_multiplier
 
@@ -965,7 +965,7 @@ class MinMaxReplenisher:
                 d_supply = on_hand_inv[r, c] / avg_demand[r, c]
             else:
                 d_supply = float("inf")
-                
+
             orders_by_target[t_idx]["days_supply_min"] = min(
                 orders_by_target[t_idx]["days_supply_min"], d_supply
             )
@@ -1024,7 +1024,7 @@ class MinMaxReplenisher:
                 promo_id=data["promo_id"],
                 priority=priority
             ))
-        
+
         return orders
 
     # =========================================================================

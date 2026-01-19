@@ -279,7 +279,7 @@
         "rdc_days_supply": 22.9,
         "rdc_store_multiplier": 150.8,
         "customer_dc_days_supply": 14.0,
-        "plant_ingredient_buffer": 5000000.0,
+        "plant_ingredient_buffer": 200000.0,
         "abc_velocity_factors": {
           "A": 1.34,
           "B": 1.15,

@@ -45,11 +45,13 @@ The simulation enforces these constraints - violations indicate bugs:
 | **POS demand generation** | `simulation/demand.py` | `POSEngine.generate_daily_demand()` |
 | **Replenishment orders** | `agents/replenishment.py` | `MinMaxReplenisher` |
 | **Order allocation** | `agents/allocation.py` | `AllocationAgent.allocate()` |
+| **Returns (Reverse Logistics)** | `simulation/logistics.py` | `LogisticsEngine.generate_returns_from_arrivals()` |
 
-### Manufacturing
+### Manufacturing & Procurement
 | Concept | File | Key Classes/Functions |
 |---------|------|----------------------|
 | **Production planning** | `simulation/mrp.py` | `MRPEngine.generate_production_orders()` |
+| **Ingredient procurement** | `simulation/mrp.py` | `MRPEngine.generate_purchase_orders()` |
 | **Recipe matrix (BOM)** | `network/recipe_matrix.py` | `RecipeMatrixBuilder` |
 | **Production execution** | `simulation/transform.py` | `TransformEngine.execute_production()` |
 
@@ -57,6 +59,7 @@ The simulation enforces these constraints - violations indicate bugs:
 | Concept | File | Key Classes/Functions |
 |---------|------|----------------------|
 | **Shipment creation** | `simulation/logistics.py` | `LogisticsEngine.create_shipments()` |
+| **Returns processing** | `simulation/logistics.py` | `LogisticsEngine.process_returns()` |
 | **Physics validation** | `simulation/monitor.py` | `PhysicsAuditor`, `RealismMonitor` |
 | **Behavioral quirks** | `simulation/quirks.py` | `QuirkManager` |
 | **Risk events** | `simulation/risk_events.py` | `RiskEventManager` |
@@ -65,6 +68,8 @@ The simulation enforces these constraints - violations indicate bugs:
 | Concept | File | Key Classes |
 |---------|------|-------------|
 | **Network primitives** | `network/core.py` | `Node`, `Link`, `Order`, `Shipment`, `Batch` |
+| **Work Orders** | `network/core.py` | `ProductionOrder` (Status: Planned/Released/Complete) |
+| **Returns** | `network/core.py` | `Return`, `ReturnLine` (Status: Requested/Processed) |
 | **Channel enums** | `network/core.py` | `CustomerChannel`, `StoreFormat`, `OrderType` |
 | **Product definitions** | `product/core.py` | `Product`, `Recipe`, `ProductCategory` |
 | **Packaging enums** | `product/core.py` | `PackagingType`, `ContainerType`, `ValueSegment` |
@@ -82,6 +87,7 @@ The simulation enforces these constraints - violations indicate bugs:
 | `scripts/generate_static_world.py` | Generate static world data (products, recipes, nodes, links) |
 | `scripts/calibrate_config.py` | Derive optimal simulation parameters from world definition |
 | `scripts/generate_warm_start.py` | Generate warm-start snapshot manually |
+| `scripts/export_erp_format.py` | **ETL:** Transform sim CSVs to normalized ERP tables (SQL-ready) |
 
 ---
 
@@ -181,8 +187,9 @@ Every `tick()` (1 day) in `Orchestrator._run_day()`:
 5. REPLENISHMENT → MinMaxReplenisher creates orders (Physics-based SS + ABC)
 6. ALLOCATION    → AllocationAgent allocates inventory to orders (Fair Share)
 7. LOGISTICS     → LogisticsEngine creates shipments (FTL rules, Emissions)
+7a. RETURNS      → LogisticsEngine generates returns from arrivals (Damage/Recall)
 8. MRP           → MRPEngine plans production (uses demand signal)
-9. PRODUCTION    → TransformEngine executes manufacturing
+9. PRODUCTION    → TransformEngine executes manufacturing (Work Orders → Batches)
 10. POST-QUIRKS  → Apply logistics delays/congestion (QuirkManager)
 11. MONITORING   → PhysicsAuditor validates mass balance, records KPIs
 ```

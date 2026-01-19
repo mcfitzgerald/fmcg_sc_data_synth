@@ -5,6 +5,50 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.38.0] - 2026-01-19
+
+### ERP Data Model & Returns Logistics
+
+Implemented the final "Tier 3" capabilities to bridge the gap between simulation physics and enterprise ERP data models.
+
+#### 1. Returns Simulation (Reverse Logistics)
+- **Physics:** `LogisticsEngine` now generates returns (RMAs) based on a 5% random probability from arriving shipments, simulating damage or rejection.
+- **Data Model:** Added `Return` and `ReturnLine` primitives to `core.py`.
+- **Export:** Returns are logged to `returns.csv` and transformed into `returns` and `return_lines` tables.
+
+#### 2. S&OP Export (Consensus Forecast)
+- **Orchestrator:** Now generates a daily 14-day deterministic forecast using `POSEngine`'s demand sensing logic.
+- **Export:** Logged to `forecasts.csv` and transformed into `demand_forecasts` table (Versioned by generation date).
+- **Goal:** Allows calculation of "Forecast Accuracy" and "Bias" metrics in external BI tools.
+
+#### 3. ERP Data Transformation (ETL)
+- **New Script:** `scripts/export_erp_format.py` transforms flat simulation CSVs into a normalized 3rd Normal Form (3NF) PostgreSQL-ready schema.
+- **Features:**
+  - Splitting Orders/Shipments into Header/Line tables
+  - Integer ID mapping for all entities
+  - Generating static reference data (Carriers, Certifications, Costs)
+  - Extracting "hidden" config data (Production Lines, Channels, Promotions)
+
+---
+
+## [0.37.0] - 2026-01-19
+
+### Procurement & Work Order Lifecycle
+
+Upgraded the manufacturing and sourcing engines to support full "Plan-to-Produce" and "Source-to-Pay" data lifecycles.
+
+#### 1. Realistic Procurement
+- **Removed Cheat:** Reduced `plant_ingredient_buffer` from 5M (infinite) to 200k (tight), forcing the system to rely on actual replenishment.
+- **Logic:** `Orchestrator` now initializes ingredient inventory based on demand velocity, ensuring a stable start without infinite safety stock.
+- **Result:** `MRPEngine` successfully generates `PO-ING-` orders, which flow through allocation, logistics, and receipt logic.
+
+#### 2. Work Order Tracking
+- **Lifecycle:** `ProductionOrder` objects are now logged at creation (PLANNED status) and linked to execution `Batch` objects.
+- **Data Model:** Export script generates `work_orders` table linking `wo_id` to `batches`.
+- **Analytics:** Enables "Schedule Adherence" (Planned vs Actual Date) and "Yield" (Planned vs Actual Qty) analysis.
+
+---
+
 ## [0.36.3] - 2026-01-19
 
 ### Capacity Planning - Physics-Based Efficiency Decomposition

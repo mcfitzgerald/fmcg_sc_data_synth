@@ -451,7 +451,7 @@ class POSEngine:
             total_forecast = np.zeros(self.state.n_products, dtype=np.float64)
         else:
             total_forecast = np.zeros((self.state.n_nodes, self.state.n_products), dtype=np.float64)
-        
+
         # Get demand config
         demand_config = self.config.get("simulation_parameters", {}).get("demand", {})
         season_config = demand_config.get("seasonality", {})
@@ -461,19 +461,19 @@ class POSEngine:
 
         for day in range(start_day, start_day + duration):
             week = (day // 7) + 1
-            
+
             # 1. Seasonality
             seasonality = 1.0 + amplitude * np.sin(2 * np.pi * (day - phase) / cycle)
-            
+
             # 2. Promo Multipliers
             promo_mult_matrix = self.calendar.get_weekly_multipliers(week, self.state)
-            
+
             # 3. Daily Forecast
             daily_forecast_matrix = self.base_demand * seasonality * promo_mult_matrix
-            
+
             if aggregated:
                 total_forecast += np.sum(daily_forecast_matrix, axis=0)
             else:
                 total_forecast += daily_forecast_matrix
-            
+
         return total_forecast

@@ -12,7 +12,9 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from prism_sim.network.core import Batch, Order, Shipment
+import numpy as np
+
+from prism_sim.network.core import Batch, Order, ProductionOrder, Return, Shipment
 
 # Parquet support is optional - only import if available
 try:
@@ -182,6 +184,7 @@ SHIPMENT_FIELDS = [
 
 BATCH_FIELDS = [
     "batch_id",
+    "production_order_id",
     "plant_id",
     "product_id",
     "day_produced",
@@ -197,6 +200,33 @@ INVENTORY_FIELDS = [
     "product_id",
     "perceived_inventory",
     "actual_inventory",
+]
+
+PRODUCTION_ORDER_FIELDS = [
+    "po_id",
+    "plant_id",
+    "product_id",
+    "quantity",
+    "creation_day",
+    "due_day",
+    "status",
+]
+
+FORECAST_FIELDS = [
+    "day",
+    "product_id",
+    "forecast_quantity",
+]
+
+RETURNS_FIELDS = [
+    "rma_id",
+    "day",
+    "source_id",
+    "target_id",
+    "product_id",
+    "quantity",
+    "disposition",
+    "status",
 ]
 
 
@@ -217,6 +247,24 @@ def _get_parquet_schema(table_name: str) -> "pa.Schema":
                 ("status", pa.string()),
             ]
         ),
+        "forecasts": pa.schema(
+            [
+                ("day", pa.int32()),
+                ("product_id", pa.string()),
+                ("forecast_quantity", pa.float64()),
+            ]
+        ),
+        "production_orders": pa.schema(
+            [
+                ("po_id", pa.string()),
+                ("plant_id", pa.string()),
+                ("product_id", pa.string()),
+                ("quantity", pa.float64()),
+                ("creation_day", pa.int32()),
+                ("due_day", pa.int32()),
+                ("status", pa.string()),
+            ]
+        ),
         "shipments": pa.schema(
             [
                 ("shipment_id", pa.string()),
@@ -234,6 +282,7 @@ def _get_parquet_schema(table_name: str) -> "pa.Schema":
         "batches": pa.schema(
             [
                 ("batch_id", pa.string()),
+                ("production_order_id", pa.string()),
                 ("plant_id", pa.string()),
                 ("product_id", pa.string()),
                 ("day_produced", pa.int32()),
@@ -250,6 +299,18 @@ def _get_parquet_schema(table_name: str) -> "pa.Schema":
                 ("product_id", pa.string()),
                 ("perceived_inventory", pa.float64()),
                 ("actual_inventory", pa.float64()),
+            ]
+        ),
+        "returns": pa.schema(
+            [
+                ("rma_id", pa.string()),
+                ("day", pa.int32()),
+                ("source_id", pa.string()),
+                ("target_id", pa.string()),
+                ("product_id", pa.string()),
+                ("quantity", pa.float64()),
+                ("disposition", pa.string()),
+                ("status", pa.string()),
             ]
         ),
     }
@@ -311,6 +372,9 @@ class SimulationWriter:
 
         # Initialize writers or buffers
         self._orders_writer: StreamingCSVWriter | StreamingParquetWriter | None = None
+        self._production_orders_writer: StreamingCSVWriter | StreamingParquetWriter | None = (
+            None
+        )
         self._shipments_writer: StreamingCSVWriter | StreamingParquetWriter | None = (
             None
         )
@@ -318,11 +382,20 @@ class SimulationWriter:
         self._inventory_writer: StreamingCSVWriter | StreamingParquetWriter | None = (
             None
         )
+        self._forecasts_writer: StreamingCSVWriter | StreamingParquetWriter | None = (
+            None
+        )
+        self._returns_writer: StreamingCSVWriter | StreamingParquetWriter | None = (
+            None
+        )
 
         # Buffered mode storage (legacy compatibility)
         self.orders: list[dict[str, Any]] = []
+        self.production_orders: list[dict[str, Any]] = []
         self.shipments: list[dict[str, Any]] = []
         self.batches: list[dict[str, Any]] = []
+        self.forecasts: list[dict[str, Any]] = []
+        self.returns: list[dict[str, Any]] = []
         self.inventory_history: list[dict[str, Any]] = []
         self.metrics_history: list[dict[str, Any]] = []
 
@@ -340,6 +413,11 @@ class SimulationWriter:
                 _get_parquet_schema("orders"),
                 self.parquet_batch_size,
             )
+            self._production_orders_writer = StreamingParquetWriter(
+                self.output_dir / f"production_orders{ext}",
+                _get_parquet_schema("production_orders"),
+                self.parquet_batch_size,
+            )
             self._shipments_writer = StreamingParquetWriter(
                 self.output_dir / f"shipments{ext}",
                 _get_parquet_schema("shipments"),
@@ -350,15 +428,29 @@ class SimulationWriter:
                 _get_parquet_schema("batches"),
                 self.parquet_batch_size,
             )
+            self._forecasts_writer = StreamingParquetWriter(
+                self.output_dir / f"forecasts{ext}",
+                _get_parquet_schema("forecasts"),
+                self.parquet_batch_size,
+            )
             self._inventory_writer = StreamingParquetWriter(
                 self.output_dir / f"inventory{ext}",
                 _get_parquet_schema("inventory"),
+                self.parquet_batch_size,
+            )
+            self._returns_writer = StreamingParquetWriter(
+                self.output_dir / f"returns{ext}",
+                _get_parquet_schema("returns"),
                 self.parquet_batch_size,
             )
         else:
             self._orders_writer = StreamingCSVWriter(
                 self.output_dir / f"orders{ext}",
                 ORDER_FIELDS,
+            )
+            self._production_orders_writer = StreamingCSVWriter(
+                self.output_dir / f"production_orders{ext}",
+                PRODUCTION_ORDER_FIELDS,
             )
             self._shipments_writer = StreamingCSVWriter(
                 self.output_dir / f"shipments{ext}",
@@ -368,9 +460,17 @@ class SimulationWriter:
                 self.output_dir / f"batches{ext}",
                 BATCH_FIELDS,
             )
+            self._forecasts_writer = StreamingCSVWriter(
+                self.output_dir / f"forecasts{ext}",
+                FORECAST_FIELDS,
+            )
             self._inventory_writer = StreamingCSVWriter(
                 self.output_dir / f"inventory{ext}",
                 INVENTORY_FIELDS,
+            )
+            self._returns_writer = StreamingCSVWriter(
+                self.output_dir / f"returns{ext}",
+                RETURNS_FIELDS,
             )
 
     def log_orders(self, orders: list[Order], day: int) -> None:
@@ -396,6 +496,29 @@ class SimulationWriter:
             self._orders_writer.write_rows(rows)
         else:
             self.orders.extend(rows)
+
+    def log_production_orders(self, orders: list[ProductionOrder], day: int) -> None:
+        """Log production order data for a given day."""
+        if not self.enable_logging:
+            return
+
+        rows = []
+        for order in orders:
+            row = {
+                "po_id": order.id,
+                "plant_id": order.plant_id,
+                "product_id": order.product_id,
+                "quantity": order.quantity_cases,
+                "creation_day": order.creation_day,
+                "due_day": order.due_day,
+                "status": order.status.value,
+            }
+            rows.append(row)
+
+        if self.streaming and self._production_orders_writer:
+            self._production_orders_writer.write_rows(rows)
+        else:
+            self.production_orders.extend(rows)
 
     def log_shipments(self, shipments: list[Shipment], day: int) -> None:
         """Log shipment data for a given day."""
@@ -433,6 +556,7 @@ class SimulationWriter:
         for b in batches:
             row = {
                 "batch_id": b.id,
+                "production_order_id": b.production_order_id,
                 "plant_id": b.plant_id,
                 "product_id": b.product_id,
                 "day_produced": day,
@@ -447,6 +571,52 @@ class SimulationWriter:
             self._batches_writer.write_rows(rows)
         else:
             self.batches.extend(rows)
+
+    def log_forecasts(self, forecast_vec: np.ndarray, state: Any, day: int) -> None:
+        """Log deterministic demand forecast for a given day."""
+        if not self.enable_logging:
+            return
+
+        rows = []
+        for p_idx, qty in enumerate(forecast_vec):
+            if qty > 0:
+                prod_id = state.product_idx_to_id[p_idx]
+                row = {
+                    "day": day,
+                    "product_id": prod_id,
+                    "forecast_quantity": float(qty),
+                }
+                rows.append(row)
+
+        if self.streaming and self._forecasts_writer:
+            self._forecasts_writer.write_rows(rows)
+        else:
+            self.forecasts.extend(rows)
+
+    def log_returns(self, returns: list[Return], day: int) -> None:
+        """Log returns (RMAs)."""
+        if not self.enable_logging:
+            return
+
+        rows = []
+        for r in returns:
+            for line in r.lines:
+                row = {
+                    "rma_id": r.id,
+                    "day": day,
+                    "source_id": r.source_id,
+                    "target_id": r.target_id,
+                    "product_id": line.product_id,
+                    "quantity": line.quantity_cases,
+                    "disposition": line.disposition,
+                    "status": r.status.value,
+                }
+                rows.append(row)
+
+        if self.streaming and self._returns_writer:
+            self._returns_writer.write_rows(rows)
+        else:
+            self.returns.extend(rows)
 
     def log_inventory(self, state: Any, world: Any, day: int) -> None:
         """Log inventory snapshot for a given day."""
@@ -483,10 +653,16 @@ class SimulationWriter:
         if self.streaming:
             if self._orders_writer:
                 self._orders_writer.flush()
+            if self._production_orders_writer:
+                self._production_orders_writer.flush()
             if self._shipments_writer:
                 self._shipments_writer.flush()
             if self._batches_writer:
                 self._batches_writer.flush()
+            if self._forecasts_writer:
+                self._forecasts_writer.flush()
+            if self._returns_writer:
+                self._returns_writer.flush()
             if self._inventory_writer:
                 self._inventory_writer.flush()
 
@@ -503,15 +679,21 @@ class SimulationWriter:
             print(
                 f"Streaming export complete: "
                 f"Orders={row_counts['orders']:,}, "
+                f"ProdOrders={row_counts['production_orders']:,}, "
                 f"Shipments={row_counts['shipments']:,}, "
                 f"Batches={row_counts['batches']:,}, "
+                f"Forecasts={row_counts['forecasts']:,}, "
+                f"Returns={row_counts['returns']:,}, "
                 f"Inventory={row_counts['inventory']:,}"
             )
         else:
             # Buffered mode: write accumulated data
             self._write_csv("orders.csv", self.orders)
+            self._write_csv("production_orders.csv", self.production_orders)
             self._write_csv("shipments.csv", self.shipments)
             self._write_csv("batches.csv", self.batches)
+            self._write_csv("forecasts.csv", self.forecasts)
+            self._write_csv("returns.csv", self.returns)
             self._write_csv("inventory.csv", self.inventory_history)
             print(f"Buffered export complete to {self.output_dir}")
 
@@ -525,10 +707,16 @@ class SimulationWriter:
         """Close all streaming writer file handles."""
         if self._orders_writer:
             self._orders_writer.close()
+        if self._production_orders_writer:
+            self._production_orders_writer.close()
         if self._shipments_writer:
             self._shipments_writer.close()
         if self._batches_writer:
             self._batches_writer.close()
+        if self._forecasts_writer:
+            self._forecasts_writer.close()
+        if self._returns_writer:
+            self._returns_writer.close()
         if self._inventory_writer:
             self._inventory_writer.close()
 
@@ -536,10 +724,13 @@ class SimulationWriter:
         """Get row counts from streaming writers."""
         return {
             "orders": self._orders_writer.row_count if self._orders_writer else 0,
+            "production_orders": self._production_orders_writer.row_count if self._production_orders_writer else 0,
             "shipments": (
                 self._shipments_writer.row_count if self._shipments_writer else 0
             ),
             "batches": self._batches_writer.row_count if self._batches_writer else 0,
+            "forecasts": self._forecasts_writer.row_count if self._forecasts_writer else 0,
+            "returns": self._returns_writer.row_count if self._returns_writer else 0,
             "inventory": (
                 self._inventory_writer.row_count if self._inventory_writer else 0
             ),
