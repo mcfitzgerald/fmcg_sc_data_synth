@@ -436,21 +436,24 @@ def process_inventory(run_dir: Path, output_dir: Path, mapper: IdMapper):
     # Optimization: Just process a small tail?
     # Better: Scan file reversely? No.
     # Let's just create a shell file for now or process first 100k rows as sample.
-
+    
     with open(output_dir / 'transactional/inventory.csv', 'w', newline='') as f:
         writer = csv.writer(f)
         writer.writerow(['id', 'day', 'location_id', 'sku_id', 'quantity'])
-
-        # Just sample 100k rows for dev speed, user can remove limit later
-        chunk_iter = pd.read_csv(input_file, chunksize=100000)
-        chunk = next(chunk_iter)
-
-        for i, row in chunk.iterrows():
-            loc = mapper.maps['locations'].get(row['node_id'], '')
-            prod = mapper.maps['products'].get(row['product_id'], '')
-            if loc and prod:
-                writer.writerow([i+1, row['day'], loc, prod, row['actual_inventory']])
-
+        
+        # Process full file in chunks (removed dev limit)
+        chunk_size = 100000
+        global_row_id = 1
+        
+        for chunk in pd.read_csv(input_file, chunksize=chunk_size):
+            for _, row in chunk.iterrows():
+                loc = mapper.maps['locations'].get(row['node_id'], '')
+                prod = mapper.maps['products'].get(row['product_id'], '')
+                if loc and prod:
+                    writer.writerow([global_row_id, row['day'], loc, prod, row['actual_inventory']])
+                    global_row_id += 1
+                    
+    logger.info("Processed inventory")
 def main():
     parser = argparse.ArgumentParser(description='Convert Prism Sim output to ERP format')
     parser.add_argument('--input-dir', required=True, help='Base output directory (e.g. data/output)')

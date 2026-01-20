@@ -164,6 +164,17 @@ CREATE TABLE batches (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE work_orders (
+    id SERIAL PRIMARY KEY,
+    wo_number VARCHAR(30) UNIQUE NOT NULL,
+    plant_id INTEGER NOT NULL,
+    formula_id INTEGER NOT NULL,
+    planned_quantity_kg DECIMAL(12,2) NOT NULL,
+    planned_start_date DATE NOT NULL,
+    status VARCHAR(20) DEFAULT 'planned',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 -- ============================================================================
 -- DOMAIN C: PRODUCT (SKU Master)
 -- ============================================================================
@@ -430,12 +441,60 @@ CREATE TABLE route_segments (
     distance_km DECIMAL(10,2),
     transit_time_hours DECIMAL(8,2),
     is_active BOOLEAN DEFAULT true,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- ============================================================================
+-- DOMAIN F: PLAN (Demand & Supply Planning)
+-- ============================================================================
+
+CREATE TABLE demand_forecasts (
+    id SERIAL PRIMARY KEY,
+    forecast_version VARCHAR(30) NOT NULL,
+    sku_id INTEGER NOT NULL,
+    location_type VARCHAR(20) NOT NULL,
+    forecast_date DATE NOT NULL,
+    forecast_quantity_cases DECIMAL(12,2) NOT NULL,
+    forecast_type VARCHAR(30) NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 -- ============================================================================
--- DOMAIN H: ORCHESTRATE (Hub)
+-- DOMAIN G: RETURN (Regenerate)
 -- ============================================================================
+
+CREATE TABLE returns (
+    id SERIAL PRIMARY KEY,
+    return_number VARCHAR(30) UNIQUE NOT NULL,
+    return_date DATE NOT NULL,
+    source_id INTEGER NOT NULL, -- Store
+    dc_id INTEGER NOT NULL, -- DC
+    status VARCHAR(20) DEFAULT 'received',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE return_lines (
+    return_id INTEGER NOT NULL REFERENCES returns(id),
+    line_number INTEGER NOT NULL,
+    sku_id INTEGER NOT NULL,
+    quantity_cases DECIMAL(12,2) NOT NULL,
+    condition VARCHAR(20) NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (return_id, line_number)
+);
+
+CREATE TABLE disposition_logs (
+    return_id INTEGER NOT NULL REFERENCES returns(id),
+    return_line_number INTEGER NOT NULL,
+    disposition VARCHAR(20) NOT NULL,
+    quantity_cases DECIMAL(12,2) NOT NULL,
+    processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- ============================================================================
+-- DOMAIN H: ORCHESTRATE (Hub)
 
 CREATE TABLE kpi_thresholds (
     id SERIAL PRIMARY KEY,
