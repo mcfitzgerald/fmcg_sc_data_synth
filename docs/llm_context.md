@@ -89,6 +89,18 @@ The simulation enforces these constraints - violations indicate bugs:
 | `scripts/generate_warm_start.py` | Generate warm-start snapshot manually |
 | `scripts/export_erp_format.py` | **ETL:** Transform sim CSVs to normalized ERP tables (SQL-ready) |
 
+### Simulation Output Files
+| File | Contents |
+|------|----------|
+| `orders.csv` | Replenishment orders (header + lines flattened) |
+| `shipments.csv` | Logistics shipments with `emissions_kg` for Scope 3 tracking |
+| `batches.csv` | Production batches (Work Order execution) |
+| `batch_ingredients.csv` | Ingredient consumption per batch (BOM traceability) |
+| `production_orders.csv` | Work orders (Plan-to-Produce lifecycle) |
+| `forecasts.csv` | S&OP demand forecasts (14-day horizon) |
+| `returns.csv` | Reverse logistics (RMAs) |
+| `inventory.csv` | Periodic inventory snapshots |
+
 ---
 
 ## 4. Setup & Workflow (Order of Operations)

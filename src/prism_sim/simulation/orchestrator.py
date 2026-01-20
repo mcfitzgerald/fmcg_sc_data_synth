@@ -1251,6 +1251,7 @@ class Orchestrator:
         self.writer.log_production_orders(new_production_orders, day)
         self.writer.log_shipments(new_shipments + plant_shipments, day)
         self.writer.log_batches(new_batches, day)
+        self.writer.log_batch_ingredients(new_batches, day)
         self.writer.log_returns(new_returns, day)
 
         # v0.38.0: Log 14-day deterministic forecast (S&OP Export)

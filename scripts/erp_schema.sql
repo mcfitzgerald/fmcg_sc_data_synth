@@ -72,6 +72,52 @@ CREATE TABLE certifications (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE purchase_orders (
+    id SERIAL PRIMARY KEY,
+    po_number VARCHAR(30) UNIQUE NOT NULL,
+    supplier_id INTEGER REFERENCES suppliers(id),
+    plant_id INTEGER,
+    order_date INTEGER NOT NULL,
+    expected_delivery_date INTEGER,
+    status VARCHAR(20) DEFAULT 'open',
+    total_kg DECIMAL(14,2),
+    currency VARCHAR(3) DEFAULT 'USD',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE purchase_order_lines (
+    po_id INTEGER NOT NULL REFERENCES purchase_orders(id),
+    line_number INTEGER NOT NULL,
+    ingredient_id INTEGER NOT NULL REFERENCES ingredients(id),
+    quantity_kg DECIMAL(12,2) NOT NULL,
+    unit_cost DECIMAL(10,4),
+    status VARCHAR(20) DEFAULT 'open',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (po_id, line_number)
+);
+
+CREATE TABLE goods_receipts (
+    id SERIAL PRIMARY KEY,
+    gr_number VARCHAR(30) UNIQUE NOT NULL,
+    po_id INTEGER REFERENCES purchase_orders(id),
+    shipment_id INTEGER,
+    plant_id INTEGER,
+    receipt_date INTEGER NOT NULL,
+    status VARCHAR(20) DEFAULT 'received',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE goods_receipt_lines (
+    gr_id INTEGER NOT NULL REFERENCES goods_receipts(id),
+    line_number INTEGER NOT NULL,
+    ingredient_id INTEGER NOT NULL REFERENCES ingredients(id),
+    quantity_kg DECIMAL(12,2) NOT NULL,
+    lot_number VARCHAR(50),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (gr_id, line_number)
+);
+
 -- ============================================================================
 -- DOMAIN B: TRANSFORM (Manufacturing)
 -- ============================================================================
@@ -172,6 +218,15 @@ CREATE TABLE work_orders (
     planned_quantity_kg DECIMAL(12,2) NOT NULL,
     planned_start_date DATE NOT NULL,
     status VARCHAR(20) DEFAULT 'planned',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE batch_ingredients (
+    id SERIAL PRIMARY KEY,
+    batch_id INTEGER NOT NULL REFERENCES batches(id),
+    ingredient_id INTEGER NOT NULL REFERENCES ingredients(id),
+    quantity_kg DECIMAL(12,4) NOT NULL,
+    lot_number VARCHAR(50),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -409,6 +464,21 @@ CREATE TABLE inventory (
     last_movement_date DATE,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- ============================================================================
+-- DOMAIN E3: ESG (Sustainability)
+-- ============================================================================
+
+CREATE TABLE shipment_emissions (
+    id SERIAL PRIMARY KEY,
+    shipment_id INTEGER NOT NULL REFERENCES shipments(id),
+    emission_type VARCHAR(30) NOT NULL DEFAULT 'transport',
+    emissions_kg_co2 DECIMAL(12,4) NOT NULL,
+    distance_km DECIMAL(10,2),
+    transport_mode VARCHAR(30),
+    fuel_type VARCHAR(30),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Indexes

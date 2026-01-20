@@ -5,6 +5,38 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.39.0] - 2026-01-19
+
+### ETL Layer Enhancement - Expanded ERP Schema
+
+Extended the ETL pipeline to export additional tables, closing the gap with enterprise ERP data models.
+
+#### 1. Simulation Writer Enhancements
+- **Emissions Tracking:** Added `emissions_kg` column to `shipments.csv` output (was calculated but not logged).
+- **Batch Genealogy:** New `batch_ingredients.csv` logs ingredient consumption per production batch (enables full BOM traceability).
+
+#### 2. Bug Fixes in Export Script
+- **Line Number Fix:** `order_lines` and `shipment_lines` now have incrementing `line_number` per parent (was hardcoded to 1, violating PK constraint).
+- **Unit Conversion Fix:** Uses product-specific `weight_kg` from `products.csv` instead of hardcoded 10.0 kg/case.
+
+#### 3. New ERP Tables (SOURCE Domain)
+- `purchase_orders` / `purchase_order_lines` - Ingredient procurement orders (filtered from `PO-ING-*` orders).
+- `goods_receipts` / `goods_receipt_lines` - Inbound deliveries to plants (derived from plant-bound shipments).
+
+#### 4. New ERP Tables (TRANSFORM Domain)
+- `batch_ingredients` - Ingredient consumption per batch (enables yield analysis and traceability).
+
+#### 5. New ERP Tables (ESG Domain)
+- `shipment_emissions` - CO2 emissions per shipment (Scope 3 transport emissions).
+
+#### Files Modified
+- `src/prism_sim/simulation/writer.py` - Added `emissions_kg` to shipments, added `log_batch_ingredients()` method.
+- `src/prism_sim/simulation/orchestrator.py` - Calls `log_batch_ingredients()` after transform step.
+- `scripts/erp_schema.sql` - Added 7 new table definitions.
+- `scripts/export_erp_format.py` - Fixed bugs, added 4 new `process_*()` functions.
+
+---
+
 ## [0.38.0] - 2026-01-19
 
 ### ERP Data Model & Returns Logistics

@@ -180,6 +180,7 @@ SHIPMENT_FIELDS = [
     "total_weight_kg",
     "total_volume_m3",
     "status",
+    "emissions_kg",
 ]
 
 BATCH_FIELDS = [
@@ -227,6 +228,12 @@ RETURNS_FIELDS = [
     "quantity",
     "disposition",
     "status",
+]
+
+BATCH_INGREDIENT_FIELDS = [
+    "batch_id",
+    "ingredient_id",
+    "quantity_kg",
 ]
 
 
@@ -277,6 +284,7 @@ def _get_parquet_schema(table_name: str) -> "pa.Schema":
                 ("total_weight_kg", pa.float64()),
                 ("total_volume_m3", pa.float64()),
                 ("status", pa.string()),
+                ("emissions_kg", pa.float64()),
             ]
         ),
         "batches": pa.schema(
@@ -311,6 +319,13 @@ def _get_parquet_schema(table_name: str) -> "pa.Schema":
                 ("quantity", pa.float64()),
                 ("disposition", pa.string()),
                 ("status", pa.string()),
+            ]
+        ),
+        "batch_ingredients": pa.schema(
+            [
+                ("batch_id", pa.string()),
+                ("ingredient_id", pa.string()),
+                ("quantity_kg", pa.float64()),
             ]
         ),
     }
@@ -388,6 +403,9 @@ class SimulationWriter:
         self._returns_writer: StreamingCSVWriter | StreamingParquetWriter | None = (
             None
         )
+        self._batch_ingredients_writer: (
+            StreamingCSVWriter | StreamingParquetWriter | None
+        ) = None
 
         # Buffered mode storage (legacy compatibility)
         self.orders: list[dict[str, Any]] = []
@@ -396,6 +414,7 @@ class SimulationWriter:
         self.batches: list[dict[str, Any]] = []
         self.forecasts: list[dict[str, Any]] = []
         self.returns: list[dict[str, Any]] = []
+        self.batch_ingredients: list[dict[str, Any]] = []
         self.inventory_history: list[dict[str, Any]] = []
         self.metrics_history: list[dict[str, Any]] = []
 
@@ -443,6 +462,11 @@ class SimulationWriter:
                 _get_parquet_schema("returns"),
                 self.parquet_batch_size,
             )
+            self._batch_ingredients_writer = StreamingParquetWriter(
+                self.output_dir / f"batch_ingredients{ext}",
+                _get_parquet_schema("batch_ingredients"),
+                self.parquet_batch_size,
+            )
         else:
             self._orders_writer = StreamingCSVWriter(
                 self.output_dir / f"orders{ext}",
@@ -471,6 +495,10 @@ class SimulationWriter:
             self._returns_writer = StreamingCSVWriter(
                 self.output_dir / f"returns{ext}",
                 RETURNS_FIELDS,
+            )
+            self._batch_ingredients_writer = StreamingCSVWriter(
+                self.output_dir / f"batch_ingredients{ext}",
+                BATCH_INGREDIENT_FIELDS,
             )
 
     def log_orders(self, orders: list[Order], day: int) -> None:
@@ -539,6 +567,7 @@ class SimulationWriter:
                     "total_weight_kg": s.total_weight_kg,
                     "total_volume_m3": s.total_volume_m3,
                     "status": s.status.value,
+                    "emissions_kg": s.emissions_kg,
                 }
                 rows.append(row)
 
@@ -571,6 +600,26 @@ class SimulationWriter:
             self._batches_writer.write_rows(rows)
         else:
             self.batches.extend(rows)
+
+    def log_batch_ingredients(self, batches: list[Batch], day: int) -> None:
+        """Log ingredient consumption for production batches."""
+        if not self.enable_logging:
+            return
+
+        rows = []
+        for b in batches:
+            for ing_id, qty_kg in b.ingredients_consumed.items():
+                row = {
+                    "batch_id": b.id,
+                    "ingredient_id": ing_id,
+                    "quantity_kg": qty_kg,
+                }
+                rows.append(row)
+
+        if self.streaming and self._batch_ingredients_writer:
+            self._batch_ingredients_writer.write_rows(rows)
+        else:
+            self.batch_ingredients.extend(rows)
 
     def log_forecasts(self, forecast_vec: np.ndarray, state: Any, day: int) -> None:
         """Log deterministic demand forecast for a given day."""
@@ -663,6 +712,8 @@ class SimulationWriter:
                 self._forecasts_writer.flush()
             if self._returns_writer:
                 self._returns_writer.flush()
+            if self._batch_ingredients_writer:
+                self._batch_ingredients_writer.flush()
             if self._inventory_writer:
                 self._inventory_writer.flush()
 
@@ -682,6 +733,7 @@ class SimulationWriter:
                 f"ProdOrders={row_counts['production_orders']:,}, "
                 f"Shipments={row_counts['shipments']:,}, "
                 f"Batches={row_counts['batches']:,}, "
+                f"BatchIngredients={row_counts['batch_ingredients']:,}, "
                 f"Forecasts={row_counts['forecasts']:,}, "
                 f"Returns={row_counts['returns']:,}, "
                 f"Inventory={row_counts['inventory']:,}"
@@ -692,6 +744,7 @@ class SimulationWriter:
             self._write_csv("production_orders.csv", self.production_orders)
             self._write_csv("shipments.csv", self.shipments)
             self._write_csv("batches.csv", self.batches)
+            self._write_csv("batch_ingredients.csv", self.batch_ingredients)
             self._write_csv("forecasts.csv", self.forecasts)
             self._write_csv("returns.csv", self.returns)
             self._write_csv("inventory.csv", self.inventory_history)
@@ -713,6 +766,8 @@ class SimulationWriter:
             self._shipments_writer.close()
         if self._batches_writer:
             self._batches_writer.close()
+        if self._batch_ingredients_writer:
+            self._batch_ingredients_writer.close()
         if self._forecasts_writer:
             self._forecasts_writer.close()
         if self._returns_writer:
@@ -723,14 +778,29 @@ class SimulationWriter:
     def _get_row_counts(self) -> dict[str, int]:
         """Get row counts from streaming writers."""
         return {
-            "orders": self._orders_writer.row_count if self._orders_writer else 0,
-            "production_orders": self._production_orders_writer.row_count if self._production_orders_writer else 0,
+            "orders": (
+                self._orders_writer.row_count if self._orders_writer else 0
+            ),
+            "production_orders": (
+                self._production_orders_writer.row_count
+                if self._production_orders_writer else 0
+            ),
             "shipments": (
                 self._shipments_writer.row_count if self._shipments_writer else 0
             ),
-            "batches": self._batches_writer.row_count if self._batches_writer else 0,
-            "forecasts": self._forecasts_writer.row_count if self._forecasts_writer else 0,
-            "returns": self._returns_writer.row_count if self._returns_writer else 0,
+            "batches": (
+                self._batches_writer.row_count if self._batches_writer else 0
+            ),
+            "batch_ingredients": (
+                self._batch_ingredients_writer.row_count
+                if self._batch_ingredients_writer else 0
+            ),
+            "forecasts": (
+                self._forecasts_writer.row_count if self._forecasts_writer else 0
+            ),
+            "returns": (
+                self._returns_writer.row_count if self._returns_writer else 0
+            ),
             "inventory": (
                 self._inventory_writer.row_count if self._inventory_writer else 0
             ),

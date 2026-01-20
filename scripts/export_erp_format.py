@@ -71,6 +71,27 @@ class IdMapper:
 def ensure_dir(path: Path):
     path.mkdir(parents=True, exist_ok=True)
 
+
+def load_product_weights(static_dir: Path) -> dict[str, float]:
+    """Load product weights from products.csv for unit conversion."""
+    weights: dict[str, float] = {}
+    input_file = static_dir / 'products.csv'
+    if not input_file.exists():
+        logger.warning(f"Products file not found: {input_file}, using default weights")
+        return weights
+
+    df = pd.read_csv(input_file)
+    for _, row in df.iterrows():
+        prod_id = row['id']
+        # Use weight_kg if available, otherwise default to 10.0
+        weight = row.get('weight_kg', 10.0)
+        if pd.isna(weight):
+            weight = 10.0
+        weights[prod_id] = float(weight)
+
+    logger.info(f"Loaded weights for {len(weights)} products")
+    return weights
+
 def parse_location_type(loc_type: str, loc_name: str) -> str:
     """Map simulation node types to ERP table categories."""
     loc_type = str(loc_type).upper()
@@ -260,7 +281,7 @@ def process_recipes(static_dir: Path, output_dir: Path, mapper: IdMapper):
     f_lines.close()
     logger.info(f"Processed {count} recipes")
 
-def process_work_orders(run_dir: Path, output_dir: Path, mapper: IdMapper):
+def process_work_orders(run_dir: Path, output_dir: Path, mapper: IdMapper, product_weights: dict[str, float]):
     """Process production_orders.csv into work_orders."""
     logger.info("Processing work orders...")
 
@@ -282,9 +303,10 @@ def process_work_orders(run_dir: Path, output_dir: Path, mapper: IdMapper):
         prod_sim = row['product_id']
         formula_id = mapper.maps['formulas'].get(f"FORM-{prod_sim}", '')
 
-        # Convert cases to kg (approx 10kg/case placeholder)
+        # Convert cases to kg using product-specific weight
         qty_cases = row['quantity']
-        qty_kg = qty_cases * 10.0
+        weight_kg = product_weights.get(prod_sim, 10.0)
+        qty_kg = qty_cases * weight_kg
 
         w_wo.writerow([
             erp_id, sim_id, plant_id, formula_id,
@@ -293,7 +315,7 @@ def process_work_orders(run_dir: Path, output_dir: Path, mapper: IdMapper):
 
     f_wo.close()
 
-def process_orders(run_dir: Path, output_dir: Path, mapper: IdMapper):
+def process_orders(run_dir: Path, output_dir: Path, mapper: IdMapper, product_weights: dict[str, float]):
     """Process orders.csv into orders and order_lines. Uses chunks."""
     logger.info("Processing orders (chunked)...")
 
@@ -310,7 +332,7 @@ def process_orders(run_dir: Path, output_dir: Path, mapper: IdMapper):
     w_line.writerow(['order_id', 'line_number', 'sku_id', 'quantity_cases', 'unit_price', 'status'])
 
     processed_orders = set()
-    line_buffer = []
+    order_line_counters: dict[int, int] = {}  # erp_ord_id -> next line number
 
     # Process in chunks
     chunk_size = 100000
@@ -333,22 +355,22 @@ def process_orders(run_dir: Path, output_dir: Path, mapper: IdMapper):
                     row['status'], 0 # Total cases updated later? Sim doesn't sum it.
                 ])
                 processed_orders.add(erp_ord_id)
+                order_line_counters[erp_ord_id] = 1
 
             # Write Line
             product_sim = row['product_id']
             sku_id = mapper.maps['products'].get(product_sim, '')
 
-            # Simple line number generation (stateless for now, assumes order in stream)
-            # In a real heavy ETL, we'd group first. Here we assume CSV is sorted or grouped.
-            # If not, we might have collision on line_number 1 if we reset.
-            # For simplicity in this stream, we'll just write rows.
-            # Ideally: GroupBy in Pandas, but memory risk.
-            # Compromise: Just write it. Line number is tricky without state.
-            # Let's use a simple counter per order in a separate pass or just omit line_number uniqueness constraint for this V1
-            # Or: keep a small LRU cache for line numbers.
+            # Get line number and increment counter
+            line_number = order_line_counters.get(erp_ord_id, 1)
+            order_line_counters[erp_ord_id] = line_number + 1
+
+            # Use product-specific weight, fallback to 10.0 kg/case
+            weight_kg = product_weights.get(product_sim, 10.0)
+            unit_price = weight_kg  # Using weight as proxy for price
 
             w_line.writerow([
-                erp_ord_id, 1, sku_id, row['quantity'], 10.0, 'open'
+                erp_ord_id, line_number, sku_id, row['quantity'], unit_price, 'open'
             ])
 
     f_ord.close()
@@ -372,6 +394,7 @@ def process_shipments(run_dir: Path, output_dir: Path, mapper: IdMapper):
     w_line.writerow(['shipment_id', 'line_number', 'sku_id', 'quantity_cases'])
 
     processed = set()
+    shipment_line_counters: dict[int, int] = {}  # erp_shipment_id -> next line number
 
     chunk_size = 100000
     for chunk in pd.read_csv(input_file, chunksize=chunk_size):
@@ -388,9 +411,14 @@ def process_shipments(run_dir: Path, output_dir: Path, mapper: IdMapper):
                     origin, dest, row['status']
                 ])
                 processed.add(erp_id)
+                shipment_line_counters[erp_id] = 1
+
+            # Get line number and increment counter
+            line_number = shipment_line_counters.get(erp_id, 1)
+            shipment_line_counters[erp_id] = line_number + 1
 
             prod = mapper.maps['products'].get(row['product_id'], '')
-            w_line.writerow([erp_id, 1, prod, row['quantity']])
+            w_line.writerow([erp_id, line_number, prod, row['quantity']])
 
     f_shp.close()
     f_line.close()
@@ -478,6 +506,9 @@ def main():
 
     mapper = IdMapper()
 
+    # 0. Load product weights for unit conversion
+    product_weights = load_product_weights(static_dir)
+
     # 1. Masters (builds the ID maps)
     process_locations(static_dir, output_root, mapper)
     process_products(static_dir, output_root, mapper)
@@ -490,13 +521,19 @@ def main():
     process_reference_data(static_dir, output_root, mapper)
 
     # 2. Transactions (uses ID maps)
-    process_orders(run_dir, output_root, mapper)
-    process_work_orders(run_dir, output_root, mapper)
+    process_orders(run_dir, output_root, mapper, product_weights)
+    process_work_orders(run_dir, output_root, mapper, product_weights)
     process_forecasts(run_dir, output_root, mapper)
     process_shipments(run_dir, output_root, mapper)
     process_returns(run_dir, output_root, mapper)
     process_batches(run_dir, output_root, mapper)
     process_inventory(run_dir, output_root, mapper)
+
+    # 2b. New tables (Phase 3)
+    process_purchase_orders(run_dir, output_root, mapper, product_weights)
+    process_goods_receipts(run_dir, output_root, mapper, product_weights)
+    process_batch_ingredients(run_dir, output_root, mapper)
+    process_shipment_emissions(run_dir, output_root, mapper)
 
     # 3. Save Map
     mapper.save(output_root / 'reference/id_mapping.json')
@@ -769,6 +806,219 @@ def process_reference_data(static_dir: Path, output_dir: Path, mapper: IdMapper)
                         row_id += 1
 
     logger.info("Generated reference data")
+
+def process_purchase_orders(run_dir: Path, output_dir: Path, mapper: IdMapper, product_weights: dict[str, float]):
+    """Process orders.csv to extract purchase orders (PO-ING-* prefix) for ingredients."""
+    logger.info("Processing purchase orders...")
+
+    input_file = run_dir / 'orders.csv'
+    if not input_file.exists():
+        logger.warning("orders.csv not found")
+        return
+
+    f_po = open(output_dir / 'transactional/purchase_orders.csv', 'w', newline='')
+    f_line = open(output_dir / 'transactional/purchase_order_lines.csv', 'w', newline='')
+
+    w_po = csv.writer(f_po)
+    w_line = csv.writer(f_line)
+
+    w_po.writerow(['id', 'po_number', 'supplier_id', 'plant_id', 'order_date', 'expected_delivery_date', 'status', 'total_kg'])
+    w_line.writerow(['po_id', 'line_number', 'ingredient_id', 'quantity_kg', 'unit_cost', 'status'])
+
+    processed_pos = set()
+    po_line_counters: dict[int, int] = {}
+    po_id_counter = 1
+
+    chunk_size = 100000
+    for chunk in pd.read_csv(input_file, chunksize=chunk_size):
+        for _, row in chunk.iterrows():
+            sim_ord_id = row['order_id']
+
+            # Only process ingredient purchase orders (PO-ING-* prefix)
+            if not sim_ord_id.startswith('PO-ING-'):
+                continue
+
+            erp_po_id = mapper.get_id('orders', sim_ord_id)  # Reuse orders mapper
+
+            if erp_po_id not in processed_pos:
+                source_sim = row['source_id']  # Supplier
+                target_sim = row['target_id']  # Plant
+
+                supplier_id = mapper.maps['locations'].get(source_sim, '')
+                plant_id = mapper.maps['locations'].get(target_sim, '')
+
+                w_po.writerow([
+                    po_id_counter, sim_ord_id, supplier_id, plant_id,
+                    row['day'], '', row['status'], 0
+                ])
+                processed_pos.add(erp_po_id)
+                po_line_counters[po_id_counter] = 1
+                po_id_counter += 1
+
+            # Get the PO ID we just used
+            current_po_id = po_id_counter - 1
+
+            # Write Line
+            product_sim = row['product_id']
+            ingredient_id = mapper.maps['products'].get(product_sim, '')
+
+            line_number = po_line_counters.get(current_po_id, 1)
+            po_line_counters[current_po_id] = line_number + 1
+
+            # Convert quantity to kg
+            qty_cases = row['quantity']
+            weight_kg = product_weights.get(product_sim, 1.0)  # Ingredients default to 1.0 kg
+            qty_kg = qty_cases * weight_kg
+
+            w_line.writerow([
+                current_po_id, line_number, ingredient_id, qty_kg, 0.0, 'open'
+            ])
+
+    f_po.close()
+    f_line.close()
+    logger.info("Processed purchase orders")
+
+
+def process_goods_receipts(run_dir: Path, output_dir: Path, mapper: IdMapper, product_weights: dict[str, float]):
+    """Process shipments.csv to extract goods receipts (inbound to plants)."""
+    logger.info("Processing goods receipts...")
+
+    input_file = run_dir / 'shipments.csv'
+    if not input_file.exists():
+        logger.warning("shipments.csv not found")
+        return
+
+    f_gr = open(output_dir / 'transactional/goods_receipts.csv', 'w', newline='')
+    f_line = open(output_dir / 'transactional/goods_receipt_lines.csv', 'w', newline='')
+
+    w_gr = csv.writer(f_gr)
+    w_line = csv.writer(f_line)
+
+    w_gr.writerow(['id', 'gr_number', 'po_id', 'shipment_id', 'plant_id', 'receipt_date', 'status'])
+    w_line.writerow(['gr_id', 'line_number', 'ingredient_id', 'quantity_kg', 'lot_number'])
+
+    processed_grs = set()
+    gr_line_counters: dict[int, int] = {}
+    gr_id_counter = 1
+
+    chunk_size = 100000
+    for chunk in pd.read_csv(input_file, chunksize=chunk_size):
+        for _, row in chunk.iterrows():
+            target_sim = row['target_id']
+
+            # Only process shipments to plants (inbound deliveries)
+            if not target_sim.startswith('PLANT-'):
+                continue
+
+            sim_shp_id = row['shipment_id']
+            erp_shp_id = mapper.get_id('shipments', sim_shp_id)
+
+            if erp_shp_id not in processed_grs:
+                plant_id = mapper.maps['locations'].get(target_sim, '')
+                gr_number = f"GR-{sim_shp_id}"
+
+                w_gr.writerow([
+                    gr_id_counter, gr_number, '', erp_shp_id, plant_id,
+                    row['arrival_day'], 'received'
+                ])
+                processed_grs.add(erp_shp_id)
+                gr_line_counters[gr_id_counter] = 1
+                gr_id_counter += 1
+
+            current_gr_id = gr_id_counter - 1
+
+            product_sim = row['product_id']
+            ingredient_id = mapper.maps['products'].get(product_sim, '')
+
+            line_number = gr_line_counters.get(current_gr_id, 1)
+            gr_line_counters[current_gr_id] = line_number + 1
+
+            # Convert quantity to kg
+            qty_cases = row['quantity']
+            weight_kg = product_weights.get(product_sim, 1.0)
+            qty_kg = qty_cases * weight_kg
+
+            w_line.writerow([
+                current_gr_id, line_number, ingredient_id, qty_kg, ''
+            ])
+
+    f_gr.close()
+    f_line.close()
+    logger.info("Processed goods receipts")
+
+
+def process_batch_ingredients(run_dir: Path, output_dir: Path, mapper: IdMapper):
+    """Process batch_ingredients.csv into batch_ingredients table."""
+    logger.info("Processing batch ingredients...")
+
+    input_file = run_dir / 'batch_ingredients.csv'
+    if not input_file.exists():
+        logger.warning("batch_ingredients.csv not found")
+        return
+
+    with open(output_dir / 'transactional/batch_ingredients.csv', 'w', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow(['id', 'batch_id', 'ingredient_id', 'quantity_kg', 'lot_number'])
+
+        df = pd.read_csv(input_file)
+        for i, row in df.iterrows():
+            batch_sim_id = row['batch_id']
+            batch_id = mapper.maps['batches'].get(batch_sim_id, '')
+            ingredient_sim_id = row['ingredient_id']
+            ingredient_id = mapper.maps['products'].get(ingredient_sim_id, '')
+
+            writer.writerow([
+                i + 1, batch_id, ingredient_id, row['quantity_kg'], ''
+            ])
+
+    logger.info("Processed batch ingredients")
+
+
+def process_shipment_emissions(run_dir: Path, output_dir: Path, mapper: IdMapper):
+    """Process shipments.csv to extract emissions data."""
+    logger.info("Processing shipment emissions...")
+
+    input_file = run_dir / 'shipments.csv'
+    if not input_file.exists():
+        logger.warning("shipments.csv not found")
+        return
+
+    # Check if emissions_kg column exists
+    sample_df = pd.read_csv(input_file, nrows=1)
+    if 'emissions_kg' not in sample_df.columns:
+        logger.warning("emissions_kg column not found in shipments.csv, skipping")
+        return
+
+    with open(output_dir / 'transactional/shipment_emissions.csv', 'w', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow(['id', 'shipment_id', 'emission_type', 'emissions_kg_co2', 'distance_km', 'transport_mode', 'fuel_type'])
+
+        processed_shipments = set()
+        emission_id = 1
+
+        chunk_size = 100000
+        for chunk in pd.read_csv(input_file, chunksize=chunk_size):
+            for _, row in chunk.iterrows():
+                sim_shp_id = row['shipment_id']
+                erp_shp_id = mapper.get_id('shipments', sim_shp_id)
+
+                # Only write one emissions record per shipment
+                if erp_shp_id in processed_shipments:
+                    continue
+
+                emissions = row.get('emissions_kg', 0.0)
+                if pd.isna(emissions) or emissions == 0:
+                    processed_shipments.add(erp_shp_id)
+                    continue
+
+                writer.writerow([
+                    emission_id, erp_shp_id, 'transport', emissions, 0, 'truck', 'diesel'
+                ])
+                emission_id += 1
+                processed_shipments.add(erp_shp_id)
+
+    logger.info("Processed shipment emissions")
+
 
 def process_configs(output_dir: Path, mapper: IdMapper):
     """Process configuration files to populate config-based tables."""
