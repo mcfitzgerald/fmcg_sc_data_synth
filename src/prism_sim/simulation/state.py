@@ -67,6 +67,15 @@ class StateManager:
             (self.n_nodes, self.n_products), dtype=np.float64
         )
 
+        # v0.38.0: Unmet demand tracking for improved replenishment signal
+        # Tracks demand that couldn't be fulfilled due to inventory shortage.
+        # This prevents the "demand signal collapse" where unfilled orders
+        # don't register as demand, causing under-forecasting.
+        # Shape: [n_nodes, n_products] - accumulated unmet demand per node
+        self._unmet_demand = np.zeros(
+            (self.n_nodes, self.n_products), dtype=np.float64
+        )
+
     @property
     def inventory(self) -> np.ndarray:
         """Alias for perceived_inventory (System View)."""
@@ -233,3 +242,96 @@ class StateManager:
             np.ndarray: Shape [n_nodes, n_products] - in-transit qty per target
         """
         return self._in_transit_tensor.copy()
+
+    # =========================================================================
+    # v0.38.0: Unmet Demand Tracking
+    # =========================================================================
+    # Tracks unfilled demand to improve replenishment signal accuracy.
+    # When allocation can't fulfill an order fully, the unfilled qty is recorded.
+    # Replenishment then includes this unmet demand in its signal, preventing
+    # under-forecasting that occurs when shortages hide true demand.
+
+    def record_unmet_demand(
+        self, node_id: str, product_id: str, unfilled_qty: float
+    ) -> None:
+        """
+        Record unfilled demand at a node for a product.
+
+        Called by AllocationAgent when orders can't be fully filled.
+        This captures the "hidden demand" that would otherwise be lost.
+
+        Args:
+            node_id: Source node where allocation occurred
+            product_id: Product that couldn't be fully allocated
+            unfilled_qty: Quantity that couldn't be fulfilled
+        """
+        n_idx = self.node_id_to_idx.get(node_id)
+        p_idx = self.product_id_to_idx.get(product_id)
+
+        if n_idx is not None and p_idx is not None and unfilled_qty > 0:
+            self._unmet_demand[n_idx, p_idx] += unfilled_qty
+
+    def record_unmet_demand_batch(self, unmet_matrix: np.ndarray) -> None:
+        """
+        Record unfilled demand for all nodes/products at once.
+
+        More efficient than calling record_unmet_demand() repeatedly.
+
+        Args:
+            unmet_matrix: Shape [n_nodes, n_products] - unfilled quantities
+        """
+        if unmet_matrix.shape == self._unmet_demand.shape:
+            self._unmet_demand += unmet_matrix
+
+    def get_unmet_demand(self) -> np.ndarray:
+        """
+        Get accumulated unmet demand for all nodes/products.
+
+        Returns:
+            np.ndarray: Shape [n_nodes, n_products] - accumulated unmet demand
+        """
+        return self._unmet_demand.copy()
+
+    def get_unmet_demand_by_node(self, node_id: str) -> np.ndarray:
+        """
+        Get unmet demand for a specific node (all products).
+
+        Args:
+            node_id: Node to query
+
+        Returns:
+            np.ndarray: Shape [n_products] - unmet demand per product
+        """
+        n_idx = self.node_id_to_idx.get(node_id)
+        if n_idx is not None:
+            return self._unmet_demand[n_idx, :].copy()
+        return np.zeros(self.n_products, dtype=np.float64)
+
+    def clear_unmet_demand(self, node_id: str | None = None) -> None:
+        """
+        Clear accumulated unmet demand.
+
+        Call this after replenishment orders are placed to avoid double-counting.
+        If node_id is specified, only clears for that node.
+
+        Args:
+            node_id: Optional - clear only for this node, else clear all
+        """
+        if node_id is not None:
+            n_idx = self.node_id_to_idx.get(node_id)
+            if n_idx is not None:
+                self._unmet_demand[n_idx, :] = 0.0
+        else:
+            self._unmet_demand[:, :] = 0.0
+
+    def decay_unmet_demand(self, decay_factor: float = 0.5) -> None:
+        """
+        Decay accumulated unmet demand over time.
+
+        This prevents old unmet demand from causing over-ordering indefinitely.
+        A decay factor of 0.5 means unmet demand halves each day.
+
+        Args:
+            decay_factor: Multiplier applied to unmet demand (0-1)
+        """
+        self._unmet_demand *= decay_factor

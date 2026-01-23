@@ -13,6 +13,7 @@ class AllocationResult:
 
     allocated_orders: list[Order]
     allocation_matrix: np.ndarray  # Shape [n_nodes, n_products] - qty decremented
+    unmet_demand_matrix: np.ndarray  # [n_nodes, n_products] - unfilled qty
 
 
 class AllocationAgent:
@@ -105,15 +106,24 @@ class AllocationAgent:
         Implements 'Fill or Kill' logic for FMCG realism.
         Respects Order Type priority.
 
+        v0.38.0: Now also tracks unmet demand (unfilled qty) to improve
+        replenishment signal. When orders can't be fully filled, the shortfall
+        is recorded so replenishment can account for true demand.
+
         Returns:
-            AllocationResult with allocated_orders and allocation_matrix tracking
-            inventory decrements for mass balance auditing.
+            AllocationResult with allocated_orders, allocation_matrix tracking
+            inventory decrements, and unmet_demand_matrix for signal improvement.
         """
         orders_by_source = self._group_orders_by_source(orders)
         allocated_orders: list[Order] = []
 
         # Track all allocations for mass balance audit
         allocation_matrix = np.zeros(
+            (self.state.n_nodes, self.state.n_products), dtype=np.float64
+        )
+
+        # v0.38.0: Track unmet demand (what couldn't be filled)
+        unmet_demand_matrix = np.zeros(
             (self.state.n_nodes, self.state.n_products), dtype=np.float64
         )
 
@@ -154,12 +164,20 @@ class AllocationAgent:
 
             # Decrement inventory (constrained by fill_ratios)
             for p_idx, ratio in enumerate(fill_ratios):
-                if ratio > 0:
+                if demand_vector[p_idx] > 0:
                     allocated_qty = demand_vector[p_idx] * ratio
                     p_id = self.state.product_idx_to_id[p_idx]
-                    self.state.update_inventory(source_id, p_id, -allocated_qty)
-                    # Track for mass balance audit
-                    allocation_matrix[source_idx, p_idx] += allocated_qty
+
+                    if allocated_qty > 0:
+                        self.state.update_inventory(source_id, p_id, -allocated_qty)
+                        # Track for mass balance audit
+                        allocation_matrix[source_idx, p_idx] += allocated_qty
+
+                    # v0.38.0: Track unmet demand (what couldn't be filled)
+                    if ratio < 1.0:
+                        unfilled_qty = demand_vector[p_idx] * (1.0 - ratio)
+                        if unfilled_qty > self.epsilon:
+                            unmet_demand_matrix[source_idx, p_idx] += unfilled_qty
 
             # Apply to orders
             for order in sorted_orders:
@@ -180,6 +198,12 @@ class AllocationAgent:
                 if new_lines:
                     allocated_orders.append(order)
 
+        # v0.38.0: Record unmet demand in state manager for replenishment signal
+        if np.any(unmet_demand_matrix > 0):
+            self.state.record_unmet_demand_batch(unmet_demand_matrix)
+
         return AllocationResult(
-            allocated_orders=allocated_orders, allocation_matrix=allocation_matrix
+            allocated_orders=allocated_orders,
+            allocation_matrix=allocation_matrix,
+            unmet_demand_matrix=unmet_demand_matrix,
         )

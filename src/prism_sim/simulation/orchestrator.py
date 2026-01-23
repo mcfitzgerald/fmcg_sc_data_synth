@@ -1,10 +1,13 @@
 import gzip
 import hashlib
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 from prism_sim.agents.allocation import AllocationAgent
 from prism_sim.agents.replenishment import MinMaxReplenisher
@@ -200,6 +203,18 @@ class Orchestrator:
         self.perfect_order_disruption_penalty = validation_config.get(
             "perfect_order_disruption_penalty", 0.5
         )
+
+        # Cash-to-Cash config (v0.39.0 - moved from hardcode)
+        c2c_config = sim_params.get("cash_to_cash", {})
+        self.c2c_dso_days = c2c_config.get("dso_days", 30.0)
+        self.c2c_dpo_days = c2c_config.get("dpo_days", 45.0)
+
+        # Perfect Order config (v0.39.0 - real calculation, not just risk delays)
+        po_config = sim_params.get("perfect_order", {})
+        self.po_damage_rate = po_config.get("damage_rate", 0.02)
+        self.po_documentation_error_rate = po_config.get("documentation_error_rate", 0.005)
+        self.po_on_time_tolerance_days = po_config.get("on_time_tolerance_days", 1)
+
         # Store base demand matrix for SLOB calculation (expected, not volatile)
         self._base_demand_matrix = base_demand_matrix
 
@@ -1130,10 +1145,9 @@ class Orchestrator:
             self.monitor.record_inventory_turns(annual_turns)
 
             # Cash-to-Cash (Est: DIO + DSO - DPO)
-            # DIO = 365 / Turns
-            # DSO ~ 30, DPO ~ 45
+            # DIO = 365 / Turns, DSO and DPO from config
             dio = 365.0 / annual_turns
-            c2c = dio + 30.0 - 45.0
+            c2c = dio + self.c2c_dso_days - self.c2c_dpo_days
             self.monitor.record_cash_to_cash(c2c)
 
             # Shrinkage Rate (on FG inventory only - raw materials tracked separately)
@@ -1173,6 +1187,14 @@ class Orchestrator:
 
             slob_pct = slob_inventory / total_fg_inv if total_fg_inv > 0 else 0.0
             self.monitor.record_slob(slob_pct)
+
+            # v0.39.0: SLOB diagnostic logging for verification
+            logger.info(
+                "SLOB Debug: total_fg=%.0f, slob_inv=%.0f, slob_pct=%.4f, "
+                "a=%dd, b=%dd, c=%dd",
+                total_fg_inv, slob_inventory, slob_pct,
+                self.slob_threshold_a, self.slob_threshold_b, self.slob_threshold_c
+            )
 
         log_config = self.config.get("simulation_parameters", {}).get("logistics", {})
         constraints = log_config.get("constraints", {})
@@ -1220,11 +1242,11 @@ class Orchestrator:
             avg_oee = sum(plant_oee.values()) / len(plant_oee)
             self.monitor.record_oee(avg_oee)
 
-        # Perfect Order Rate
-        # Check active risk delays
-        delay_mult = self.risks.get_logistics_delay_multiplier()
-        is_perfect = 1.0 if delay_mult == 1.0 else self.perfect_order_disruption_penalty
-        self.monitor.record_perfect_order(is_perfect)
+        # Perfect Order Rate (v0.39.0 - real calculation)
+        # Perfect Order = On-time AND Undamaged AND Correct Documentation
+        # Note: "Complete" check handled by allocation - shipments are what was allocated
+        perfect_order_rate = self._calculate_perfect_order_rate(arrived, day)
+        self.monitor.record_perfect_order(perfect_order_rate)
 
         # Scope 3 Emissions (config-driven)
         self.monitor.record_scope_3(self.scope_3_kg_co2_per_case)
@@ -1235,6 +1257,63 @@ class Orchestrator:
         if self.quirks.is_enabled("optimism_bias"):
             mape += self.mape_quirks_penalty
         self.monitor.record_mape(mape)
+
+    def _calculate_perfect_order_rate(
+        self, arrived_shipments: list[Shipment], day: int
+    ) -> float:
+        """
+        Calculate Perfect Order Rate for arrived shipments.
+
+        Perfect Order = Orders that are:
+        1. On-time (arrived within expected lead time + tolerance)
+        2. Undamaged (no quality issues - stochastic based on damage rate)
+        3. Correct documentation (stochastic baseline)
+
+        Note: "Complete" (100% fill rate) is handled by the allocation agent -
+        shipments represent what was actually allocated and shipped.
+
+        Returns: Fraction of perfect orders (0.0 to 1.0)
+        """
+        if not arrived_shipments:
+            return 1.0  # No deliveries = no failures
+
+        rng = np.random.default_rng(day * 12345)  # Deterministic per day
+        perfect_count = 0
+
+        for shipment in arrived_shipments:
+            # 1. On-time check
+            # Expected arrival = original_order_day + route_lead_time
+            route = (shipment.source_id, shipment.target_id)
+            link = self.logistics.route_map.get(route)
+            expected_lead_time = link.lead_time_days if link else 3.0
+
+            if shipment.original_order_day is not None:
+                expected_arrival = (
+                    shipment.original_order_day
+                    + int(expected_lead_time)
+                    + self.po_on_time_tolerance_days
+                )
+                is_on_time = shipment.arrival_day <= expected_arrival
+            else:
+                # Fall back to creation day if original not tracked
+                expected_arrival = (
+                    shipment.creation_day
+                    + int(expected_lead_time)
+                    + self.po_on_time_tolerance_days
+                )
+                is_on_time = shipment.arrival_day <= expected_arrival
+
+            # 2. Damage check (stochastic based on config rate)
+            is_undamaged = rng.random() > self.po_damage_rate
+
+            # 3. Documentation check (stochastic baseline)
+            has_correct_docs = rng.random() > self.po_documentation_error_rate
+
+            # Perfect if all conditions met
+            if is_on_time and is_undamaged and has_correct_docs:
+                perfect_count += 1
+
+        return perfect_count / len(arrived_shipments)
 
     def _log_daily_data(
         self,

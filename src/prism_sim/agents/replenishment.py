@@ -652,6 +652,9 @@ class MinMaxReplenisher:
         Generates replenishment orders for Retail Stores and downstream DCs.
         Uses exponential smoothing on the demand signal to dampen bullwhip.
         Includes order staggering to prevent synchronized ordering waves.
+
+        v0.38.0: Now includes unmet demand in signal calculation and decays
+        unmet demand after orders are placed to prevent accumulation.
         """
         self.current_day = day
         # 1. Identify Target Nodes
@@ -662,7 +665,7 @@ class MinMaxReplenisher:
         # 2. Update Demand Smoothing
         self._update_demand_smoothing(demand_signal)
 
-        # 3. Calculate Average Demand
+        # 3. Calculate Average Demand (now includes unmet demand)
         avg_demand = self._calculate_average_demand(target_indices)
 
         # 4. Calculate Base Order Logic (s,S)
@@ -679,9 +682,17 @@ class MinMaxReplenisher:
         batched_qty = self._finalize_quantities(target_indices, needs_order, raw_qty)
 
         # 7. Create Order Objects
-        return self._create_order_objects(
+        orders = self._create_order_objects(
             day, target_indices, target_ids, batched_qty, avg_demand, on_hand_inv
         )
+
+        # v0.38.0: Decay unmet demand after orders placed to prevent accumulation.
+        # Orders should capture the unmet demand, so we decay what was recorded.
+        # v0.39.0: Slowed decay from 0.5 to 0.85 (15%/day) to preserve signal.
+        # 50% decay collapses in 7 days; 85% persists ~30 days.
+        self.state.decay_unmet_demand(decay_factor=0.85)
+
+        return orders
 
     def _identify_target_nodes(self, day: int) -> tuple[list[int], list[str]]:
         params = (
@@ -729,6 +740,10 @@ class MinMaxReplenisher:
         inflow_demand = self.get_inflow_demand()
         pos_demand = self.smoothed_demand
 
+        # v0.38.0: Get unmet demand to boost signal where allocation failed
+        # This prevents "demand signal collapse" where shortages hide true demand
+        unmet_demand = self.state.get_unmet_demand()
+
         # v0.36.0 Proactive Demand Sensing
         if hasattr(self, "pos_engine") and self.pos_engine is not None:
             # Look ahead by 14 days to capture upcoming structure
@@ -751,6 +766,13 @@ class MinMaxReplenisher:
                 base_signal = np.maximum(inflow_signal, expected)
             else:
                 base_signal = np.maximum(inflow_demand[t_idx, :], pos_demand[t_idx, :]) # type: ignore
+
+            # v0.38.0: Add unmet demand to signal (weighted)
+            # v0.39.0: Increased weight from 0.5 to 1.0 for full signal strength.
+            # With 50% weight, C-items (low priority, frequent shortages) never recover.
+            # Full weight ensures demand signal reflects true unfulfilled need.
+            unmet_signal = unmet_demand[t_idx, :] * 1.0
+            base_signal = base_signal + unmet_signal
 
             # Blending logic: 50% Reactive (History) + 50% Proactive (Structure)
             if proactive_rate_matrix is not None:
@@ -837,6 +859,23 @@ class MinMaxReplenisher:
 
         needs_order = inventory_position < reorder_point
         raw_qty = target_stock - inventory_position
+
+        # v0.39.0: Zero-inventory order generation to prevent signal collapse.
+        # Stores with empty shelves must still generate orders, otherwise:
+        # 1. No demand signal flows upstream
+        # 2. MRP never sees the shortage
+        # 3. C-items (low priority) get starved permanently
+        # Force order generation for any product with zero on-hand inventory.
+        zero_inventory_mask = on_hand_inv <= 0
+        needs_order = needs_order | zero_inventory_mask
+
+        # Ensure raw_qty is at least target_stock for zero-inventory items
+        # (if inventory_position is negative from backorders, raw_qty may be high)
+        raw_qty = np.where(
+            zero_inventory_mask & (raw_qty < target_stock),
+            target_stock,
+            raw_qty
+        )
 
         return needs_order, raw_qty, on_hand_inv, inventory_position
 
