@@ -95,8 +95,9 @@
         "trigger_dos_c": 6
       },
       "abc_production_factors": {
-        "a_buffer": 1.5,
-        "c_production_factor": 0.25,
+        "_comment": "v0.39.2: Reduced buffers to prevent over-production",
+        "a_buffer": 1.2,
+        "c_production_factor": 0.5,
         "c_demand_factor": 0.8
       },
       "echelon_proportions": {
@@ -342,8 +343,8 @@
         "inventory_cap_dos": 30.0,
         "diagnostics_enabled": true,
         "abc_production_enabled": true,
-        "a_production_buffer": 1.5,
-        "c_production_factor": 0.4,
+        "a_production_buffer": 1.2,
+        "c_production_factor": 0.5,
         "c_demand_factor": 0.8,
         "campaign_batching": {
           "enabled": true,
@@ -469,9 +470,10 @@
       "slob_max_pct": 0.3,
       "slob_days_threshold": 60.0,
       "slob_abc_thresholds": {
-        "A": 90.0,
-        "B": 120.0,
-        "C": 180.0
+        "_comment": "v0.39.2: Age-based thresholds (days sitting, not DOS)",
+        "A": 60.0,
+        "B": 90.0,
+        "C": 120.0
       },
       "slob_margin": 1.5,
       "slob_abc_velocity_factors": {

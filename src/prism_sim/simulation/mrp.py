@@ -176,6 +176,15 @@ class MRPEngine:
         ).astype(np.float64)
         self._history_ptr = 0
 
+        # v0.39.2: Consumption tracking for demand signal calibration (SLOB fix)
+        # Tracks actual consumption (what was sold) vs expected demand.
+        # This feedback allows MRP to adjust production to match reality,
+        # preventing over-production when service level < 100%.
+        self._consumption_history = np.zeros(
+            (14, self.state.n_products), dtype=np.float64
+        )
+        self._consumption_ptr = 0
+
         # C.5 FIX: Production order history for smoothing (reduces volatility)
         # v0.15.6: Extended from 7 to 14 days
         # v0.19.9: Warm start with total expected production
@@ -933,21 +942,27 @@ class MRPEngine:
             else:  # C-item
                 abc_horizon = self.production_horizon_days_c
 
-            # v0.36.0 Demand Sensing Logic
-            if planning_daily_rate_vec is not None:
+            # v0.39.2 FIX: Use actual POS demand for batch sizing (SLOB fix)
+            # Previous bug: planning_daily_rate_vec was derived from network_forecast
+            # which sums 14 days of demand (including peaks). Re-multiplying by horizon
+            # recycles the inflated total, causing 29% over-production.
+            #
+            # FIX: Use today's actual POS demand directly for demand rate. This ensures
+            # production tracks actual consumption, not inflated forecasts.
+            if pos_demand_vec is not None:
+                # Use actual POS demand as the primary signal (closed-loop control)
+                demand_for_dos = float(pos_demand_vec[p_idx])
+            elif planning_daily_rate_vec is not None:
                 demand_for_dos = float(planning_daily_rate_vec[p_idx])
-                # Batch quantity is the total forecasted volume for the horizon
-                # v0.39.1: Scale forecast by ABC-specific horizon ratio
-                # network_forecast uses base horizon (14d), scale to ABC horizon
-                horizon_ratio = abc_horizon / self.production_horizon_days
-                batch_qty_base = float(network_forecast[p_idx]) * horizon_ratio
             else:
                 # Fallback to v0.28.0 seasonal logic
                 seasonal_expected = expected_demand * seasonal_factor
                 seasonal_sustainable = sustainable_demand * seasonal_factor
                 demand_for_dos = max(seasonal_expected, seasonal_sustainable, 1.0)
-                # v0.39.1: Use ABC-specific horizon (was self.production_horizon_days)
-                batch_qty_base = seasonal_sustainable * abc_horizon
+
+            # v0.39.2 FIX: Decouple batch sizing from forecast totals
+            # Simple formula: rate × horizon (no recycling of 14-day totals)
+            batch_qty_base = demand_for_dos * abc_horizon
 
             # Calculate inventory position
             inventory_position = self._calculate_inventory_position(
@@ -1203,6 +1218,37 @@ class MRPEngine:
         # This is now the primary signal - advance pointer after writing
         self.demand_history[self._history_ptr] = daily_vol
         self._history_ptr = (self._history_ptr + 1) % 14
+
+    def record_consumption(self, actual_sales: np.ndarray) -> None:
+        """
+        v0.39.2: Record actual consumption for demand signal calibration.
+
+        This tracks what was actually sold (constrained by inventory availability),
+        not what was demanded. The gap between demand and consumption represents
+        lost sales due to stockouts.
+
+        Production should track actual consumption, not inflated demand expectations.
+        This prevents the over-production that causes SLOB accumulation.
+
+        Args:
+            actual_sales: Shape [n_nodes, n_products] - actual sales per node/product
+        """
+        # Sum consumption across all nodes for each product
+        daily_consumption = np.sum(actual_sales, axis=0)
+        self._consumption_history[self._consumption_ptr] = daily_consumption
+        self._consumption_ptr = (self._consumption_ptr + 1) % 14
+
+    def get_actual_daily_demand(self) -> np.ndarray:
+        """
+        v0.39.2: Return 14-day average of actual consumption per product.
+
+        This provides a realistic demand signal that accounts for service level.
+        When service is 89%, actual consumption is 89% of theoretical demand.
+
+        Returns:
+            np.ndarray: Shape [n_products] - average daily consumption
+        """
+        return np.mean(self._consumption_history, axis=0)
 
     def _estimate_demand(self, product_idx: int, daily_demand: np.ndarray) -> float:
         """

@@ -5,6 +5,46 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.39.2] - 2026-01-23
+
+### SLOB & Over-Production Fix
+
+Major fix to reduce SLOB (Slow-moving and Obsolete) inventory from 71% to 28% by addressing over-production and implementing industry-standard age-based SLOB calculation.
+
+#### Problem Statement
+After v0.39.1, SLOB was at 71% (industry target: 5-10%). Root cause: production exceeded consumption by 29%, causing inventory accumulation. Daily production was 4.1M cases vs 3.2M actual consumption.
+
+#### 1. Production-Consumption Balance Fix (`mrp.py`)
+- **Batch Sizing Fix:** Changed batch sizing to use actual POS demand (`pos_demand_vec`) instead of recycled 14-day forecast totals. Previous bug: `network_forecast` already contained 14-day totals, then was re-multiplied by horizon.
+- **Consumption Tracking:** Added `record_consumption()` and `get_actual_daily_demand()` methods to track actual sales vs expected demand. MRP now has feedback on real consumption.
+- **Reduced Buffers:** `a_production_buffer` 1.5→1.2, `c_production_factor` 0.4→0.5.
+
+#### 2. Age-Based SLOB Calculation (`state.py`, `orchestrator.py`)
+- **Industry Standard:** SLOB now uses inventory AGE (how long sitting) instead of DOS (how long it COULD last). A fresh batch with 90 days supply is NOT obsolete—but inventory sitting for 90 days IS.
+- **New State Tracking:** Added `inventory_age` tensor and methods: `age_inventory()`, `receive_inventory()`, `receive_inventory_batch()`, `get_weighted_age_by_product()`.
+- **Weighted Average Age:** When fresh inventory arrives, it blends with existing inventory using weighted average age calculation.
+- **Age Thresholds:** Config changed from DOS to age thresholds: A=60d, B=90d, C=120d.
+
+#### 3. Daily Loop Changes (`orchestrator.py`)
+- Added `state.age_inventory(1)` at start of each day.
+- Added `mrp_engine.record_consumption(actual_sales)` after inventory consumption.
+- Updated `_process_arrivals()` to use age-aware `receive_inventory_batch()`.
+
+#### Results (365-day simulation)
+| Metric | Before | After | Target |
+|--------|--------|-------|--------|
+| SLOB | 71% | **28.3%** | 15-25% |
+| Service Level | ~89% | **89.01%** | 87-90% |
+| Inventory Turns | 3.3x | **3.71x** | 5-6x |
+
+#### Files Modified
+- `src/prism_sim/simulation/mrp.py` - Batch sizing fix, consumption tracking
+- `src/prism_sim/simulation/state.py` - Inventory age tracking
+- `src/prism_sim/simulation/orchestrator.py` - Age methods, SLOB calculation
+- `src/prism_sim/config/simulation_config.json` - Buffer and threshold adjustments
+
+---
+
 ## [0.39.0] - 2026-01-19
 
 ### ETL Layer Enhancement - Expanded ERP Schema

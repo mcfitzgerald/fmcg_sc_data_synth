@@ -840,6 +840,10 @@ class Orchestrator:
         # 0. Start mass balance tracking
         self.auditor.start_day(day)
 
+        # 0b. v0.39.2: Age all inventory by 1 day (SLOB tracking)
+        # Must happen at start of day before any inventory movements
+        self.state.age_inventory(1)
+
         # 0a. Risk & Quirks: Start of Day
         shrinkage_events = self._apply_pre_step_quirks(day)
         if shrinkage_events:
@@ -859,6 +863,11 @@ class Orchestrator:
         self.state.update_inventory_batch(-actual_sales)
         self.auditor.record_sales(actual_sales)
         # Note: lost_sales tracked implicitly via fill rate metrics
+
+        # v0.39.2: Feed actual consumption back to MRP (SLOB fix)
+        # This allows MRP to calibrate production to actual consumption,
+        # preventing over-production when service level < 100%.
+        self.mrp_engine.record_consumption(actual_sales)
 
         # 3. Replenishment Decision (The "Pull" Signal)
         raw_orders = self.replenisher.generate_orders(day, daily_demand)
@@ -1154,46 +1163,56 @@ class Orchestrator:
             shrink_rate = shrinkage_qty / total_fg_inv
             self.monitor.record_shrinkage_rate(shrink_rate)
 
-            # SLOB % (Per-SKU calculation with ABC-differentiated thresholds)
-            # v0.26.0: Use expected demand (base_demand) instead of volatile daily_demand
-            # This prevents near-zero demand days from creating artificial SLOB
+            # v0.39.2: SLOB % (Age-based calculation - industry standard)
+            #
+            # Industry SLOB definition uses inventory AGE (how long sitting),
+            # not Days of Supply (how long it COULD last). A fresh batch with
+            # 90 days supply is NOT obsolete - but inventory sitting for 90
+            # days IS obsolete.
+            #
+            # Config thresholds now represent AGE in days, not DOS:
+            # - A-items: flag if sitting > threshold days (fast-turning)
+            # - B-items: flag if sitting > threshold days
+            # - C-items: flag if sitting > threshold days (slow-turning, higher threshold)
             fg_inv_per_sku = np.sum(fg_inventory, axis=0)  # Sum across nodes
 
-            # Use expected demand (base_demand_matrix) instead of volatile daily demand
-            fg_base_demand = np.sum(
-                self._base_demand_matrix[:, self._fg_product_mask], axis=0
-            )
+            # Get inventory-weighted average age per product
+            all_sku_age = self.state.get_weighted_age_by_product()
+            fg_sku_age = all_sku_age[self._fg_product_mask]
 
-            # Apply minimum demand velocity floor (cases/day) to prevent div-by-zero
-            demand_per_sku_safe = np.maximum(
-                fg_base_demand, self.slob_min_demand_velocity
-            )
-            sku_dos = fg_inv_per_sku / demand_per_sku_safe
-
-            # ABC-differentiated SLOB thresholds
+            # ABC-differentiated AGE thresholds (from config)
             # Get ABC class for finished goods only (0=A, 1=B, 2=C)
             fg_abc_class = self.mrp_engine.abc_class[self._fg_product_mask]
 
             # Build threshold array per SKU based on ABC class
-            slob_thresholds = np.where(
+            # Config values are now AGE thresholds (days sitting), not DOS
+            age_thresholds = np.where(
                 fg_abc_class == 0,
                 self.slob_threshold_a,
                 np.where(fg_abc_class == 1, self.slob_threshold_b, self.slob_threshold_c),
             )
 
-            # Flag SKUs with DOS > their ABC-specific threshold as SLOB
-            slob_mask = sku_dos > slob_thresholds
+            # Flag SKUs with AGE > their ABC-specific threshold as SLOB
+            slob_mask = fg_sku_age > age_thresholds
             slob_inventory = fg_inv_per_sku[slob_mask].sum()
 
             slob_pct = slob_inventory / total_fg_inv if total_fg_inv > 0 else 0.0
             self.monitor.record_slob(slob_pct)
 
-            # v0.39.0: SLOB diagnostic logging for verification
+            # v0.39.2: SLOB diagnostic logging with age info
+            a_mask = fg_abc_class == 0
+            b_mask = fg_abc_class == 1
+            c_mask = fg_abc_class == 2
+            a_avg_age = np.mean(fg_sku_age[a_mask]) if np.any(a_mask) else 0.0
+            b_avg_age = np.mean(fg_sku_age[b_mask]) if np.any(b_mask) else 0.0
+            c_avg_age = np.mean(fg_sku_age[c_mask]) if np.any(c_mask) else 0.0
             logger.info(
                 "SLOB Debug: total_fg=%.0f, slob_inv=%.0f, slob_pct=%.4f, "
-                "a=%dd, b=%dd, c=%dd",
+                "a_age=%.1fd/%dd, b_age=%.1fd/%dd, c_age=%.1fd/%dd",
                 total_fg_inv, slob_inventory, slob_pct,
-                self.slob_threshold_a, self.slob_threshold_b, self.slob_threshold_c
+                a_avg_age, self.slob_threshold_a,
+                b_avg_age, self.slob_threshold_b,
+                c_avg_age, self.slob_threshold_c
             )
 
         log_config = self.config.get("simulation_parameters", {}).get("logistics", {})
@@ -1463,6 +1482,9 @@ class Orchestrator:
         """
         PERF: Batch inventory updates instead of per-line calls.
         Reduces 3.6M update_inventory() calls to a single batch operation.
+
+        v0.39.2: Uses receive_inventory_batch for age-aware receipt (SLOB fix).
+        Fresh arrivals blend with existing inventory using weighted average age.
         """
         if not arrived_shipments:
             return
@@ -1489,8 +1511,9 @@ class Orchestrator:
                 if p_idx is not None:
                     delta[target_idx, p_idx] += line.quantity
 
-        # Single batch update instead of 3.6M individual calls
-        self.state.update_inventory_batch(delta)
+        # v0.39.2: Use age-aware batch receive (SLOB fix)
+        # Fresh inventory blends with existing to update weighted average age
+        self.state.receive_inventory_batch(delta)
 
     def _create_plant_shipments(
         self, batches: list[Batch], current_day: int

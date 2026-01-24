@@ -76,6 +76,15 @@ class StateManager:
             (self.n_nodes, self.n_products), dtype=np.float64
         )
 
+        # v0.39.2: Inventory age tracking for SLOB calculation (SLOB fix)
+        # Tracks weighted average age of inventory per (node, product).
+        # Industry SLOB definition uses inventory AGE (how long it's been sitting),
+        # not Days of Supply (how long it COULD last).
+        # Shape: [n_nodes, n_products] - weighted average age in days
+        self.inventory_age = np.zeros(
+            (self.n_nodes, self.n_products), dtype=np.float64
+        )
+
     @property
     def inventory(self) -> np.ndarray:
         """Alias for perceived_inventory (System View)."""
@@ -335,3 +344,115 @@ class StateManager:
             decay_factor: Multiplier applied to unmet demand (0-1)
         """
         self._unmet_demand *= decay_factor
+
+    # =========================================================================
+    # v0.39.2: Inventory Age Tracking (SLOB Fix)
+    # =========================================================================
+    # Industry-standard SLOB calculation uses inventory AGE (how long inventory
+    # has been sitting), not Days of Supply (how long it COULD last). A fresh
+    # batch with 90 days supply is NOT obsolete - but inventory sitting for
+    # 90 days IS obsolete.
+
+    def age_inventory(self, days: int = 1) -> None:
+        """
+        Age all positive inventory by specified days.
+
+        Called at the start of each simulation day to track how long
+        inventory has been sitting. Only ages positive inventory.
+
+        Args:
+            days: Number of days to age inventory (default 1)
+        """
+        has_inventory = self.actual_inventory > 0
+        self.inventory_age[has_inventory] += days
+
+    def receive_inventory(
+        self, node_idx: int, product_idx: int, qty: float
+    ) -> None:
+        """
+        Receive fresh inventory with weighted average age blending.
+
+        When fresh inventory (age 0) arrives, it blends with existing
+        inventory to produce a new weighted average age:
+            new_age = (old_qty × old_age + new_qty × 0) / total_qty
+
+        This preserves age information while correctly modeling FIFO
+        consumption at the aggregate level.
+
+        Args:
+            node_idx: Index of receiving node
+            product_idx: Index of product
+            qty: Quantity received (fresh, age 0)
+        """
+        current_qty = max(0.0, float(self.actual_inventory[node_idx, product_idx]))
+        current_age = float(self.inventory_age[node_idx, product_idx])
+
+        new_total = current_qty + qty
+        if new_total > 0:
+            # Weighted average: (old_qty × old_age + new_qty × 0) / total
+            self.inventory_age[node_idx, product_idx] = (
+                current_qty * current_age
+            ) / new_total
+        else:
+            self.inventory_age[node_idx, product_idx] = 0.0
+
+        # Update actual inventory
+        self.actual_inventory[node_idx, product_idx] = new_total
+        self.perceived_inventory[node_idx, product_idx] = new_total
+
+    def receive_inventory_batch(self, delta_tensor: np.ndarray) -> None:
+        """
+        Receive inventory with weighted average age blending (batch version).
+
+        Vectorized version of receive_inventory for processing multiple
+        arrivals at once. More efficient than individual calls.
+
+        Args:
+            delta_tensor: Shape [n_nodes, n_products] - qty received per cell
+        """
+        # Current state
+        current_qty = np.maximum(0.0, self.actual_inventory)
+        current_age = self.inventory_age
+
+        # New total after receipt
+        new_total = current_qty + delta_tensor
+
+        # Weighted average age calculation (vectorized)
+        # new_age = (old_qty × old_age + new_qty × 0) / new_total
+        # Simplifies to: new_age = (old_qty × old_age) / new_total
+        with np.errstate(divide='ignore', invalid='ignore'):
+            new_age = np.where(
+                new_total > 0,
+                (current_qty * current_age) / new_total,
+                0.0
+            )
+        self.inventory_age = new_age
+
+        # Update inventory tensors
+        self.actual_inventory += delta_tensor
+        self.perceived_inventory += delta_tensor
+        np.maximum(self.actual_inventory, 0, out=self.actual_inventory)
+        np.maximum(self.perceived_inventory, 0, out=self.perceived_inventory)
+
+    def get_weighted_age_by_product(self) -> np.ndarray:
+        """
+        Get inventory-weighted average age per product across all nodes.
+
+        Used for SLOB calculation: computes the weighted average age
+        per SKU, where weights are the inventory quantities at each node.
+
+        Returns:
+            np.ndarray: Shape [n_products] - weighted average age per SKU
+        """
+        # Numerator: sum of (inventory × age) across nodes
+        weighted_age_sum = np.sum(
+            self.inventory_age * np.maximum(0, self.actual_inventory), axis=0
+        )
+        # Denominator: total inventory per product
+        total_inv = np.sum(np.maximum(0, self.actual_inventory), axis=0)
+
+        # Avoid division by zero
+        with np.errstate(divide='ignore', invalid='ignore'):
+            weighted_age = np.where(total_inv > 0, weighted_age_sum / total_inv, 0.0)
+
+        return weighted_age

@@ -174,9 +174,10 @@ poetry run python run_simulation.py --days 365
 
 ```python
 # Tensor Shapes
-inventory: np.ndarray        # [n_nodes, n_products] - Current stock (actual)
-perceived_inventory: np.ndarray  # [n_nodes, n_products] - What system "sees"
-wip: np.ndarray              # [n_nodes, n_products] - Work in process at plants
+inventory: np.ndarray           # [n_nodes, n_products] - Current stock (actual)
+perceived_inventory: np.ndarray # [n_nodes, n_products] - What system "sees"
+inventory_age: np.ndarray       # [n_nodes, n_products] - Weighted avg age (days)
+wip: np.ndarray                 # [n_nodes, n_products] - Work in process at plants
 
 # Index Mappings (str -> int for O(1) lookup)
 node_id_to_idx: dict[str, int]
@@ -185,6 +186,12 @@ product_id_to_idx: dict[str, int]
 
 **Critical:** Always use `state.update_inventory(node_id, product_id, delta)` - never modify tensors directly.
 
+### Inventory Age Tracking (v0.39.2)
+Used for industry-standard SLOB calculation (age-based, not DOS-based):
+- `age_inventory(days)` - Age all positive inventory by N days (called daily)
+- `receive_inventory_batch(delta)` - Receive fresh inventory with weighted average age blending
+- `get_weighted_age_by_product()` - Get inventory-weighted average age per SKU
+
 ---
 
 ## 7. Daily Simulation Loop (Execution Order)
@@ -192,18 +199,21 @@ product_id_to_idx: dict[str, int]
 Every `tick()` (1 day) in `Orchestrator._run_day()`:
 
 ```
+0. MASS BALANCE  → Start day tracking (PhysicsAuditor)
+0a. AGE INVENTORY → Age all inventory by 1 day (for SLOB tracking)
 1. RISK EVENTS   → Trigger disruptions (RiskEventManager)
 2. PRE-QUIRKS    → Apply Phantom Inventory shrinkage (QuirkManager)
-3. ARRIVALS      → Process in-transit shipments that arrived today
-4. DEMAND        → POSEngine generates retail sales (consumes store inventory)
-5. REPLENISHMENT → MinMaxReplenisher creates orders (Physics-based SS + ABC)
-6. ALLOCATION    → AllocationAgent allocates inventory to orders (Fair Share)
-7. LOGISTICS     → LogisticsEngine creates shipments (FTL rules, Emissions)
+3. DEMAND        → POSEngine generates retail sales (consumes store inventory)
+3a. CONSUMPTION  → Record actual sales to MRP (for demand calibration)
+4. REPLENISHMENT → MinMaxReplenisher creates orders (Physics-based SS + ABC)
+5. ALLOCATION    → AllocationAgent allocates inventory to orders (Fair Share)
+6. LOGISTICS     → LogisticsEngine creates shipments (FTL rules, Emissions)
+7. ARRIVALS      → Process in-transit shipments (age-aware receipt)
 7a. RETURNS      → LogisticsEngine generates returns from arrivals (Damage/Recall)
-8. MRP           → MRPEngine plans production (uses demand signal)
+8. MRP           → MRPEngine plans production (uses POS demand signal)
 9. PRODUCTION    → TransformEngine executes manufacturing (Work Orders → Batches)
 10. POST-QUIRKS  → Apply logistics delays/congestion (QuirkManager)
-11. MONITORING   → PhysicsAuditor validates mass balance, records KPIs
+11. MONITORING   → PhysicsAuditor validates mass balance, records KPIs (inc. age-based SLOB)
 ```
 
 ---
