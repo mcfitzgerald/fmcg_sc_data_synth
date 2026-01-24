@@ -28,11 +28,7 @@ poetry install
 poetry run python run_simulation.py
 poetry run python run_simulation.py --days 365 --output-dir data/results/custom
 poetry run python run_simulation.py --days 30 --no-logging  # Fast mode
-
-# Run tests
-poetry run pytest
-poetry run pytest tests/test_milestone_4.py -v  # Single test file
-poetry run pytest tests/test_milestone_4.py::test_allocation_shortage -v  # Single test
+poetry run python run_simulation.py --days 50 --no-logging  # Quick sanity check
 
 # Linting and type checking
 poetry run ruff check .
@@ -112,7 +108,7 @@ The simulation enforces these constraints - violations indicate bugs:
 
 - Use `ruff` and `mypy --strict` for all code
 - Create and maintain robust documentation for all code
-- Prefer integration tests over unit tests (verify emergent behaviors)
+- Use full simulations (50-365 days) for integration testing - check Triangle Report metrics
 - Split files at 700-1000 lines
 - Use vectorized numpy operations for performance (loops banned for heavy lifting)
 - No hardcoded values - use config files; run `semgrep` to detect violations

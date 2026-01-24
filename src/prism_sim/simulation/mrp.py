@@ -216,10 +216,10 @@ class MRPEngine:
         )
         # A-items: buffer above max(expected, actual) to never stockout
         self.a_production_buffer = mrp_thresholds.get("a_production_buffer", 1.1)
-        # C-items: produce at reduced rate to minimize SLOB
+        # v0.39.3: c_production_factor removed - C-items use longer horizons instead
+        # of smaller batches (see production_horizon_days_c config)
         self.c_production_factor = mrp_thresholds.get("c_production_factor", 0.6)
-        # C-items: when using actual demand, apply this factor
-        self.c_demand_factor = mrp_thresholds.get("c_demand_factor", 0.8)
+        # v0.39.3: c_demand_factor removed - was dead code (never used in calculations)
 
         # v0.23.0: Campaign Batching parameters
         # DEATH SPIRAL FIX: Instead of producing all 500 SKUs daily (25h changeover),
@@ -942,18 +942,40 @@ class MRPEngine:
             else:  # C-item
                 abc_horizon = self.production_horizon_days_c
 
-            # v0.39.2 FIX: Use actual POS demand for batch sizing (SLOB fix)
-            # Previous bug: planning_daily_rate_vec was derived from network_forecast
-            # which sums 14 days of demand (including peaks). Re-multiplying by horizon
-            # recycles the inflated total, causing 29% over-production.
+            # v0.39.3 FIX: Use expected demand as FLOOR to prevent death spiral
             #
-            # FIX: Use today's actual POS demand directly for demand rate. This ensures
-            # production tracks actual consumption, not inflated forecasts.
+            # v0.39.2 BUG: Using today's actual POS demand directly caused a death spiral:
+            # 1. Day 1: Service = 89% → only 89% of demand is met
+            # 2. pos_demand_vec reflects what was SOLD, not what was DEMANDED
+            # 3. MRP sees lower "demand" → produces less
+            # 4. Day 2: Even lower inventory → even lower sales → spiral continues
+            #
+            # INDUSTRY REALITY (P&G, Colgate, Unilever):
+            # - Use expected demand (forecast) as floor for production planning
+            # - Actual sales only trigger UPWARD adjustments (demand sensing)
+            # - Never let actual sales pull production below expected baseline
+            #
+            # FIX: demand_for_dos = max(expected, weighted blend of actual + expected)
+            # The demand_floor_weight config controls the blend (default 0.8 expected)
+            demand_floor_weight = float(
+                self.config.get("simulation_parameters", {})
+                .get("manufacturing", {})
+                .get("mrp_thresholds", {})
+                .get("demand_floor_weight", 0.8)
+            )
+
+            # Get expected demand (Zipf-adjusted, stable baseline)
+            expected = float(self.expected_daily_demand[p_idx])
+
             if pos_demand_vec is not None:
-                # Use actual POS demand as the primary signal (closed-loop control)
-                demand_for_dos = float(pos_demand_vec[p_idx])
+                actual = float(pos_demand_vec[p_idx])
+                # Weighted blend: mostly expected, with actual for upward sensing
+                blended = actual * (1 - demand_floor_weight) + expected * demand_floor_weight
+                # FLOOR: never go below expected (prevents death spiral)
+                demand_for_dos = max(expected, blended)
             elif planning_daily_rate_vec is not None:
-                demand_for_dos = float(planning_daily_rate_vec[p_idx])
+                # Use planning rate but floor at expected
+                demand_for_dos = max(expected, float(planning_daily_rate_vec[p_idx]))
             else:
                 # Fallback to v0.28.0 seasonal logic
                 seasonal_expected = expected_demand * seasonal_factor
@@ -996,27 +1018,44 @@ class MRPEngine:
                 # v0.36.0: Use the forecast-based batch quantity
                 batch_qty = batch_qty_base
 
-                # v0.28.0: Apply ABC-differentiated production factors
-                # A-items: buffer 20% more to prevent stockouts
-                # C-items: reduce to prevent SLOB accumulation
-                if abc == 0:  # A-item
-                    batch_qty *= self.a_production_buffer  # 1.2 from config
-                elif abc == 2:  # C-item
-                    batch_qty *= self.c_production_factor  # 0.35 from config
+                # v0.39.3 FIX: ABC-differentiated production WITHOUT cascading penalties
+                #
+                # v0.39.2 BUG: Cascading penalties destroyed C-item production:
+                #   c_production_factor (0.5) × DOS throttle (0.3) = 0.15 (85% cut!)
+                #   This guaranteed C-item stockouts and SLOB from aged inventory.
+                #
+                # INDUSTRY REALITY (Colgate, P&G):
+                # - C-items get LONGER production horizons (campaign runs), not smaller batches
+                # - Monthly C-item campaigns vs weekly A-item runs
+                # - C-items have lower DOS triggers (can tolerate longer replenishment)
+                #
+                # FIX: Apply buffers OR DOS throttling, NEVER cascade both
+                # - A-items: buffer up to prevent stockouts
+                # - B-items: moderate buffer for balanced coverage
+                # - C-items: NO penalty - longer horizon (21d from config) handles SLOB
+                b_production_buffer = float(
+                    self.config.get("simulation_parameters", {})
+                    .get("manufacturing", {})
+                    .get("mrp_thresholds", {})
+                    .get("b_production_buffer", 1.1)
+                )
 
-                # v0.39.1: ABC-specific SLOB throttling
-                # C-items get more aggressive throttling at lower DOS thresholds
-                # to prevent inventory buildup that ages into SLOB
-                if abc == 2:  # C-item: aggressive throttling
-                    if dos_position > 40.0:  # noqa: PLR2004
-                        batch_qty *= 0.3  # Heavy cut approaching SLOB
-                    elif dos_position > 25.0:  # noqa: PLR2004
-                        batch_qty *= 0.5
-                else:  # A/B items: existing logic
+                if abc == 0:  # A-item
+                    batch_qty *= self.a_production_buffer  # 1.3 from config (increased)
+                elif abc == 1:  # B-item
+                    batch_qty *= b_production_buffer  # 1.1 - modest buffer
+                # C-items: NO production factor penalty
+                # Their 21-day horizon (config) already creates larger batches
+
+                # v0.39.3 FIX: DOS throttling ONLY for A/B items (high inventory levels)
+                # C-items do NOT get DOS throttling - their longer horizon and
+                # age-based SLOB tracking (v0.39.2) handle inventory control.
+                if abc != 2:  # A/B items only
                     if dos_position > 60.0:  # noqa: PLR2004
                         batch_qty *= 0.5
                     elif dos_position > 45.0:  # noqa: PLR2004
                         batch_qty *= 0.7
+                # C-items: No DOS throttling - prevents cascading penalty
 
                 # Apply ABC-based minimum to ensure A-items always get coverage
                 if abc == 0:  # A-item minimum

@@ -95,10 +95,11 @@
         "trigger_dos_c": 6
       },
       "abc_production_factors": {
-        "_comment": "v0.39.2: Reduced buffers to prevent over-production",
-        "a_buffer": 1.2,
-        "c_production_factor": 0.5,
-        "c_demand_factor": 0.8
+        "_comment": "v0.39.3: Rebalanced for service recovery without over-production",
+        "a_buffer": 1.3,
+        "b_buffer": 1.1,
+        "c_production_factor": 1.0,
+        "_c_note": "C-items no longer penalized - use longer horizon instead"
       },
       "echelon_proportions": {
         "store": 0.3,
@@ -167,6 +168,8 @@
         "store_batch_size_cases": 100.0,
         "lead_time_history_len": 20,
         "min_history_days": 7,
+        "emergency_dos_threshold": 2.0,
+        "_emergency_note": "v0.39.3: Bypass stagger when any product DOS < threshold",
         "segmentation": {
           "A": 2.33,
           "B": 1.65,
@@ -343,15 +346,18 @@
         "inventory_cap_dos": 30.0,
         "diagnostics_enabled": true,
         "abc_production_enabled": true,
-        "a_production_buffer": 1.2,
-        "c_production_factor": 0.5,
-        "c_demand_factor": 0.8,
+        "a_production_buffer": 1.3,
+        "b_production_buffer": 1.1,
+        "c_production_factor": 1.0,
+        "demand_floor_weight": 0.8,
+        "_demand_floor_note": "v0.39.3: 80% expected + 20% actual prevents death spiral",
         "campaign_batching": {
           "enabled": true,
           "production_horizon_days": 14,
           "production_horizon_days_a": 14,
-          "production_horizon_days_b": 10,
-          "production_horizon_days_c": 5,
+          "production_horizon_days_b": 14,
+          "production_horizon_days_c": 21,
+          "_c_horizon_note": "v0.39.3: 3-week campaigns for C-items (less frequent, larger batches)",
           "trigger_dos_a": 15,
           "trigger_dos_b": 12,
           "trigger_dos_c": 10,

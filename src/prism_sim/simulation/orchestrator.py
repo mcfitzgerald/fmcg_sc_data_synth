@@ -862,7 +862,20 @@ class Orchestrator:
         actual_sales = np.minimum(daily_demand, available)
         self.state.update_inventory_batch(-actual_sales)
         self.auditor.record_sales(actual_sales)
-        # Note: lost_sales tracked implicitly via fill rate metrics
+
+        # v0.39.3: Track TRUE unmet demand from store stockouts
+        #
+        # v0.39.2 BUG: unmet_demand was only recorded from allocation failures,
+        # not from store-level stockouts. When a customer arrives at an empty
+        # shelf, that lost sale was invisible to MRP - causing persistent
+        # under-production for low-priority items (C-items).
+        #
+        # INDUSTRY REALITY: Lost sales at shelf = true unmet demand.
+        # This should flow upstream to drive production planning.
+        #
+        # FIX: Record stockout-based unmet demand in state for MRP calibration.
+        unmet_from_stockout = daily_demand - actual_sales
+        self.state.record_unmet_demand_batch(unmet_from_stockout)
 
         # v0.39.2: Feed actual consumption back to MRP (SLOB fix)
         # This allows MRP to calibrate production to actual consumption,

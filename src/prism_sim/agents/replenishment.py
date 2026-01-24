@@ -702,6 +702,11 @@ class MinMaxReplenisher:
         )
         order_cycle_days = int(params.get("order_cycle_days", 3))
 
+        # v0.39.3: Emergency DOS threshold for bypassing stagger
+        # When a node has ANY product with DOS < threshold, bypass stagger
+        # to prevent stockout accumulation during off-schedule days
+        emergency_dos_threshold = float(params.get("emergency_dos_threshold", 2.0))
+
         target_indices = []
         target_ids = []
         valid_targets = set(self.store_supplier_map.keys())
@@ -716,8 +721,43 @@ class MinMaxReplenisher:
                 if idx is None:
                     continue
 
-                # Apply order staggering
+                # v0.39.3 FIX: Emergency bypass for critical inventory
+                #
+                # BUG: When inventory = 0, replenishment still applies staggering.
+                # Store waits 2-3 days for its "scheduled" order day while
+                # customers see empty shelves. No demand signal flows upstream.
+                #
+                # INDUSTRY REALITY (Walmart, Target):
+                # Emergency orders (expedited replenishment) bypass scheduling.
+                # Zero/critical inventory triggers immediate action.
+                #
+                # FIX: Check minimum DOS at node. If < threshold, bypass stagger.
+                is_emergency = False
                 if node.type == NodeType.STORE:
+                    # Get node inventory and demand signal
+                    node_inv = self.state.actual_inventory[idx, :]
+                    # Use smoothed demand if available, else use small floor
+                    if self.smoothed_demand is not None:
+                        node_demand = self.smoothed_demand[idx, :]
+                    else:
+                        node_demand = np.ones(self.state.n_products) * 0.1
+
+                    # Calculate DOS for non-ingredient products
+                    with np.errstate(divide="ignore", invalid="ignore"):
+                        node_dos = np.where(
+                            node_demand > 0.01,
+                            node_inv / node_demand,
+                            np.inf,
+                        )
+                    # Mask out ingredients (they don't stockout at stores)
+                    node_dos[self.ingredient_mask] = np.inf
+
+                    # Emergency if ANY product has critical DOS
+                    min_dos = np.min(node_dos)
+                    is_emergency = min_dos < emergency_dos_threshold
+
+                # Apply order staggering (unless emergency)
+                if node.type == NodeType.STORE and not is_emergency:
                     order_day = hash(n_id) % order_cycle_days
                     if day % order_cycle_days != order_day:
                         continue
