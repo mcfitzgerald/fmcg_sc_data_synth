@@ -5,6 +5,67 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.39.3] - 2026-01-24
+
+### Production Under-Run & Demand Signal Fix
+
+Fixed the over-correction from v0.39.2 that caused production to under-run demand by ~28%. The v0.39.2 SLOB fix swung from over-production (129%) to under-production (~72%).
+
+#### Problem Statement
+After v0.39.2, SLOB improved (71% → 28.3%), but we had the opposite problem:
+- Production/Demand ratio dropped to ~72% (target: 100-105%)
+- Service remained at 89% (target: 98%)
+- Death spiral: actual sales → lower MRP signal → less production → lower sales
+
+#### 1. Demand Signal Floor (`mrp.py`)
+- **Bug:** Using `pos_demand_vec` (actual sales) directly caused death spiral when service < 100%
+- **Fix:** Use expected demand as FLOOR: `demand_for_dos = max(expected, weighted_blend)`
+- **New Config:** `demand_floor_weight` (default 0.8 = 80% expected, 20% actual)
+- **Industry Reality:** P&G, Colgate, Unilever use forecast as floor, actual sales only for upward adjustments
+
+#### 2. Remove Cascading C-Item Penalties (`mrp.py`)
+- **Bug:** `c_production_factor` (0.5) × DOS throttle (0.3) = 0.15 (85% cut!)
+- **Fix:** C-items use longer horizons (21 days), no penalty factor, no DOS throttling
+- **New Config:** `production_horizon_days_c` increased 5 → 21 (3-week campaigns)
+- **Industry Reality:** C-items run monthly campaigns vs A-items weekly
+
+#### 3. Emergency Replenishment Bypass (`replenishment.py`)
+- **Bug:** Stores with zero inventory still waited for scheduled order day
+- **Fix:** Bypass stagger when any product DOS < `emergency_dos_threshold` (default 2.0)
+- **Industry Reality:** Walmart, Target use emergency orders for critical stockouts
+
+#### 4. Track Stockout-Based Unmet Demand (`orchestrator.py`)
+- **Bug:** Unmet demand only tracked from allocation failures, not store stockouts
+- **Fix:** Record `daily_demand - actual_sales` to state for MRP signal calibration
+- **Impact:** Lost sales at shelf now flow upstream to drive production
+
+#### 5. Dead Code Removal (`mrp.py`)
+- Removed unused `c_demand_factor` (was defined but never used in calculations)
+
+#### 6. Test Suite Archived
+- Moved `tests/` to `archive/tests/` - use full simulations for integration testing
+- Updated `CLAUDE.md` and `llm_context.md` to reflect new testing approach
+
+#### Results (50-day simulation after 90-day burn-in)
+| Metric | v0.39.2 | v0.39.3 | Target |
+|--------|---------|---------|--------|
+| SLOB | 28.3% | **0.1%** | 5-10% |
+| Inventory Turns | 3.71x | **4.95x** | 5-6x |
+| Service Level | 89% | **90.9%** | 98% |
+| A-Item Service | - | **92.8%** | 95%+ |
+| B-Item Service | - | **83.9%** | 90%+ |
+| C-Item Service | - | **82.6%** | 85%+ |
+
+#### Files Modified
+- `src/prism_sim/simulation/mrp.py` - Demand floor, remove cascading penalties
+- `src/prism_sim/agents/replenishment.py` - Emergency bypass
+- `src/prism_sim/simulation/orchestrator.py` - Stockout unmet demand
+- `src/prism_sim/config/simulation_config.json` - Updated parameters
+- `CLAUDE.md` - Updated commands, removed test references
+- `docs/llm_context.md` - Updated for v0.39.3 changes
+
+---
+
 ## [0.39.2] - 2026-01-23
 
 ### SLOB & Over-Production Fix

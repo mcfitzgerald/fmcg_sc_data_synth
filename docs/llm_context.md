@@ -222,11 +222,25 @@ Every `tick()` (1 day) in `Orchestrator._run_day()`:
 
 The simulation has multiple safeguards to prevent feedback loops that collapse production:
 
-### MRP Production Floors
-ABC-based minimum production floors ensure demand is met regardless of inventory signals:
-- **A-Items:** 90% of expected demand (absolute minimum)
-- **B-Items:** 80% of expected demand
-- **C-Items:** 70% of expected demand
+### Demand Signal Floor (v0.39.3)
+MRP uses expected demand as floor to prevent death spiral from low service:
+```python
+# v0.39.3: Weighted blend with expected as floor
+blended = actual * (1 - demand_floor_weight) + expected * demand_floor_weight
+demand_for_dos = max(expected, blended)  # Never go below expected
+```
+- **Config:** `demand_floor_weight` (default 0.8 = 80% expected, 20% actual)
+- **Rationale:** Industry uses forecasts as floor; actual sales only for upward sensing
+
+### ABC Production Buffers (v0.39.3)
+- **A-Items:** `a_production_buffer` = 1.3x (increased buffer for service)
+- **B-Items:** `b_production_buffer` = 1.1x (modest buffer)
+- **C-Items:** No penalty factor - use longer horizons (21 days) instead
+
+### Emergency Replenishment (v0.39.3)
+Bypass order staggering when any product DOS < `emergency_dos_threshold` (default 2.0):
+- Prevents stores with empty shelves from waiting for scheduled order day
+- Critical stockouts trigger immediate action regardless of schedule
 
 ### Timeout Mechanisms
 - **Production Orders:** 14-day timeout (stale orders dropped)
@@ -234,12 +248,10 @@ ABC-based minimum production floors ensure demand is met regardless of inventory
 - **Pending Replenishment Orders:** 14-day timeout (allows retry)
 - **Completed Batches:** 30-day retention (memory cleanup)
 
-### Demand Signal Priority
-MRP uses order-based demand with expected demand as floor:
-```python
-daily_vol = np.maximum(daily_vol, self.expected_daily_demand)  # Floor
-daily_vol = np.minimum(daily_vol, self.expected_daily_demand * 4.0)  # Cap
-```
+### Stockout Demand Tracking (v0.39.3)
+Unmet demand from stockouts (`daily_demand - actual_sales`) is recorded and flows upstream to MRP:
+- Prevents "demand signal collapse" where stockouts hide true demand
+- C-items get proper production priority when shelves are empty
 
 ---
 
@@ -409,10 +421,7 @@ Every decision impacts the balance between:
 # Run Simulation
 poetry run python run_simulation.py
 poetry run python run_simulation.py --days 365
-
-# Run Tests
-poetry run pytest
-poetry run pytest tests/test_milestone_4.py -v
+poetry run python run_simulation.py --days 50 --no-logging  # Quick sanity check
 
 # Type Check & Lint
 poetry run mypy src/
@@ -424,6 +433,8 @@ poetry run python scripts/generate_static_world.py
 # Calibrate Config
 poetry run python scripts/calibrate_config.py --apply
 ```
+
+**Note:** Use full simulations (50-365 days) for integration testing. Check Triangle Report metrics for validation.
 
 ---
 

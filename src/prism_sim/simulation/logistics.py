@@ -94,6 +94,7 @@ class LogisticsEngine:
 
         Applies Channel FTL rules and Weight/Cube constraints.
         v0.15.5: Added LTL mode for store deliveries to fix low truck fill rate.
+        v0.38.0: Ship stale orders as LTL instead of discarding (SLOB fix).
 
         FTL (Full Truckload): Used for DC-to-DC shipments. Requires minimum
         pallets to consolidate. Orders held until threshold met.
@@ -102,14 +103,23 @@ class LogisticsEngine:
         immediately without pallet minimum - stores receive smaller deliveries.
         """
         # 1. Combine new orders with held orders
-        # v0.20.0: Filter out stale held orders to prevent unbounded accumulation
-        # Orders held longer than threshold days are discarded (route likely not serviceable)
+        # v0.38.0 FIX: Ship stale orders as LTL instead of discarding.
+        # Previously, stale orders were filtered out and inventory was "lost",
+        # causing SLOB accumulation. Now we force-ship stale orders as LTL
+        # to ensure inventory reaches its destination (accepting higher cost).
         log_config = self.config.get("simulation_parameters", {}).get("logistics", {})
         stale_threshold_days = log_config.get("stale_order_threshold_days", 14)
-        fresh_held_orders = [
-            o for o in self.held_orders
-            if current_day - o.creation_day <= stale_threshold_days
-        ]
+
+        fresh_held_orders = []
+        stale_orders_to_ship: list[Order] = []
+
+        for o in self.held_orders:
+            if current_day - o.creation_day > stale_threshold_days:
+                # Order is stale - queue for forced LTL shipping
+                stale_orders_to_ship.append(o)
+            else:
+                fresh_held_orders.append(o)
+
         active_orders = fresh_held_orders + orders
         self.held_orders = []  # Reset, will repopulate with remaining
 
@@ -292,6 +302,65 @@ class LogisticsEngine:
                 dist = link.distance_km if link else 0.0
                 current_shipment.emissions_kg = self._calculate_emissions(current_shipment, dist)
                 new_shipments.append(current_shipment)
+
+        # ================================================================
+        # v0.38.0: Force-ship stale orders as LTL (SLOB fix)
+        # ================================================================
+        # Stale orders have been waiting too long for FTL consolidation.
+        # Instead of discarding them (which causes inventory to vanish and
+        # be flagged as SLOB), ship them as LTL to ensure delivery.
+        # This accepts higher transport cost to prevent SLOB accumulation.
+        if stale_orders_to_ship:
+            # Group stale orders by route
+            stale_by_route: dict[tuple[str, str], list[Order]] = {}
+            for order in stale_orders_to_ship:
+                route = (order.source_id, order.target_id)
+                if route not in stale_by_route:
+                    stale_by_route[route] = []
+                stale_by_route[route].append(order)
+
+            for route, route_orders in stale_by_route.items():
+                source_id, target_id = route
+
+                # Collect all lines from stale orders
+                lines_for_packing: list[OrderLine] = []
+                earliest_order_day = current_day
+                for order in route_orders:
+                    lines_for_packing.extend(order.lines)
+                    earliest_order_day = min(earliest_order_day, order.creation_day)
+
+                if not lines_for_packing:
+                    continue
+
+                # Find lead time for this route
+                link = self.route_map.get(route)
+                lead_time = link.lead_time_days if link else 1.0
+                arrival_day = current_day + int(lead_time)
+                dist = link.distance_km if link else 0.0
+
+                # Create LTL shipment(s) for stale orders
+                # Use simple single-truck approach (most stale orders are small)
+                stale_shipment = self._new_shipment(
+                    source_id, target_id, current_day, arrival_day,
+                    shipment_counter, earliest_order_day
+                )
+                shipment_counter += 1
+
+                for line in lines_for_packing:
+                    p_idx = self.state.product_id_to_idx.get(line.product_id)
+                    if p_idx is not None:
+                        unit_weight = self._product_weight[p_idx]
+                        unit_vol = self._product_volume[p_idx]
+                        stale_shipment.lines.append(line)
+                        stale_shipment.total_weight_kg += line.quantity * unit_weight
+                        stale_shipment.total_volume_m3 += line.quantity * unit_vol
+
+                if stale_shipment.lines:
+                    stale_shipment.emissions_kg = self._calculate_emissions(
+                        stale_shipment, dist
+                    )
+                    new_shipments.append(stale_shipment)
+                    self.ltl_shipment_count += 1  # Track as LTL (forced)
 
         return new_shipments
 
