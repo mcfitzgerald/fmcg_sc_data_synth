@@ -281,15 +281,15 @@
     "inventory": {
       "initial_fg_level": 5.0,
       "initialization": {
-        "store_days_supply": 7.0,
-        "rdc_days_supply": 18.0,
+        "store_days_supply": 5.0,
+        "rdc_days_supply": 14.0,
         "rdc_store_multiplier": 80.0,
-        "customer_dc_days_supply": 10.0,
+        "customer_dc_days_supply": 7.0,
         "plant_ingredient_buffer": 200000.0,
         "abc_velocity_factors": {
-          "A": 1.34,
-          "B": 1.15,
-          "C": 0.949
+          "A": 1.2,
+          "B": 1.0,
+          "C": 0.8
         }
       }
     },
@@ -343,11 +343,14 @@
         "diagnostics_enabled": true,
         "abc_production_enabled": true,
         "a_production_buffer": 1.5,
-        "c_production_factor": 0.85,
+        "c_production_factor": 0.4,
         "c_demand_factor": 0.8,
         "campaign_batching": {
           "enabled": true,
           "production_horizon_days": 14,
+          "production_horizon_days_a": 14,
+          "production_horizon_days_b": 10,
+          "production_horizon_days_c": 5,
           "trigger_dos_a": 15,
           "trigger_dos_b": 12,
           "trigger_dos_c": 10,
@@ -466,9 +469,9 @@
       "slob_max_pct": 0.3,
       "slob_days_threshold": 60.0,
       "slob_abc_thresholds": {
-        "A": 40.0,
-        "B": 65.0,
-        "C": 90.0
+        "A": 90.0,
+        "B": 120.0,
+        "C": 180.0
       },
       "slob_margin": 1.5,
       "slob_abc_velocity_factors": {

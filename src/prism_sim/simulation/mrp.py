@@ -230,6 +230,29 @@ class MRPEngine:
         self.max_skus_per_plant_per_day = campaign_config.get(
             "max_skus_per_plant_per_day", 25
         )
+        # v0.39.1: ABC-differentiated production horizons
+        # C-items use shorter horizon to prevent inventory buildup → SLOB
+        self.production_horizon_days_a = campaign_config.get(
+            "production_horizon_days_a", 14
+        )
+        self.production_horizon_days_b = campaign_config.get(
+            "production_horizon_days_b", 10
+        )
+        self.production_horizon_days_c = campaign_config.get(
+            "production_horizon_days_c", 5
+        )
+
+        # v0.37.0: PO Consolidation parameters
+        # Consolidate ingredient POs to improve inbound fill rate
+        po_consolidation_config = mrp_thresholds.get("po_consolidation", {})
+        self.po_consolidation_enabled = po_consolidation_config.get("enabled", False)
+        self.po_window_days = po_consolidation_config.get("window_days", 2)
+        self.po_min_weight_kg = po_consolidation_config.get("min_weight_kg", 5000)
+        self.po_critical_dos = po_consolidation_config.get("critical_dos_threshold", 3)
+
+        # PO consolidation state: supplier_id -> list of pending OrderLines
+        self._pending_po_lines: dict[str, list[OrderLine]] = {}
+        self._po_window_start: dict[str, int] = {}  # supplier_id -> start day
 
     def _build_policy_vectors(self, mrp_config: dict[str, Any]) -> None:
         """Pre-calculate ROP and Target vectors for all products."""
@@ -901,17 +924,30 @@ class MRPEngine:
             # Use sustainable demand (capacity-aware) for batch calculation
             sustainable_demand = float(self.sustainable_daily_demand[p_idx])
 
+            # v0.39.1: Get ABC class early for horizon selection
+            abc = int(self.abc_class[p_idx])
+            if abc == 0:  # A-item
+                abc_horizon = self.production_horizon_days_a
+            elif abc == 1:  # B-item
+                abc_horizon = self.production_horizon_days_b
+            else:  # C-item
+                abc_horizon = self.production_horizon_days_c
+
             # v0.36.0 Demand Sensing Logic
             if planning_daily_rate_vec is not None:
                 demand_for_dos = float(planning_daily_rate_vec[p_idx])
                 # Batch quantity is the total forecasted volume for the horizon
-                batch_qty_base = float(network_forecast[p_idx])
+                # v0.39.1: Scale forecast by ABC-specific horizon ratio
+                # network_forecast uses base horizon (14d), scale to ABC horizon
+                horizon_ratio = abc_horizon / self.production_horizon_days
+                batch_qty_base = float(network_forecast[p_idx]) * horizon_ratio
             else:
                 # Fallback to v0.28.0 seasonal logic
                 seasonal_expected = expected_demand * seasonal_factor
                 seasonal_sustainable = sustainable_demand * seasonal_factor
                 demand_for_dos = max(seasonal_expected, seasonal_sustainable, 1.0)
-                batch_qty_base = seasonal_sustainable * self.production_horizon_days
+                # v0.39.1: Use ABC-specific horizon (was self.production_horizon_days)
+                batch_qty_base = seasonal_sustainable * abc_horizon
 
             # Calculate inventory position
             inventory_position = self._calculate_inventory_position(
@@ -921,8 +957,7 @@ class MRPEngine:
             # Calculate DOS
             dos_position = inventory_position / max(demand_for_dos, 0.1)
 
-            # Get ABC class and corresponding trigger threshold
-            abc = int(self.abc_class[p_idx])
+            # Get trigger threshold for this ABC class (abc already computed above)
             if abc == 0:  # A-item
                 trigger_dos = self.trigger_dos_a
             elif abc == 1:  # B-item
@@ -954,12 +989,19 @@ class MRPEngine:
                 elif abc == 2:  # C-item
                     batch_qty *= self.c_production_factor  # 0.35 from config
 
-                # Apply SLOB throttling for overstocked items
-                if dos_position > 60.0:  # noqa: PLR2004
-                    # Even if below trigger, reduce batch if already high inventory
-                    batch_qty *= 0.5
-                elif dos_position > 45.0:  # noqa: PLR2004
-                    batch_qty *= 0.7
+                # v0.39.1: ABC-specific SLOB throttling
+                # C-items get more aggressive throttling at lower DOS thresholds
+                # to prevent inventory buildup that ages into SLOB
+                if abc == 2:  # C-item: aggressive throttling
+                    if dos_position > 40.0:  # noqa: PLR2004
+                        batch_qty *= 0.3  # Heavy cut approaching SLOB
+                    elif dos_position > 25.0:  # noqa: PLR2004
+                        batch_qty *= 0.5
+                else:  # A/B items: existing logic
+                    if dos_position > 60.0:  # noqa: PLR2004
+                        batch_qty *= 0.5
+                    elif dos_position > 45.0:  # noqa: PLR2004
+                        batch_qty *= 0.7
 
                 # Apply ABC-based minimum to ensure A-items always get coverage
                 if abc == 0:  # A-item minimum
@@ -991,8 +1033,10 @@ class MRPEngine:
         #   prioritizes above an A-item at 90% inventory.
 
         def get_trigger(abc_code: int) -> float:
-            if abc_code == 0: return float(self.trigger_dos_a)
-            if abc_code == 1: return float(self.trigger_dos_b)
+            if abc_code == 0:
+                return float(self.trigger_dos_a)
+            if abc_code == 1:
+                return float(self.trigger_dos_b)
             return float(self.trigger_dos_c)
 
         # v0.36.2: Shuffle to break ties (e.g. multiple items with 0 inventory)
@@ -1003,9 +1047,28 @@ class MRPEngine:
         candidates.sort(key=lambda x: x[2] / get_trigger(x[4]))
 
         # ================================================================
-        # PHASE 3: Select top N per plant (limit changeovers)
+        # PHASE 3: Select top N per plant with ABC slot reservation
         # ================================================================
-        # Group by plant and take top N from each
+        # v0.38.0 FIX: Reserve slots per ABC class to prevent C-item starvation.
+        # Previously, sorting all SKUs by critical ratio caused A-items to
+        # dominate (lower DOS = higher priority), starving C-items which never
+        # got produced. This caused ~200 C-items to accumulate old inventory
+        # that was flagged as SLOB.
+        #
+        # New logic: Reserve proportional slots for each ABC class:
+        # - A-items: 50% of slots (highest velocity, need frequent production)
+        # - B-items: 30% of slots (medium velocity)
+        # - C-items: 20% of slots (ensures coverage despite low velocity)
+        #
+        # Within each class, items are still sorted by critical ratio.
+        #
+        # This improves OEE (more SKUs run → more run time) and reduces SLOB
+        # (C-items get produced before inventory ages out).
+        a_slot_pct = 0.50
+        b_slot_pct = 0.30
+        c_slot_pct = 0.20
+
+        # Group by plant first
         plant_orders: dict[str, list[tuple[str, str, float, float, int]]] = {}
         for cand in candidates:
             plant_id = cand[1]
@@ -1016,10 +1079,48 @@ class MRPEngine:
         production_orders: list[ProductionOrder] = []
 
         for plant_id, plant_candidates in plant_orders.items():
-            # Take top N candidates for this plant
-            selected = plant_candidates[: self.max_skus_per_plant_per_day]
+            max_skus = self.max_skus_per_plant_per_day
 
-            for product_id, _, dos, batch_qty, _ in selected:
+            # Split candidates by ABC class
+            # Candidates are already sorted by critical ratio (ascending)
+            a_items = [c for c in plant_candidates if c[4] == 0]  # abc == 0
+            b_items = [c for c in plant_candidates if c[4] == 1]  # abc == 1
+            c_items = [c for c in plant_candidates if c[4] == 2]  # abc == 2
+
+            # Calculate slot allocation
+            a_slots = int(max_skus * a_slot_pct)
+            b_slots = int(max_skus * b_slot_pct)
+            c_slots = int(max_skus * c_slot_pct)
+
+            # Select top N from each class (already sorted by critical ratio)
+            selected_a = a_items[:a_slots]
+            selected_b = b_items[:b_slots]
+            selected_c = c_items[:c_slots]
+
+            # If one class has fewer candidates than slots, redistribute
+            # unused slots to other classes (A gets priority, then B)
+            unused_a = max(0, a_slots - len(selected_a))
+            unused_b = max(0, b_slots - len(selected_b))
+            unused_c = max(0, c_slots - len(selected_c))
+            total_unused = unused_a + unused_b + unused_c
+
+            if total_unused > 0:
+                # Redistribute unused slots
+                remaining_a = a_items[len(selected_a):]
+                remaining_b = b_items[len(selected_b):]
+                remaining_c = c_items[len(selected_c):]
+
+                # Pool remaining candidates and sort by critical ratio
+                remaining_all = remaining_a + remaining_b + remaining_c
+                remaining_all.sort(key=lambda x: x[2] / get_trigger(x[4]))
+
+                # Take up to unused slots from remaining
+                extra = remaining_all[:total_unused]
+                selected = selected_a + selected_b + selected_c + extra
+            else:
+                selected = selected_a + selected_b + selected_c
+
+            for product_id, _, _dos, batch_qty, _ in selected:
                 po = ProductionOrder(
                     id=self._generate_po_id(current_day),
                     plant_id=plant_id,
@@ -1126,16 +1227,17 @@ class MRPEngine:
         replenishment matches actual consumption. This prevents ingredient
         exhaustion when bullwhip causes production > demand.
 
+        v0.37.0: Added PO consolidation to improve inbound fill rate.
+        When enabled, POs are batched by supplier until weight or window
+        criteria are met, resulting in fuller trucks.
+
         1. Calculate production quantities from active orders
         2. Calculate Ingredient Requirement (Req = Production @ R)
         3. Check Inventory Position vs ROP
-        4. Generate Orders
-
-        v0.19.9: Enhanced diagnostics for ingredient ordering.
+        4. Generate Orders (with optional consolidation)
         """
-        purchase_orders: list[Order] = []
         if not self._plant_ids:
-            return purchase_orders
+            return []
 
         # v0.19.8 FIX: Decouple ingredient ordering from historical production.
         # This breaks the feedback loop where low production → fewer ingredients
@@ -1221,7 +1323,10 @@ class MRPEngine:
                     if p_idx is not None:
                         pipeline[target_idx, p_idx] += line.quantity
 
-        # 5. Process Plants (Vectorized check per plant)
+        # 5. Process Plants - collect candidate order lines
+        # candidate_lines: list of (plant_id, supplier_id, ing_id, qty, dos)
+        candidate_lines: list[tuple[str, str, str, float, float]] = []
+
         for plant_id in self._plant_ids:
             plant_idx = self.state.node_id_to_idx.get(plant_id)
             if plant_idx is None:
@@ -1237,15 +1342,12 @@ class MRPEngine:
             needs_ordering = (inv_position < rop_levels) & (ingredient_reqs > 0)
 
             # Get indices of items to order
-            # This returns a tuple of arrays, we want the first (and only) dimension
             order_indices = np.where(needs_ordering)[0]
 
             for p_idx in order_indices:
                 qty_needed = target_levels[p_idx] - inv_position[p_idx]
 
                 # Apply MOQ
-                # Ideally MOQ should be per ingredient from config/product
-                # Using global min_production_qty as proxy or 1 pallet
                 qty_to_order = max(qty_needed, self.min_ingredient_moq)
 
                 # v0.15.4: Cap order quantity to prevent explosion
@@ -1255,16 +1357,17 @@ class MRPEngine:
                 supplier_id = self._find_supplier_for_ingredient(plant_id, ing_id)
 
                 if supplier_id:
-                    order_id = f"PO-ING-{current_day:03d}-{len(purchase_orders):06d}"
-                    purchase_order = Order(
-                        id=order_id,
-                        source_id=supplier_id,
-                        target_id=plant_id,
-                        creation_day=current_day,
-                        lines=[OrderLine(ing_id, float(qty_to_order))],
-                        status="OPEN",
+                    # Calculate DOS for critical ingredient detection
+                    daily_req = ingredient_reqs[p_idx]
+                    dos = inv_position[p_idx] / daily_req if daily_req > 0 else 999.0
+                    candidate_lines.append(
+                        (plant_id, supplier_id, ing_id, float(qty_to_order), dos)
                     )
-                    purchase_orders.append(purchase_order)
+
+        # 6. Apply consolidation logic (v0.37.0)
+        purchase_orders = self._apply_po_consolidation(
+            current_day, candidate_lines, ingredient_reqs
+        )
 
         # Update diagnostics with ingredient ordering info
         if self._diagnostics:
@@ -1278,6 +1381,163 @@ class MRPEngine:
             )
 
         return purchase_orders
+
+    def _apply_po_consolidation(
+        self,
+        current_day: int,
+        candidate_lines: list[tuple[str, str, str, float, float]],
+        ingredient_reqs: np.ndarray,
+    ) -> list[Order]:
+        """
+        v0.37.0: Apply PO consolidation to improve inbound fill rate.
+
+        Consolidation logic:
+        1. Add new candidate lines to pending pool by supplier
+        2. Check release criteria for each supplier:
+           - Window expired (2 days default)
+           - Weight threshold met (5000 kg default)
+           - Critical DOS detected (< 3 days)
+        3. Release consolidated POs when criteria met
+
+        Args:
+            current_day: Current simulation day
+            candidate_lines: List of (plant_id, supplier_id, ing_id, qty, dos)
+            ingredient_reqs: Daily ingredient requirement vector
+
+        Returns:
+            List of (possibly consolidated) Purchase Orders
+        """
+        if not self.po_consolidation_enabled:
+            # Immediate mode: create individual POs
+            return self._create_immediate_pos(current_day, candidate_lines)
+
+        # Add new lines to pending pool by supplier
+        for plant_id, supplier_id, ing_id, qty, dos in candidate_lines:
+            # Create a supplier key that includes plant for proper routing
+            supplier_key = f"{supplier_id}|{plant_id}"
+
+            if supplier_key not in self._pending_po_lines:
+                self._pending_po_lines[supplier_key] = []
+                self._po_window_start[supplier_key] = current_day
+
+            self._pending_po_lines[supplier_key].append(
+                OrderLine(ing_id, qty)
+            )
+
+        # Check release criteria for each supplier
+        released_pos: list[Order] = []
+
+        for supplier_key in list(self._pending_po_lines.keys()):
+            pending_lines = self._pending_po_lines[supplier_key]
+            window_start = self._po_window_start[supplier_key]
+
+            # Parse supplier key back to IDs
+            supplier_id, plant_id = supplier_key.split("|")
+
+            # Calculate total weight
+            total_weight = sum(
+                line.quantity * self._get_product_weight(line.product_id)
+                for line in pending_lines
+            )
+
+            # Check if any ingredient is critical
+            has_critical = any(
+                self._get_ingredient_dos(line.product_id, ingredient_reqs)
+                < self.po_critical_dos
+                for line in pending_lines
+            )
+
+            # Release conditions
+            window_expired = (current_day - window_start) >= self.po_window_days
+            weight_met = total_weight >= self.po_min_weight_kg
+
+            if has_critical or window_expired or weight_met:
+                # Consolidate into single PO with multiple lines
+                consolidated_po = self._consolidate_po_lines(
+                    current_day, supplier_id, plant_id, pending_lines
+                )
+                released_pos.append(consolidated_po)
+
+                # Clear pending for this supplier
+                del self._pending_po_lines[supplier_key]
+                del self._po_window_start[supplier_key]
+
+        return released_pos
+
+    def _create_immediate_pos(
+        self,
+        current_day: int,
+        candidate_lines: list[tuple[str, str, str, float, float]],
+    ) -> list[Order]:
+        """Create immediate POs without consolidation (legacy behavior)."""
+        purchase_orders: list[Order] = []
+
+        for i, (plant_id, supplier_id, ing_id, qty, _dos) in enumerate(candidate_lines):
+            order_id = f"PO-ING-{current_day:03d}-{i:06d}"
+            purchase_order = Order(
+                id=order_id,
+                source_id=supplier_id,
+                target_id=plant_id,
+                creation_day=current_day,
+                lines=[OrderLine(ing_id, qty)],
+                status="OPEN",
+            )
+            purchase_orders.append(purchase_order)
+
+        return purchase_orders
+
+    def _consolidate_po_lines(
+        self,
+        current_day: int,
+        supplier_id: str,
+        plant_id: str,
+        lines: list[OrderLine],
+    ) -> Order:
+        """Merge multiple order lines into a single consolidated PO."""
+        # Merge duplicate ingredients by summing quantities
+        merged: dict[str, float] = {}
+        for line in lines:
+            merged[line.product_id] = merged.get(line.product_id, 0.0) + line.quantity
+
+        consolidated_lines = [
+            OrderLine(prod_id, qty) for prod_id, qty in merged.items()
+        ]
+
+        order_id = f"PO-CONS-{current_day:03d}-{supplier_id[-3:]}"
+        return Order(
+            id=order_id,
+            source_id=supplier_id,
+            target_id=plant_id,
+            creation_day=current_day,
+            lines=consolidated_lines,
+            status="OPEN",
+        )
+
+    def _get_product_weight(self, product_id: str) -> float:
+        """Get weight per case for a product (kg)."""
+        product = self.world.products.get(product_id)
+        if product and product.weight_kg:
+            return product.weight_kg
+        # Default: 10 kg per case for ingredients
+        return 10.0
+
+    def _get_ingredient_dos(
+        self, product_id: str, ingredient_reqs: np.ndarray
+    ) -> float:
+        """Get current days of supply for an ingredient across all plants."""
+        p_idx = self.state.product_id_to_idx.get(product_id)
+        if p_idx is None:
+            return 999.0
+
+        # Sum inventory across all plants
+        total_inv = 0.0
+        for plant_id in self._plant_ids:
+            total_inv += self.state.get_inventory(plant_id, product_id)
+
+        daily_req = float(ingredient_reqs[p_idx]) * len(self._plant_ids)
+        if daily_req > 0:
+            return total_inv / daily_req
+        return 999.0
 
     def _find_supplier_for_ingredient(self, plant_id: str, ing_id: str) -> str | None:
         """Find a supplier that provides the ingredient to the plant."""
