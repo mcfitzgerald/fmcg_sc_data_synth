@@ -973,6 +973,12 @@ class MRPEngine:
                 blended = actual * (1 - demand_floor_weight) + expected * demand_floor_weight
                 # FLOOR: never go below expected (prevents death spiral)
                 demand_for_dos = max(expected, blended)
+                # v0.39.4: Diagnostic logging to verify demand floor is active
+                if p_idx < 5:  # Log first few SKUs for sampling
+                    mrp_logger.debug(
+                        f"Demand floor: SKU={product_id} expected={expected:.0f} "
+                        f"actual={actual:.0f} blended={blended:.0f} -> demand_for_dos={demand_for_dos:.0f}"
+                    )
             elif planning_daily_rate_vec is not None:
                 # Use planning rate but floor at expected
                 demand_for_dos = max(expected, float(planning_daily_rate_vec[p_idx]))

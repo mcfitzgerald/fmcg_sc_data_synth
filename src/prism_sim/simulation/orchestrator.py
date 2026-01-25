@@ -793,6 +793,18 @@ class Orchestrator:
         When auto_checkpoint is enabled and no checkpoint exists, automatically
         runs burn-in phase first, saves checkpoint, then runs data collection.
         """
+        # v0.39.4: Warn about memory usage for long runs with buffered logging
+        total_days = days + (self._default_burn_in_days if self._needs_burn_in else 0)
+        if (
+            total_days > 100
+            and self.writer.enable_logging
+            and not self.writer.streaming
+        ):
+            print(
+                f"WARNING: Running {total_days} days with buffered logging may use 10-20GB RAM.\n"
+                f"  Consider: --streaming (writes incrementally) or --no-logging (fastest)"
+            )
+
         if self._needs_burn_in:
             # Phase 1: Run burn-in (no metrics recording)
             burn_in_days = self._default_burn_in_days
@@ -1159,11 +1171,12 @@ class Orchestrator:
 
         # Calculate Inventory Turns (Cash) - ONLY finished goods, not ingredients
         # Inventory turns = Annual Sales / Average Inventory (finished goods only)
+        # v0.39.4 FIX: Guard against near-zero inventory causing extreme turns
         fg_inventory = self.state.actual_inventory[:, self._fg_product_mask]
         total_fg_inv = np.sum(np.maximum(0, fg_inventory))
-        if total_fg_inv > 0:
+        if total_fg_inv > 100.0:  # Minimum threshold prevents divide-by-small-number
             daily_turn_rate = total_demand_qty / total_fg_inv  # Sales / Avg FG Inv
-            annual_turns = daily_turn_rate * 365
+            annual_turns = min(daily_turn_rate * 365, 50.0)  # Cap at 50x (2.5x industry max)
             self.monitor.record_inventory_turns(annual_turns)
 
             # Cash-to-Cash (Est: DIO + DSO - DPO)

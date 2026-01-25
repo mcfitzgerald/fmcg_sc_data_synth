@@ -219,7 +219,8 @@
       }
     },
     "demand": {
-      "sku_popularity_alpha": 0.5,
+      "_sku_alpha_note": "v0.39.4: Aligned with benchmark_manifest (1.05) for proper Pareto 80/20 distribution",
+      "sku_popularity_alpha": 1.05,
       "seasonality": {
         "amplitude": 0.12,
         "capacity_amplitude": 0.108,
@@ -285,10 +286,11 @@
     "inventory": {
       "initial_fg_level": 5.0,
       "initialization": {
-        "store_days_supply": 5.0,
-        "rdc_days_supply": 14.0,
+        "_comment": "v0.39.4: Aligned with baseline_reference and FMCG norms (P&G 66 DOS, Colgate 89 DOS)",
+        "store_days_supply": 14.0,
+        "rdc_days_supply": 21.0,
         "rdc_store_multiplier": 80.0,
-        "customer_dc_days_supply": 7.0,
+        "customer_dc_days_supply": 14.0,
         "plant_ingredient_buffer": 200000.0,
         "abc_velocity_factors": {
           "A": 1.2,
@@ -628,7 +630,8 @@
       "output_format": "csv",
       "streaming": true,
       "parquet_batch_size": 10000,
-      "inventory_sample_rate": 1
+      "_sample_rate_note": "v0.39.4: Changed to 7 (weekly) to prevent 8GB+ memory growth",
+      "inventory_sample_rate": 7
     }
   }
 }
