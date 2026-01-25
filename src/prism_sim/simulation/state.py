@@ -140,12 +140,58 @@ class StateManager:
         Updates inventory for all nodes and products using a tensor of deltas.
         Updates BOTH actual and perceived.
         delta_tensor shape must match (n_nodes, n_products).
+
+        v0.39.5: FIFO age approximation - reduces age proportionally on consumption.
+        When inventory is consumed, age is reduced proportionally to quantity sold,
+        simulating FIFO where oldest units are sold first and their "age mass"
+        is removed from the system.
         """
         if delta_tensor.shape != self.perceived_inventory.shape:
             raise ValueError(
                 f"Shape mismatch: {delta_tensor.shape} "
                 f"!= {self.perceived_inventory.shape}"
             )
+
+        # v0.39.5 FIX: FIFO age approximation (SLOB bug fix)
+        #
+        # PROBLEM: Age incremented daily regardless of consumption:
+        # - Slow-moving items that never fully deplete accumulate age indefinitely
+        # - A C-item selling 1/day from 100 units would hit age > 120 days
+        #   even though it's turning normally
+        #
+        # FIX: Reduce age proportionally when inventory is consumed.
+        # This simulates FIFO where selling removes the "oldest" units,
+        # taking their age with them.
+        #
+        # Example: 100 units at age 50, sell 50 units
+        # - FIFO says oldest 50 sold, younger 50 remain
+        # - Age approximation: 50 * (50/100) = 25 days
+        #
+        # This prevents age from growing unbounded on turning inventory.
+        consumption_mask = delta_tensor < 0
+
+        # Calculate age reduction for consumed inventory
+        # Only apply to positions with positive inventory and consumption
+        with np.errstate(divide='ignore', invalid='ignore'):
+            # fraction_remaining = (current - consumed) / current
+            # new_age = old_age * fraction_remaining
+            old_qty = self.actual_inventory.copy()
+            consumed_qty = np.abs(delta_tensor)
+
+            # Compute fraction remaining (clamped to [0, 1])
+            fraction_remaining = np.where(
+                old_qty > 0,
+                np.clip((old_qty - consumed_qty) / old_qty, 0.0, 1.0),
+                0.0
+            )
+
+            # Reduce age proportionally where consumption occurred
+            self.inventory_age = np.where(
+                consumption_mask,
+                self.inventory_age * fraction_remaining,
+                self.inventory_age
+            )
+
         self.perceived_inventory += delta_tensor
         self.actual_inventory += delta_tensor
         # Floor to zero - prevent floating point noise from creating tiny negatives

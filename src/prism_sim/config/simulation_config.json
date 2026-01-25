@@ -171,9 +171,10 @@
         "emergency_dos_threshold": 2.0,
         "_emergency_note": "v0.39.3: Bypass stagger when any product DOS < threshold",
         "segmentation": {
+          "_comment": "v0.39.5: C-items raised from 1.0 to 1.65 (95% service target) to prevent starvation",
           "A": 2.33,
           "B": 1.65,
-          "C": 1.0
+          "C": 1.65
         },
         "echelon_safety_multiplier": 1.0,
         "push_allocation_enabled": true,
@@ -360,10 +361,12 @@
           "production_horizon_days_b": 14,
           "production_horizon_days_c": 21,
           "_c_horizon_note": "v0.39.3: 3-week campaigns for C-items (less frequent, larger batches)",
-          "trigger_dos_a": 15,
-          "trigger_dos_b": 12,
-          "trigger_dos_c": 10,
-          "max_skus_per_plant_per_day": 50
+          "_trigger_note": "v0.39.5: Lowered triggers to prevent feast/famine oscillation",
+          "trigger_dos_a": 10,
+          "trigger_dos_b": 8,
+          "trigger_dos_c": 6,
+          "_sku_slot_note": "v0.39.5: Increased from 50 to 70 for better C-item coverage",
+          "max_skus_per_plant_per_day": 70
         },
         "po_consolidation": {
           "enabled": true,

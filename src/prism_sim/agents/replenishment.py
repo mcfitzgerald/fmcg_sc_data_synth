@@ -689,8 +689,11 @@ class MinMaxReplenisher:
         # v0.38.0: Decay unmet demand after orders placed to prevent accumulation.
         # Orders should capture the unmet demand, so we decay what was recorded.
         # v0.39.0: Slowed decay from 0.5 to 0.85 (15%/day) to preserve signal.
-        # 50% decay collapses in 7 days; 85% persists ~30 days.
-        self.state.decay_unmet_demand(decay_factor=0.85)
+        # v0.39.5: Further slowed to 0.95 (5%/day) for C-item recovery.
+        # C-items have structural disadvantages (allocation priority, z-score).
+        # With 15%/day decay, unmet demand halves in ~5 days - too fast for
+        # C-items that only get produced every 2-3 weeks. 5%/day persists ~60 days.
+        self.state.decay_unmet_demand(decay_factor=0.95)
 
         return orders
 

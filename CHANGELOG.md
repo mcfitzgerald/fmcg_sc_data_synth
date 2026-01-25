@@ -5,6 +5,61 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.39.5] - 2026-01-25
+
+### SLOB & C-Item Service Root Cause Fix
+
+Fixed critical SLOB calculation bug and C-item starvation parameters. SLOB dropped from 42.1% to 18.7% (-23.4 pts).
+
+#### Problem Statement
+After v0.39.4 config fixes, 365-day simulation showed:
+- **SLOB: 42.1%** (target <15%) - exploded over time
+- **Service Level: 75.2%** (target 97%)
+- **C-Item Service: 45.5%** - catastrophically low
+
+Investigation found SLOB calculation bug where age accumulated regardless of inventory turnover.
+
+#### 1. FIFO Age Approximation (`state.py`)
+- **Bug:** Age incremented daily regardless of consumption
+  - Day 1: Receive 100 cases (age = 0)
+  - Day 60: Sell down to 20 cases, but age = 60 days (FALSE!)
+  - SLOB flagged despite inventory turning normally
+- **Fix:** Reduce age proportionally when inventory is consumed
+  - Approximates FIFO: selling removes "oldest" units along with their age
+  - Formula: `new_age = old_age × fraction_remaining`
+  - Example: 100 units at age 50, sell 50 → age becomes 25
+- **Impact:** SLOB dropped from 42.1% to 18.7%
+
+#### 2. C-Item Z-Score Boost (`simulation_config.json`)
+- **Bug:** C-item z-score 1.0 (84% service) caused systematic starvation
+- **Fix:** Increased to 1.65 (95% service target, match B-items)
+- **Impact:** C-items now get adequate safety stock
+
+#### 3. Unmet Demand Decay Slowdown (`replenishment.py`)
+- **Bug:** 15%/day decay collapsed C-item signal before replenishment cycle
+- **Fix:** Reduced decay from 0.85 to 0.95 (5%/day)
+- **Impact:** Signal persists ~60 days vs ~7 days before
+
+#### 4. Production Trigger Tuning (`simulation_config.json`)
+- **Fix:** Lower DOS triggers (A: 15→10, B: 12→8, C: 10→6)
+- **Fix:** Increase SKU slots per plant (50→70)
+- **Impact:** More proactive production, better C-item coverage
+
+#### Results (365-day simulation)
+| Metric | v0.39.4 | v0.39.5 | Change |
+|--------|---------|---------|--------|
+| **SLOB** | 42.1% | **18.7%** | -23.4 pts |
+| Service Level | 75.2% | 74.5% | -0.7 pts |
+| C-Item Service | 45.5% | 56.5% | +11.0 pts |
+| Inventory Turns | - | 8.61x | Good |
+
+#### Files Modified
+- `src/prism_sim/simulation/state.py` - FIFO age approximation
+- `src/prism_sim/agents/replenishment.py` - Unmet demand decay
+- `src/prism_sim/config/simulation_config.json` - Z-scores, triggers, SKU slots
+
+---
+
 ## [0.39.4] - 2026-01-24
 
 ### Demand Signal & Inventory Initialization Fix
