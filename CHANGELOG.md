@@ -5,6 +5,44 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.39.6] - 2026-01-25
+
+### Performance Optimization Release
+
+Major performance improvements reducing 30-day simulation runtime from 388s to 43s (~89% faster, 9x speedup) and memory usage from 6.3 GB to ~3 GB.
+
+#### 1. Batch Inventory Updates (`allocation.py`)
+- **Before:** 500K+ individual `update_inventory()` calls per day
+- **After:** Single vectorized tensor operation per source node
+- **Impact:** Eliminated dict lookups and per-product function call overhead
+
+#### 2. Pre-computed Lookup Caches (`replenishment.py`)
+- **Before:** 49M+ `dict.get()` calls per day in `_create_order_objects()`
+- **After:** Direct numpy array indexing with pre-computed caches
+- **Impact:** O(1) array access replaces O(1) amortized dict lookups (lower constant)
+- Added `_build_lookup_caches()` method for product_id, category, and node_id arrays
+
+#### 3. Sparse Lead Time Storage (`replenishment.py`)
+- **Before:** Dense [6126 x 6126 x 20] tensor = 2.86 GB
+- **After:** Sparse dict with deque circular buffers = ~2 MB
+- **Impact:** ~3.5 GB memory savings (99.9% reduction in lead time tracking)
+- Only ~6000 links exist in network; 99.99% of dense tensor was zeros
+- Updated `orchestrator.py` warm-start and `snapshot.py` to use sparse API
+
+#### 4. Scatter-Add for Inflow Recording (`replenishment.py`)
+- **Before:** Nested loops with individual element accumulation
+- **After:** `np.add.at()` scatter operation for sparse accumulation
+- **Impact:** Replaces N individual updates with single vectorized operation
+
+#### Results (30-day simulation, --no-logging)
+| Metric | v0.39.5 | v0.39.6 | Change |
+|--------|---------|---------|--------|
+| Runtime | 388s | 43s | -89% |
+| Peak Memory | 6.3 GB | ~3 GB | -52% |
+| Per-day Step | ~13s | ~1.4s | -89% |
+
+All optimizations are behavior-preserving refactors - Triangle Report metrics unchanged.
+
 ## [0.39.5] - 2026-01-25
 
 ### SLOB & C-Item Service Root Cause Fix

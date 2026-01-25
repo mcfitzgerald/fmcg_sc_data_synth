@@ -162,22 +162,34 @@ class AllocationAgent:
             current_inv = np.maximum(0, actual_inv)
             fill_ratios = self._calculate_fill_ratios(demand_vector, current_inv)
 
-            # Decrement inventory (constrained by fill_ratios)
-            for p_idx, ratio in enumerate(fill_ratios):
-                if demand_vector[p_idx] > 0:
-                    allocated_qty = demand_vector[p_idx] * ratio
-                    p_id = self.state.product_idx_to_id[p_idx]
+            # PERF: Vectorized inventory decrement (replaces 500K+ per-product calls)
+            # Calculate allocated quantities for all products at once
+            allocated_qty_vec = demand_vector * fill_ratios
 
-                    if allocated_qty > 0:
-                        self.state.update_inventory(source_id, p_id, -allocated_qty)
-                        # Track for mass balance audit
-                        allocation_matrix[source_idx, p_idx] += allocated_qty
+            # Update inventory tensors directly (batch operation)
+            self.state.actual_inventory[source_idx, :] -= allocated_qty_vec
+            self.state.perceived_inventory[source_idx, :] -= allocated_qty_vec
 
-                    # v0.38.0: Track unmet demand (what couldn't be filled)
-                    if ratio < 1.0:
-                        unfilled_qty = demand_vector[p_idx] * (1.0 - ratio)
-                        if unfilled_qty > self.epsilon:
-                            unmet_demand_matrix[source_idx, p_idx] += unfilled_qty
+            # Floor to zero - prevent floating point noise from creating negatives
+            np.maximum(
+                self.state.actual_inventory[source_idx, :],
+                0,
+                out=self.state.actual_inventory[source_idx, :],
+            )
+            np.maximum(
+                self.state.perceived_inventory[source_idx, :],
+                0,
+                out=self.state.perceived_inventory[source_idx, :],
+            )
+
+            # Track for mass balance audit
+            allocation_matrix[source_idx, :] += allocated_qty_vec
+
+            # v0.38.0: Track unmet demand (what couldn't be filled) - VECTORIZED
+            unfilled_qty_vec = demand_vector * (1.0 - fill_ratios)
+            # Only track where ratio < 1 and unfilled_qty > epsilon
+            unmet_mask = (fill_ratios < 1.0) & (unfilled_qty_vec > self.epsilon)
+            unmet_demand_matrix[source_idx, unmet_mask] += unfilled_qty_vec[unmet_mask]
 
             # Apply to orders
             for order in sorted_orders:

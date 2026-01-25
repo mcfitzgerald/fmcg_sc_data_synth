@@ -187,26 +187,23 @@ def derive_initialization_params(
         if demand_sigma[i] > SERIALIZATION_THRESHOLD
     }
 
-    # 2. Average lead time per link (from replenisher's lead_time_history)
-    # Only capture links with actual observations
+    # 2. Average lead time per link (from replenisher's sparse lead time storage)
+    # PERF: Iterate only over links with actual observations (sparse)
     avg_lead_times: dict[str, dict[str, float]] = {}
     lead_time_sigma: dict[str, dict[str, float]] = {}
 
-    for target_idx in range(state.n_nodes):
+    for link_key, mu in replenisher._lt_mu_cache_sparse.items():
+        target_idx, source_idx = link_key
         target_id = state.node_idx_to_id[target_idx]
-        for source_idx in range(state.n_nodes):
-            count = replenisher.lt_count[target_idx, source_idx]
-            if count > 0:
-                source_id = state.node_idx_to_id[source_idx]
-                mu = float(replenisher._lt_mu_cache[target_idx, source_idx])
-                sigma = float(replenisher._lt_sigma_cache[target_idx, source_idx])
+        source_id = state.node_idx_to_id[source_idx]
+        sigma = replenisher._lt_sigma_cache_sparse.get(link_key, 0.0)
 
-                if target_id not in avg_lead_times:
-                    avg_lead_times[target_id] = {}
-                    lead_time_sigma[target_id] = {}
+        if target_id not in avg_lead_times:
+            avg_lead_times[target_id] = {}
+            lead_time_sigma[target_id] = {}
 
-                avg_lead_times[target_id][source_id] = round(mu, 2)
-                lead_time_sigma[target_id][source_id] = round(sigma, 2)
+        avg_lead_times[target_id][source_id] = round(mu, 2)
+        lead_time_sigma[target_id][source_id] = round(sigma, 2)
 
     # 3. ABC classifications (from MRP engine)
     abc_classes = {

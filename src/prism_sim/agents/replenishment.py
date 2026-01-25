@@ -1,3 +1,4 @@
+from collections import deque
 from typing import Any
 
 import numpy as np
@@ -163,25 +164,19 @@ class MinMaxReplenisher:
         self.history_idx = 0  # Circular buffer index
 
         # Physics Overhaul: Lead Time Tracking (v0.17.0+)
-        # Rolling history of lead times per link (target, source)
-        # Shape: [n_nodes (target), n_nodes (source), history_len]
-        # Using a fixed history length of 20 samples
+        # PERF: Sparse lead time storage (replaces dense 6126x6126x20 tensor)
+        # Only ~6000 links exist in network - 99.99% of dense tensor is zeros.
+        # Using dict[tuple[int, int], deque] saves ~3.5 GB memory.
         self.lt_history_len = int(params.get("lead_time_history_len", 20))
-        self.lead_time_history = np.zeros(
-            (self.state.n_nodes, self.state.n_nodes, self.lt_history_len),
-            dtype=np.float32
-        )
-        self.lt_ptr = np.zeros((self.state.n_nodes, self.state.n_nodes), dtype=int)
-        self.lt_count = np.zeros((self.state.n_nodes, self.state.n_nodes), dtype=int)
+        self._lt_history: dict[tuple[int, int], deque[float]] = {}
 
-        # PERF: Cached lead time stats [n_nodes, n_nodes] - updated incrementally
-        # Avoids calling np.std() 60k+ times per day
-        self._lt_mu_cache = np.full(
-            (self.state.n_nodes, self.state.n_nodes), 3.0, dtype=np.float32
-        )
-        self._lt_sigma_cache = np.zeros(
-            (self.state.n_nodes, self.state.n_nodes), dtype=np.float32
-        )
+        # PERF: Sparse caches - only store stats for active links
+        # Default values used for links without history
+        self._lt_mu_cache_sparse: dict[tuple[int, int], float] = {}
+        self._lt_sigma_cache_sparse: dict[tuple[int, int], float] = {}
+        self._lt_default_mu = 3.0
+        self._lt_default_sigma = 0.0
+
         # Track which specific links need cache update (not all of them)
         self._lt_dirty_links: set[tuple[int, int]] = set()
 
@@ -206,16 +201,24 @@ class MinMaxReplenisher:
                 if p_idx is not None:
                     self.ingredient_mask[p_idx] = True
 
+        # PERF: Pre-computed lookup caches for O(1) array access
+        # Replaces 49M+ dict.get() calls with direct array indexing
+        self._build_lookup_caches()
+
         # v0.21.0: Removed pending_orders dict (memory explosion fix)
         # Real retail systems don't track pending orders per-SKU. Instead, they:
         # 1. Use Inventory Position (on-hand + in-transit) for reorder decisions
         # 2. Recalculate requirements fresh each cycle
         # The IP logic at line ~727 already prevents double-ordering correctly.
 
-    def record_lead_time(self, target_id: str, source_id: str, lead_time_days: float) -> None:
+    def record_lead_time(
+        self, target_id: str, source_id: str, lead_time_days: float
+    ) -> None:
         """
         Record a realized lead time for a specific link.
         Phase 1 of Physics Overhaul.
+
+        PERF: Uses sparse dict storage with deque as circular buffer.
         """
         t_idx = self.state.node_id_to_idx.get(target_id)
         s_idx = self.state.node_id_to_idx.get(source_id)
@@ -223,47 +226,61 @@ class MinMaxReplenisher:
         if t_idx is None or s_idx is None:
             return
 
-        ptr = self.lt_ptr[t_idx, s_idx]
-        self.lead_time_history[t_idx, s_idx, ptr] = lead_time_days
+        link_key = (t_idx, s_idx)
 
-        self.lt_ptr[t_idx, s_idx] = (ptr + 1) % self.lt_history_len
-        if self.lt_count[t_idx, s_idx] < self.lt_history_len:
-            self.lt_count[t_idx, s_idx] += 1
+        # Initialize deque for this link if needed (lazy allocation)
+        if link_key not in self._lt_history:
+            self._lt_history[link_key] = deque(maxlen=self.lt_history_len)
+
+        # Append to circular buffer (deque handles maxlen automatically)
+        self._lt_history[link_key].append(lead_time_days)
 
         # PERF: Only mark THIS specific link as dirty (not all links)
-        self._lt_dirty_links.add((t_idx, s_idx))
+        self._lt_dirty_links.add(link_key)
 
     def _update_lt_cache(self) -> None:
         """
         PERF: Incremental update of lead time stats cache.
         Only updates links that changed since last call.
+
+        Uses sparse dict storage instead of dense arrays.
         """
         if not self._lt_dirty_links:
             return
 
         # Only update stats for dirty links (not all links)
-        for t_idx, s_idx in self._lt_dirty_links:
-            count = self.lt_count[t_idx, s_idx]
-            if count >= 2:
-                history = self.lead_time_history[t_idx, s_idx, :count]
-                self._lt_mu_cache[t_idx, s_idx] = np.mean(history)
-                self._lt_sigma_cache[t_idx, s_idx] = np.std(history, ddof=1)
+        for link_key in self._lt_dirty_links:
+            history = self._lt_history.get(link_key)
+            if history and len(history) >= 2:  # noqa: PLR2004
+                history_arr = np.array(history)
+                self._lt_mu_cache_sparse[link_key] = float(np.mean(history_arr))
+                sigma = float(np.std(history_arr, ddof=1))
+                self._lt_sigma_cache_sparse[link_key] = sigma
+            elif history and len(history) == 1:
+                # Single sample: use it as mean, zero variance
+                self._lt_mu_cache_sparse[link_key] = history[0]
+                self._lt_sigma_cache_sparse[link_key] = 0.0
 
         self._lt_dirty_links.clear()
 
-    def get_lead_time_stats(self, target_id: str, source_id: str) -> tuple[float, float]:
+    def get_lead_time_stats(
+        self, target_id: str, source_id: str
+    ) -> tuple[float, float]:
         """
         Get Mean and StdDev of lead time for a link.
         Returns (mu_L, sigma_L).
-        PERF: Now uses cached values instead of computing each time.
+        PERF: Now uses sparse cached values instead of dense arrays.
         """
         t_idx = self.state.node_id_to_idx.get(target_id)
         s_idx = self.state.node_id_to_idx.get(source_id)
 
         if t_idx is None or s_idx is None:
-            return 3.0, 0.0  # Default fallback
+            return self._lt_default_mu, self._lt_default_sigma
 
-        return float(self._lt_mu_cache[t_idx, s_idx]), float(self._lt_sigma_cache[t_idx, s_idx])
+        link_key = (t_idx, s_idx)
+        mu = self._lt_mu_cache_sparse.get(link_key, self._lt_default_mu)
+        sigma = self._lt_sigma_cache_sparse.get(link_key, self._lt_default_sigma)
+        return mu, sigma
 
     def get_lead_time_stats_vectorized(
         self, target_indices: np.ndarray, source_indices: np.ndarray
@@ -271,11 +288,22 @@ class MinMaxReplenisher:
         """
         PERF: Vectorized lead time stats lookup for multiple links.
         Returns (mu_L_vec, sigma_L_vec) arrays.
+
+        Uses sparse dict storage with fallback to default values.
         """
-        return (
-            self._lt_mu_cache[target_indices, source_indices],
-            self._lt_sigma_cache[target_indices, source_indices],
-        )
+        n = len(target_indices)
+        mu_vec = np.full(n, self._lt_default_mu, dtype=np.float32)
+        sigma_vec = np.full(n, self._lt_default_sigma, dtype=np.float32)
+
+        for i in range(n):
+            link_key = (int(target_indices[i]), int(source_indices[i]))
+            if link_key in self._lt_mu_cache_sparse:
+                mu_vec[i] = self._lt_mu_cache_sparse[link_key]
+                sigma_vec[i] = self._lt_sigma_cache_sparse.get(
+                    link_key, self._lt_default_sigma
+                )
+
+        return mu_vec, sigma_vec
 
     def _update_abc_classification(self) -> None:
         """
@@ -356,6 +384,40 @@ class MinMaxReplenisher:
             if node.type == NodeType.STORE:
                 self.batch_vec[idx] = self.store_batch_size  # Config-driven override (default 20.0)
                 self.min_qty_vec[idx] = self.default_min_qty
+
+    def _build_lookup_caches(self) -> None:
+        """
+        PERF: Build pre-computed lookup arrays for O(1) access.
+
+        Replaces dict.get() calls with direct array indexing in hot paths.
+        This eliminates ~49M dict lookups per day in _create_order_objects().
+
+        Arrays built:
+        - _product_id_arr: p_idx -> product_id (str)
+        - _product_category_arr: p_idx -> category.name (str)
+        - _node_id_arr: n_idx -> node_id (str)
+        """
+        n_products = self.state.n_products
+        n_nodes = self.state.n_nodes
+
+        # Product caches
+        self._product_id_arr: np.ndarray = np.empty(n_products, dtype=object)
+        self._product_category_arr: np.ndarray = np.empty(n_products, dtype=object)
+
+        for p_idx in range(n_products):
+            p_id = self.state.product_idx_to_id[p_idx]
+            self._product_id_arr[p_idx] = p_id
+            product = self.world.products.get(p_id)
+            if product and product.category:
+                self._product_category_arr[p_idx] = product.category.name
+            else:
+                self._product_category_arr[p_idx] = ""
+
+        # Node caches
+        self._node_id_arr: np.ndarray = np.empty(n_nodes, dtype=object)
+
+        for n_idx in range(n_nodes):
+            self._node_id_arr[n_idx] = self.state.node_idx_to_id[n_idx]
 
     def _cache_customer_dcs(self) -> None:
         """
@@ -598,6 +660,9 @@ class MinMaxReplenisher:
         Customer DCs should use inflow (what was requested) not outflow
         (what was shipped) to avoid under-ordering when inventory is low.
 
+        PERF: Uses np.add.at() for efficient sparse accumulation instead of
+        nested loops with individual element updates.
+
         Args:
             orders: List of orders generated by generate_orders()
         """
@@ -610,7 +675,11 @@ class MinMaxReplenisher:
         # Reset current day's slot before accumulating
         self.inflow_history[self._inflow_ptr] = 0
 
-        # Aggregate orders by source (the node receiving the order)
+        # PERF: Pre-build coordinate arrays for scatter-add
+        source_indices: list[int] = []
+        product_indices: list[int] = []
+        quantities: list[float] = []
+
         for order in orders:
             source_idx = self.state.node_id_to_idx.get(order.source_id)
             if source_idx is None:
@@ -619,9 +688,18 @@ class MinMaxReplenisher:
             for line in order.lines:
                 p_idx = self.state.product_id_to_idx.get(line.product_id)
                 if p_idx is not None:
-                    self.inflow_history[self._inflow_ptr, source_idx, p_idx] += (
-                        line.quantity
-                    )
+                    source_indices.append(source_idx)
+                    product_indices.append(p_idx)
+                    quantities.append(line.quantity)
+
+        # PERF: Single scatter-add operation instead of N individual updates
+        if source_indices:
+            np.add.at(
+                self.inflow_history[self._inflow_ptr],
+                (np.array(source_indices, dtype=np.intp),
+                 np.array(product_indices, dtype=np.intp)),
+                np.array(quantities, dtype=np.float64),
+            )
 
         # Advance pointer for circular buffer
         self._inflow_ptr = (self._inflow_ptr + 1) % 7
@@ -869,8 +947,12 @@ class MinMaxReplenisher:
         if np.any(has_source):
             valid_target_idx = target_idx_arr[has_source]
             valid_source_idx = source_idx_arr[has_source]
-            mu_L_vec[has_source, 0] = self._lt_mu_cache[valid_target_idx, valid_source_idx]
-            sigma_L_vec[has_source, 0] = self._lt_sigma_cache[valid_target_idx, valid_source_idx]
+            # PERF: Use sparse cache via vectorized lookup method
+            mu_vals, sigma_vals = self.get_lead_time_stats_vectorized(
+                valid_target_idx, valid_source_idx
+            )
+            mu_L_vec[has_source, 0] = mu_vals
+            sigma_L_vec[has_source, 0] = sigma_vals
 
         cycle_stock = avg_demand * mu_L_vec
 
@@ -1031,7 +1113,8 @@ class MinMaxReplenisher:
 
             t_idx = int(target_indices[r])
             p_idx = int(c)
-            p_id = self.state.product_idx_to_id[p_idx]
+            # PERF: Use cached array instead of dict lookup
+            p_id = self._product_id_arr[p_idx]
 
             if t_idx not in orders_by_target:
                 orders_by_target[t_idx] = {
@@ -1057,10 +1140,10 @@ class MinMaxReplenisher:
             if target_node and not orders_by_target[t_idx]["promo_id"]:
                 for promo in active_promos:
                     affected_cats = promo.get("affected_categories", ["all"])
+                    # PERF: Use cached array instead of dict lookup
                     cat_match = (
                         "all" in affected_cats
-                        or self.world.products[p_id].category.name
-                        in affected_cats
+                        or self._product_category_arr[p_idx] in affected_cats
                     )
                     affected_chans = promo.get("affected_channels")
                     chan_match = (
@@ -1077,7 +1160,8 @@ class MinMaxReplenisher:
         orders = []
         order_count = 0
         for t_idx, data in orders_by_target.items():
-            target_id = self.state.node_idx_to_id[t_idx]
+            # PERF: Use cached array instead of dict lookup
+            target_id = self._node_id_arr[t_idx]
             source_id = self.store_supplier_map.get(target_id)
             if not source_id: continue
 

@@ -2,12 +2,11 @@ import gzip
 import hashlib
 import json
 import logging
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import numpy as np
-
-logger = logging.getLogger(__name__)
 
 from prism_sim.agents.allocation import AllocationAgent
 from prism_sim.agents.replenishment import MinMaxReplenisher
@@ -40,6 +39,10 @@ from prism_sim.simulation.state import StateManager
 from prism_sim.simulation.transform import TransformEngine
 from prism_sim.simulation.writer import SimulationWriter
 
+logger = logging.getLogger(__name__)
+
+MemoryCallback = Callable[[str], None] | None
+
 
 class Orchestrator:
     """The main time-stepper loop for the Prism Digital Twin."""
@@ -54,7 +57,10 @@ class Orchestrator:
         warm_start_path: str | None = None,
         skip_warm_start_hash_check: bool = False,
         auto_checkpoint: bool = True,
+        memory_callback: MemoryCallback = None,
     ) -> None:
+        # Store memory callback for periodic snapshots
+        self._memory_callback = memory_callback
         # 1. Initialize World
         manifest = load_manifest()
         self.config = load_simulation_config()
@@ -510,10 +516,12 @@ class Orchestrator:
                                 day_idx, node_idx, prod_idx
                             ] = value / self.state.n_nodes
 
-        # 2. Initialize replenisher lead time history
+        # 2. Initialize replenisher lead time history (sparse storage)
         avg_lt = derived_data.get("avg_lead_time_by_link", {})
         if avg_lt:
-            print("  Initializing lead time history...")
+            print("  Initializing lead time history (sparse)...")
+            from collections import deque
+
             for target_id, sources in avg_lt.items():
                 target_idx = self.state.node_id_to_idx.get(target_id)
                 if target_idx is None:
@@ -522,22 +530,22 @@ class Orchestrator:
                     source_idx = self.state.node_id_to_idx.get(source_id)
                     if source_idx is None:
                         continue
-                    # Fill history with average + noise
-                    for i in range(self.replenisher.lt_history_len):
+                    link_key = (target_idx, source_idx)
+                    # Initialize deque with noisy samples
+                    history = deque(maxlen=self.replenisher.lt_history_len)
+                    for _ in range(self.replenisher.lt_history_len):
                         noise = np.random.normal(1.0, lt_noise_cv)
-                        self.replenisher.lead_time_history[
-                            target_idx, source_idx, i
-                        ] = avg_val * max(0.5, noise)
-                    self.replenisher.lt_count[target_idx, source_idx] = (
-                        self.replenisher.lt_history_len
-                    )
-                    # Update cache
-                    self.replenisher._lt_mu_cache[target_idx, source_idx] = avg_val
+                        history.append(avg_val * max(0.5, noise))
+                    self.replenisher._lt_history[link_key] = history
+                    # Update sparse cache directly
+                    self.replenisher._lt_mu_cache_sparse[link_key] = avg_val
                     lt_sigma = derived_data.get("lead_time_sigma_by_link", {})
                     if target_id in lt_sigma and source_id in lt_sigma[target_id]:
-                        self.replenisher._lt_sigma_cache[
-                            target_idx, source_idx
-                        ] = lt_sigma[target_id][source_id]
+                        self.replenisher._lt_sigma_cache_sparse[link_key] = (
+                            lt_sigma[target_id][source_id]
+                        )
+                    else:
+                        self.replenisher._lt_sigma_cache_sparse[link_key] = 0.0
 
         # 3. Initialize ABC classifications and z-scores
         if use_derived_abc:
@@ -817,6 +825,10 @@ class Orchestrator:
                 if day % 30 == 0:
                     print(f"  Burn-in day {day}/{burn_in_days} complete")
 
+            # Memory snapshot after burn-in
+            if self._memory_callback:
+                self._memory_callback("after_burn_in")
+
             # Save checkpoint for future runs
             self._save_checkpoint(burn_in_days)
 
@@ -833,6 +845,9 @@ class Orchestrator:
 
         for day in range(self._start_day, end_day):
             self._step(day)
+            # Memory snapshot every 10 simulation days
+            if self._memory_callback and (day - self._start_day + 1) % 10 == 0:
+                self._memory_callback(f"day_{day}")
 
         print("Simulation Complete.")
 
