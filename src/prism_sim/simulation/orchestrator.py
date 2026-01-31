@@ -1451,8 +1451,7 @@ class Orchestrator:
         )
         self.writer.log_forecasts(forecast_vec, self.state, day)
 
-        if day % 7 == 0:
-            self.writer.log_inventory(self.state, self.world, day)
+        self.writer.log_inventory(self.state, self.world, day)
 
     def _print_daily_status(
         self,

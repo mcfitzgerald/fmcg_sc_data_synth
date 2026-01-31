@@ -30,12 +30,15 @@ poetry run python run_simulation.py
 # Custom duration and output directory
 poetry run python run_simulation.py --days 365 --output-dir data/results/year_run
 
-# Fast mode (no CSV logging, just metrics)
+# Streaming Parquet (recommended for 365-day logged runs)
+poetry run python run_simulation.py --days 365 --streaming --format parquet
+
+# Fast mode (no data logging, just metrics)
 poetry run python run_simulation.py --days 30 --no-logging
 ```
 
 **What to expect:**
-- **Runtime:** ~1-2 minutes for 90 days.
+- **Runtime:** ~45s for 50 days, ~6-10 minutes for 365 days.
 - **Console Output:** Daily logs showing Demand vs. Production, Inventory Levels, and Risk Events.
 - **Triangle Report:** At the end, a summary of Service, Cost, and Cash is printed to the console.
 
@@ -43,7 +46,9 @@ poetry run python run_simulation.py --days 30 --no-logging
 Artifacts are automatically saved to `data/output/` (or your custom directory):
 - `triangle_report.txt`: The executive summary (Service, Cost, Cash metrics).
 - `orders.csv`, `shipments.csv`, `batches.csv`: Detailed transactional logs (SCOR-DS format).
-- `inventory.csv`: Weekly inventory snapshots.
+- `inventory.csv`: Inventory snapshots (daily by default, configurable via `--inventory-sample-rate`).
+
+All data files support Parquet output (`--format parquet`) for faster writes and columnar compression.
 
 ## ⚙️ Configuration
 

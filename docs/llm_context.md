@@ -55,7 +55,7 @@ The simulation enforces these constraints - violations indicate bugs:
 | **Recipe matrix (BOM)** | `network/recipe_matrix.py` | `RecipeMatrixBuilder` |
 | **Production execution** | `simulation/transform.py` | `TransformEngine.execute_production()` |
 
-### Logistics & Validation
+### Logistics, Validation & Export
 | Concept | File | Key Classes/Functions |
 |---------|------|----------------------|
 | **Shipment creation** | `simulation/logistics.py` | `LogisticsEngine.create_shipments()` |
@@ -63,6 +63,7 @@ The simulation enforces these constraints - violations indicate bugs:
 | **Physics validation** | `simulation/monitor.py` | `PhysicsAuditor`, `RealismMonitor` |
 | **Behavioral quirks** | `simulation/quirks.py` | `QuirkManager` |
 | **Risk events** | `simulation/risk_events.py` | `RiskEventManager` |
+| **Data export** | `simulation/writer.py` | `SimulationWriter`, `ThreadedParquetWriter` |
 
 ### Data Models
 | Concept | File | Key Classes |
@@ -89,17 +90,27 @@ The simulation enforces these constraints - violations indicate bugs:
 | `scripts/generate_warm_start.py` | Generate warm-start snapshot manually |
 | `scripts/export_erp_format.py` | **ETL:** Transform sim CSVs to normalized ERP tables (SQL-ready) |
 
+### Data Export (`simulation/writer.py`)
+| Concept | Key Classes |
+|---------|-------------|
+| **Buffered mode** | `SimulationWriter` — accumulates dicts, writes at end (short runs) |
+| **Streaming CSV** | `StreamingCSVWriter` — incremental row-by-row CSV output |
+| **Streaming Parquet** | `StreamingParquetWriter` — batched row-group Parquet output |
+| **Threaded inventory Parquet** | `ThreadedParquetWriter` — background-thread writer with `DictionaryArray` columns (v0.39.8) |
+
 ### Simulation Output Files
+All files are `.csv` by default or `.parquet` with `--format parquet`. Parquet uses dictionary-encoded string columns and float32 for inventory.
+
 | File | Contents |
 |------|----------|
-| `orders.csv` | Replenishment orders (header + lines flattened) |
-| `shipments.csv` | Logistics shipments with `emissions_kg` for Scope 3 tracking |
-| `batches.csv` | Production batches (Work Order execution) |
-| `batch_ingredients.csv` | Ingredient consumption per batch (BOM traceability) |
-| `production_orders.csv` | Work orders (Plan-to-Produce lifecycle) |
-| `forecasts.csv` | S&OP demand forecasts (14-day horizon) |
-| `returns.csv` | Reverse logistics (RMAs) |
-| `inventory.csv` | Periodic inventory snapshots |
+| `orders` | Replenishment orders (header + lines flattened) |
+| `shipments` | Logistics shipments with `emissions_kg` for Scope 3 tracking |
+| `batches` | Production batches (Work Order execution) |
+| `batch_ingredients` | Ingredient consumption per batch (BOM traceability) |
+| `production_orders` | Work orders (Plan-to-Produce lifecycle) |
+| `forecasts` | S&OP demand forecasts (14-day horizon) |
+| `returns` | Reverse logistics (RMAs) |
+| `inventory` | Periodic inventory snapshots (frequency controlled by `--inventory-sample-rate`) |
 
 ---
 
@@ -140,8 +151,8 @@ poetry run python run_simulation.py --days 365
 - **P&G Scale:** The simulation is calibrated to ~4M cases/day (realistic North American FMCG volume) with ~32 production lines network-wide.
 
 **Simulation Run Lengths:**
-- **Full diagnostic (365 days):** Required for accurate KPIs. Includes 90-day burn-in + 365 data days.
-- **Sanity checks (30 days with `--no-logging`):** Fast verification only.
+- **Full diagnostic (365 days):** Required for accurate KPIs. Includes 90-day burn-in + 365 data days. Use `--streaming --format parquet` for logged runs.
+- **Sanity checks (30-50 days with `--no-logging`):** Fast verification only.
 
 ---
 
@@ -399,9 +410,10 @@ Every decision impacts the balance between:
 | **Inventory Turns** | `COGS / Avg_Inventory` |
 | **MAPE** | Forecast accuracy |
 | **Shrinkage Rate** | Phantom inventory % |
-| **SLOB %** | Slow/Obsolete inventory |
+| **SLOB %** | Slow/Obsolete inventory (age-based, FIFO approximation) |
 | **Truck Fill Rate** | `Actual_Load / Capacity` |
-| **OEE** | Overall Equipment Effectiveness |
+| **OEE** | Overall Equipment Effectiveness (planned time denominator) |
+| **TEEP** | Total Effective Equipment Performance (`OEE × Utilization`, calendar time denominator) |
 
 ---
 
@@ -418,10 +430,17 @@ Every decision impacts the balance between:
 ## 18. Key Commands
 
 ```bash
-# Run Simulation
+# Run Simulation (buffered mode, CSV)
 poetry run python run_simulation.py
 poetry run python run_simulation.py --days 365
 poetry run python run_simulation.py --days 50 --no-logging  # Quick sanity check
+
+# Streaming mode (required for 365-day logged runs to avoid OOM)
+poetry run python run_simulation.py --days 365 --streaming
+poetry run python run_simulation.py --days 365 --streaming --format parquet
+
+# Daily inventory snapshots (default=1, use 7 for weekly)
+poetry run python run_simulation.py --days 365 --streaming --format parquet --inventory-sample-rate 1
 
 # Type Check & Lint
 poetry run mypy src/
@@ -433,6 +452,12 @@ poetry run python scripts/generate_static_world.py
 # Calibrate Config
 poetry run python scripts/calibrate_config.py --apply
 ```
+
+**CLI Flags for Data Export:**
+- `--streaming` — Write data incrementally (prevents memory exhaustion on long runs)
+- `--format parquet` — Use Parquet output (columnar compression, dictionary-encoded strings)
+- `--inventory-sample-rate N` — Log inventory every N days (1=daily, 7=weekly)
+- `--no-logging` — Skip all data export (fastest, metrics only)
 
 **Note:** Use full simulations (50-365 days) for integration testing. Check Triangle Report metrics for validation.
 

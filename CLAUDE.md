@@ -30,6 +30,10 @@ poetry run python run_simulation.py --days 365 --output-dir data/results/custom
 poetry run python run_simulation.py --days 30 --no-logging  # Fast mode
 poetry run python run_simulation.py --days 50 --no-logging  # Quick sanity check
 
+# Streaming mode (required for 365-day logged runs)
+poetry run python run_simulation.py --days 365 --streaming --format parquet
+poetry run python run_simulation.py --days 365 --streaming --format parquet --inventory-sample-rate 1
+
 # Linting and type checking
 poetry run ruff check .
 poetry run ruff check . --fix  # Auto-fix
@@ -54,7 +58,7 @@ src/prism_sim/
 │   ├── quirks.py         # QuirkManager - behavioral realism (phantom inventory, bias)
 │   ├── risk_events.py    # RiskEventManager - disruption scenarios (port strikes, cyber)
 │   ├── monitor.py        # RealismMonitor, PhysicsAuditor, ResilienceTracker
-│   └── writer.py         # SimulationWriter - SCOR-DS data export
+│   └── writer.py         # SimulationWriter, ThreadedParquetWriter - streaming data export
 ├── agents/
 │   ├── allocation.py     # AllocationAgent - Fair Share allocation, Fill-or-Kill
 │   └── replenishment.py  # MinMaxReplenisher - (s,S) policy, creates Bullwhip behavior
@@ -70,8 +74,8 @@ src/prism_sim/
 │   ├── network.py        # NetworkGenerator - nodes, links, topology
 │   ├── distributions.py  # Zipf, power-law distributions
 │   └── static_pool.py    # Faker-based attribute sampling
-└── writers/              # Streaming data export
-    ├── base.py           # StreamingCSVWriter, StreamingParquetWriter
+└── writers/              # Static world generation export
+    ├── base.py           # BaseWriter abstract class
     └── static_writer.py  # StaticWriter for world generation output
 ```
 

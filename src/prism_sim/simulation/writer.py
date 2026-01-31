@@ -7,10 +7,12 @@ without memory bottlenecks.
 
 import csv
 import json
+import queue
+import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 import numpy as np
 
@@ -38,29 +40,40 @@ class StreamingCSVWriter:
         self.filepath = filepath
         self.fieldnames = fieldnames
         self._file: Any = None
-        self._writer: csv.DictWriter[str] | None = None
+        self._writer: Any = None  # csv.writer instance
         self._row_count = 0
 
     def _ensure_open(self) -> None:
         """Lazily open file and write header on first write."""
         if self._file is None:
             self._file = open(self.filepath, "w", newline="")
-            self._writer = csv.DictWriter(self._file, fieldnames=self.fieldnames)
-            self._writer.writeheader()
+            self._writer = csv.writer(self._file)
+            self._writer.writerow(self.fieldnames)
 
     def write_row(self, row: dict[str, Any]) -> None:
         """Write a single row to the CSV file."""
         self._ensure_open()
         if self._writer:
-            self._writer.writerow(row)
+            fn = self.fieldnames
+            self._writer.writerow(tuple(row[k] for k in fn))
             self._row_count += 1
 
     def write_rows(self, rows: list[dict[str, Any]]) -> None:
         """Write multiple rows to the CSV file."""
         self._ensure_open()
         if self._writer:
-            self._writer.writerows(rows)
+            fn = self.fieldnames
+            self._writer.writerows(
+                tuple(row[k] for k in fn) for row in rows
+            )
             self._row_count += len(rows)
+
+    def write_raw_rows(self, rows: Any, count: int) -> None:
+        """Write pre-ordered rows (tuples/iterables) without dict key lookup."""
+        self._ensure_open()
+        if self._writer:
+            self._writer.writerows(rows)
+            self._row_count += count
 
     def flush(self) -> None:
         """Flush buffered data to disk."""
@@ -141,6 +154,12 @@ class StreamingParquetWriter:
             self._writer.write_table(table)
             self._row_count += len(chunk)
 
+    def write_arrow_table(self, table: "pa.Table") -> None:
+        """Write a pre-built PyArrow table directly, bypassing the dict buffer."""
+        self._ensure_open()
+        self._writer.write_table(table)
+        self._row_count += len(table)
+
     def flush(self) -> None:
         """Flush any remaining buffered data."""
         self._flush_buffer()
@@ -156,6 +175,125 @@ class StreamingParquetWriter:
     def row_count(self) -> int:
         """Return the number of rows written."""
         return self._row_count + len(self._buffer)
+
+
+class _InventoryBatch(NamedTuple):
+    """Lightweight message passed from main thread to background writer."""
+
+    day: int
+    node_indices: np.ndarray  # int64 from np.nonzero
+    prod_indices: np.ndarray  # int64 from np.nonzero
+    perc_vals: np.ndarray  # float32
+    act_vals: np.ndarray  # float32
+    row_count: int
+
+
+class ThreadedParquetWriter:
+    """
+    Background-threaded Parquet writer for high-volume inventory data.
+
+    Main thread (log_inventory): does numpy ops (mask, nonzero, fancy-index),
+    puts raw numpy arrays on a bounded queue.
+
+    Background thread: dequeues arrays, builds DictionaryArray columns,
+    constructs pa.Table, calls write_table() (which releases GIL for C++
+    encoding/compression/IO).
+    """
+
+    def __init__(
+        self,
+        filepath: Path,
+        schema: "pa.Schema",
+        node_ids: list[str],
+        product_ids: list[str],
+        maxsize: int = 4,
+    ) -> None:
+        if not PARQUET_AVAILABLE:
+            raise ImportError("pyarrow is required for ThreadedParquetWriter")
+        self._inner = pq.ParquetWriter(filepath, schema)
+        self._schema = schema
+        self._queue: queue.Queue[_InventoryBatch | None] = queue.Queue(
+            maxsize=maxsize
+        )
+        self._row_count = 0
+        self._error: BaseException | None = None
+
+        # Pre-build PyArrow dictionaries (immutable for the entire sim)
+        self._pa_node_dict = pa.array(node_ids, type=pa.string())
+        self._pa_prod_dict = pa.array(product_ids, type=pa.string())
+
+        self._thread = threading.Thread(
+            target=self._writer_loop, name="inventory-parquet-writer", daemon=True
+        )
+        self._thread.start()
+
+    def _writer_loop(self) -> None:
+        """Background thread: consume batches and write Parquet row groups."""
+        try:
+            while True:
+                batch = self._queue.get()
+                if batch is None:
+                    self._queue.task_done()
+                    break  # Sentinel — shutdown requested
+                try:
+                    self._write_batch(batch)
+                finally:
+                    self._queue.task_done()
+        except BaseException as exc:
+            self._error = exc
+
+    def _write_batch(self, batch: _InventoryBatch) -> None:
+        """Build a pa.Table from raw numpy arrays and write it."""
+        n = batch.row_count
+        day_col = pa.array(np.full(n, batch.day, dtype=np.int32))
+        node_col = pa.DictionaryArray.from_arrays(
+            batch.node_indices.astype(np.int32), self._pa_node_dict
+        )
+        prod_col = pa.DictionaryArray.from_arrays(
+            batch.prod_indices.astype(np.int32), self._pa_prod_dict
+        )
+        perc_col = pa.array(batch.perc_vals, type=pa.float32())
+        act_col = pa.array(batch.act_vals, type=pa.float32())
+
+        table = pa.table(
+            {
+                "day": day_col,
+                "node_id": node_col,
+                "product_id": prod_col,
+                "perceived_inventory": perc_col,
+                "actual_inventory": act_col,
+            },
+            schema=self._schema,
+        )
+        self._inner.write_table(table)
+        self._row_count += n
+
+    def submit(self, batch: _InventoryBatch) -> None:
+        """Enqueue a batch for the background writer. Blocks if queue is full."""
+        if self._error is not None:
+            raise RuntimeError(
+                "Background inventory writer failed"
+            ) from self._error
+        self._queue.put(batch)
+
+    def flush(self) -> None:
+        """Wait for the background queue to drain."""
+        self._queue.join()
+
+    def close(self) -> None:
+        """Shutdown the background thread and close the Parquet writer."""
+        self._queue.put(None)  # Sentinel
+        self._thread.join(timeout=30)
+        self._inner.close()
+        if self._error is not None:
+            raise RuntimeError(
+                "Background inventory writer failed"
+            ) from self._error
+
+    @property
+    def row_count(self) -> int:
+        """Return the number of rows written (approximate — thread-safe read)."""
+        return self._row_count
 
 
 # Schema definitions for Parquet writers
@@ -303,10 +441,10 @@ def _get_parquet_schema(table_name: str) -> "pa.Schema":
         "inventory": pa.schema(
             [
                 ("day", pa.int32()),
-                ("node_id", pa.string()),
-                ("product_id", pa.string()),
-                ("perceived_inventory", pa.float64()),
-                ("actual_inventory", pa.float64()),
+                ("node_id", pa.dictionary(pa.int32(), pa.string())),
+                ("product_id", pa.dictionary(pa.int32(), pa.string())),
+                ("perceived_inventory", pa.float32()),
+                ("actual_inventory", pa.float32()),
             ]
         ),
         "returns": pa.schema(
@@ -394,9 +532,9 @@ class SimulationWriter:
             None
         )
         self._batches_writer: StreamingCSVWriter | StreamingParquetWriter | None = None
-        self._inventory_writer: StreamingCSVWriter | StreamingParquetWriter | None = (
-            None
-        )
+        self._inventory_writer: (
+            StreamingCSVWriter | StreamingParquetWriter | ThreadedParquetWriter | None
+        ) = None
         self._forecasts_writer: StreamingCSVWriter | StreamingParquetWriter | None = (
             None
         )
@@ -417,6 +555,14 @@ class SimulationWriter:
         self.batch_ingredients: list[dict[str, Any]] = []
         self.inventory_history: list[dict[str, Any]] = []
         self.metrics_history: list[dict[str, Any]] = []
+
+        # Cached reverse-index arrays for vectorized inventory export
+        self._node_ids_arr: np.ndarray | None = None
+        self._prod_ids_arr: np.ndarray | None = None
+
+        # Sorted ID lists for ThreadedParquetWriter (built lazily)
+        self._sorted_node_ids: list[str] | None = None
+        self._sorted_prod_ids: list[str] | None = None
 
         # Initialize streaming writers if enabled
         if self.enable_logging and self.streaming:
@@ -452,11 +598,8 @@ class SimulationWriter:
                 _get_parquet_schema("forecasts"),
                 self.parquet_batch_size,
             )
-            self._inventory_writer = StreamingParquetWriter(
-                self.output_dir / f"inventory{ext}",
-                _get_parquet_schema("inventory"),
-                self.parquet_batch_size,
-            )
+            # Inventory writer is created lazily in log_inventory() because
+            # ThreadedParquetWriter needs node/product ID lists from state.
             self._returns_writer = StreamingParquetWriter(
                 self.output_dir / f"returns{ext}",
                 _get_parquet_schema("returns"),
@@ -667,8 +810,34 @@ class SimulationWriter:
         else:
             self.returns.extend(rows)
 
+    def _init_threaded_inventory_writer(self, state: Any) -> None:
+        """Lazily create the ThreadedParquetWriter on first log_inventory call.
+
+        Requires node/product ID lists from state, which aren't available at
+        SimulationWriter construction time.
+        """
+        # Build sorted ID lists (index-order) for DictionaryArray dictionaries
+        n_nodes = len(state.node_id_to_idx)
+        n_prods = len(state.product_id_to_idx)
+        node_ids: list[str] = [""] * n_nodes
+        for nid, idx in state.node_id_to_idx.items():
+            node_ids[idx] = nid
+        prod_ids: list[str] = [""] * n_prods
+        for pid, idx in state.product_id_to_idx.items():
+            prod_ids[idx] = pid
+
+        self._sorted_node_ids = node_ids
+        self._sorted_prod_ids = prod_ids
+
+        self._inventory_writer = ThreadedParquetWriter(
+            filepath=self.output_dir / "inventory.parquet",
+            schema=_get_parquet_schema("inventory"),
+            node_ids=node_ids,
+            product_ids=prod_ids,
+        )
+
     def log_inventory(self, state: Any, world: Any, day: int) -> None:
-        """Log inventory snapshot for a given day."""
+        """Log inventory snapshot for a given day (vectorized)."""
         if not self.enable_logging:
             return
 
@@ -676,26 +845,76 @@ class SimulationWriter:
         if day % self.inventory_sample_rate != 0:
             return
 
-        rows = []
-        for node_id, node_idx in state.node_id_to_idx.items():
-            for prod_id, prod_idx in state.product_id_to_idx.items():
-                perceived = float(state.perceived_inventory[node_idx, prod_idx])
-                actual = float(state.actual_inventory[node_idx, prod_idx])
-                # Only log non-zero inventory to reduce volume
-                if perceived != 0 or actual != 0:
-                    row = {
-                        "day": day,
-                        "node_id": node_id,
-                        "product_id": prod_id,
-                        "perceived_inventory": perceived,
-                        "actual_inventory": actual,
-                    }
-                    rows.append(row)
+        # Lazily create ThreadedParquetWriter for parquet streaming
+        if (
+            self.streaming
+            and self.output_format == "parquet"
+            and self._inventory_writer is None
+        ):
+            self._init_threaded_inventory_writer(state)
+
+        # Build reverse-index arrays on first call (cached, for CSV/buffered paths)
+        if self._node_ids_arr is None:
+            self._node_ids_arr = np.empty(len(state.node_id_to_idx), dtype=object)
+            for nid, idx in state.node_id_to_idx.items():
+                self._node_ids_arr[idx] = nid
+            self._prod_ids_arr = np.empty(len(state.product_id_to_idx), dtype=object)
+            for pid, idx in state.product_id_to_idx.items():
+                self._prod_ids_arr[idx] = pid
+
+        # Vectorized: find non-zero entries using numpy
+        perceived = state.perceived_inventory
+        actual = state.actual_inventory
+        mask = (perceived != 0) | (actual != 0)
+        node_indices, prod_indices = np.nonzero(mask)
+
+        if len(node_indices) == 0:
+            return
+
+        n = len(node_indices)
+        perc_vals = perceived[node_indices, prod_indices]
+        act_vals = actual[node_indices, prod_indices]
 
         if self.streaming and self._inventory_writer:
-            self._inventory_writer.write_rows(rows)
+            if self.output_format == "parquet":
+                # Threaded path: submit raw numpy arrays to background writer
+                assert isinstance(self._inventory_writer, ThreadedParquetWriter)
+                self._inventory_writer.submit(
+                    _InventoryBatch(
+                        day=day,
+                        node_indices=node_indices,
+                        prod_indices=prod_indices,
+                        perc_vals=perc_vals.astype(np.float32, copy=False),
+                        act_vals=act_vals.astype(np.float32, copy=False),
+                        row_count=n,
+                    )
+                )
+            else:
+                # CSV: write pre-ordered tuples via zip (no dict overhead)
+                assert isinstance(self._inventory_writer, StreamingCSVWriter)
+                assert self._prod_ids_arr is not None
+                node_col = self._node_ids_arr[node_indices]
+                prod_col = self._prod_ids_arr[prod_indices]
+                day_col = np.full(n, day, dtype=np.int32)
+                self._inventory_writer.write_raw_rows(
+                    zip(day_col, node_col, prod_col, perc_vals, act_vals, strict=True),
+                    count=n,
+                )
         else:
-            self.inventory_history.extend(rows)
+            # Buffered mode: build dicts for legacy _write_csv compatibility
+            assert self._prod_ids_arr is not None
+            node_col = self._node_ids_arr[node_indices]
+            prod_col = self._prod_ids_arr[prod_indices]
+            for i in range(n):
+                self.inventory_history.append(
+                    {
+                        "day": day,
+                        "node_id": node_col[i],
+                        "product_id": prod_col[i],
+                        "perceived_inventory": float(perc_vals[i]),
+                        "actual_inventory": float(act_vals[i]),
+                    }
+                )
 
     def flush(self) -> None:
         """Flush all streaming writers to disk."""

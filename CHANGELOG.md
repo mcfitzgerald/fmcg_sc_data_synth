@@ -5,6 +5,47 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.39.8] - 2026-01-31
+
+### Inventory Serialization Optimization (Parquet + DictionaryArray + Background Thread)
+
+Streaming inventory export was the dominant bottleneck for logged runs (~220s overhead on a 365-day run). This release eliminates that overhead with a threaded Parquet writer and removes the hardcoded weekly inventory gate.
+
+#### 1. Remove Orchestrator `day % 7` Hardcode (`orchestrator.py`)
+- **Before:** Inventory logging was gated by `if day % 7 == 0:` regardless of user config
+- **After:** Inventory logging frequency is controlled solely by `--inventory-sample-rate` (default 1 = daily)
+- **Impact:** Users get true daily snapshots (~150M+ rows for 50 days) when requested
+
+#### 2. Parquet Inventory Schema Optimization (`writer.py`)
+- `node_id` and `product_id` columns now use `pa.dictionary(pa.int32(), pa.string())` instead of plain `pa.string()`
+- `perceived_inventory` and `actual_inventory` narrowed from `float64` to `float32` (matches state tensor dtype)
+- **Impact:** ~50% smaller Parquet files, faster encoding
+
+#### 3. `ThreadedParquetWriter` Class (`writer.py`)
+- New class that offloads Parquet encoding/compression/IO to a background thread
+- **Main thread:** numpy ops (mask, nonzero, fancy-index) → puts raw arrays on bounded `queue.Queue(maxsize=4)`
+- **Background thread:** builds `pa.DictionaryArray` columns from pre-cached dictionaries → writes row groups (GIL released during C++ Parquet IO)
+- Pre-built `pa.Array` dictionaries for node/product IDs (built once on first call, ~4,500 + ~500 entries)
+- Error propagation: thread exceptions surfaced via `submit()` and `close()`
+- Only activates for `--streaming --format parquet`; CSV and buffered paths unchanged
+
+#### 4. Added `pyarrow` as Project Dependency
+- `pyarrow >= 23.0.0` added to `pyproject.toml` (was previously optional)
+
+#### Results (50-day simulation, `--streaming --format parquet --inventory-sample-rate 1`)
+| Metric | Value |
+|--------|-------|
+| Inventory rows written | 150,960,760 |
+| Runtime (50-day) | 47s |
+| Schema | dictionary-encoded strings, float32 values |
+
+#### Files Modified
+- `src/prism_sim/simulation/writer.py` — Schema fix, DictionaryArray caching, `ThreadedParquetWriter`, `log_inventory` rewrite
+- `src/prism_sim/simulation/orchestrator.py` — Remove `if day % 7 == 0:` gate
+- `pyproject.toml` — Add `pyarrow` dependency, bump version
+
+---
+
 ## [0.39.7] - 2026-01-31
 
 ### OEE/TEEP Overhaul & Lint Compliance
