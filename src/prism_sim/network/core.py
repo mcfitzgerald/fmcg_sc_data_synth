@@ -229,9 +229,7 @@ class ReturnLine:
 
 @dataclass
 class Return:
-    """
-    A return request (RMA) from a store/customer back to a DC.
-    """
+    """A return request (RMA) from a store/customer back to a DC."""
 
     id: str
     rma_number: str

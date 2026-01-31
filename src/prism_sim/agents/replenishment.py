@@ -309,7 +309,7 @@ class MinMaxReplenisher:
         """
         Dynamically classify products into A/B/C buckets based on volume.
         Updates self.z_scores_vec.
-        
+
         Logic:
         - Sort products by total volume (descending)
         - Calculate cumulative percentage of volume
@@ -382,7 +382,8 @@ class MinMaxReplenisher:
 
             # OVERRIDE: Stores order cases, not pallets
             if node.type == NodeType.STORE:
-                self.batch_vec[idx] = self.store_batch_size  # Config-driven override (default 20.0)
+                # Config-driven override (default 20.0)
+                self.batch_vec[idx] = self.store_batch_size
                 self.min_qty_vec[idx] = self.default_min_qty
 
     def _build_lookup_caches(self) -> None:
@@ -498,7 +499,7 @@ class MinMaxReplenisher:
     def _build_echelon_matrix(self) -> None:
         """
         Builds the Echelon Matrix for MEIO logic.
-        
+
         M_E [n_dcs, n_nodes] where M_E[i, j] = 1 if node j is in DC i's echelon.
         (i.e., node j is the DC itself or a downstream store).
         """
@@ -602,7 +603,11 @@ class MinMaxReplenisher:
             Shape [n_nodes, n_products] - Standard deviation of demand
         """
         # Need minimum history to calculate meaningful variance
-        repl_config = self.config.get("simulation_parameters", {}).get("agents", {}).get("replenishment", {})
+        repl_config = (
+            self.config.get("simulation_parameters", {})
+            .get("agents", {})
+            .get("replenishment", {})
+        )
         min_history = int(repl_config.get("min_history_days", 7))
         if self.history_idx < min_history:
             # Fallback for cold start: assume zero std until we have history
@@ -611,7 +616,13 @@ class MinMaxReplenisher:
         n_samples = min(self.history_idx, self.variance_lookback)
         # Calculate std along time axis (axis 0)
         # Use ddof=1 for sample standard deviation
-        return np.array(np.std(self.demand_history_buffer[:n_samples], axis=0, ddof=1))
+        return np.array(
+            np.std(
+                self.demand_history_buffer[:n_samples],
+                axis=0,
+                ddof=1,
+            )
+        )
 
     def record_outflow(self, allocation_matrix: np.ndarray) -> None:
         """
@@ -747,7 +758,9 @@ class MinMaxReplenisher:
         avg_demand = self._calculate_average_demand(target_indices)
 
         # 4. Calculate Base Order Logic (s,S)
-        needs_order, raw_qty, on_hand_inv, inventory_position = self._calculate_base_order_logic(
+        (
+            needs_order, raw_qty, on_hand_inv, inventory_position
+        ) = self._calculate_base_order_logic(
             target_indices, avg_demand
         )
 
@@ -824,9 +837,10 @@ class MinMaxReplenisher:
                         node_demand = np.ones(self.state.n_products) * 0.1
 
                     # Calculate DOS for non-ingredient products
+                    _demand_floor = 0.01
                     with np.errstate(divide="ignore", invalid="ignore"):
                         node_dos = np.where(
-                            node_demand > 0.01,
+                            node_demand > _demand_floor,
                             node_inv / node_demand,
                             np.inf,
                         )
@@ -957,7 +971,11 @@ class MinMaxReplenisher:
         cycle_stock = avg_demand * mu_L_vec
 
         # Safety Stock Calculation
-        repl_config = self.config.get("simulation_parameters", {}).get("agents", {}).get("replenishment", {})
+        repl_config = (
+            self.config.get("simulation_parameters", {})
+            .get("agents", {})
+            .get("replenishment", {})
+        )
         min_history = int(repl_config.get("min_history_days", 7))
         use_variance_logic = self.history_idx >= min_history
 
@@ -1030,7 +1048,7 @@ class MinMaxReplenisher:
         target_idx_arr = np.array(target_indices)
 
         # Echelon Demand
-        echelon_demand_all = self.echelon_matrix @ self.smoothed_demand # type: ignore
+        echelon_demand_all = self.echelon_matrix @ self.smoothed_demand
         current_e_demand = echelon_demand_all[row_indices]
 
         # Local IP (already passed in as inventory_position[dc_indices])
@@ -1086,7 +1104,7 @@ class MinMaxReplenisher:
         order_qty = np.minimum(order_qty, max_order)
 
         batched_qty = np.ceil(order_qty / batch_sz) * batch_sz
-        return batched_qty
+        return np.asarray(batched_qty)
 
     def _create_order_objects(
         self,
@@ -1109,7 +1127,8 @@ class MinMaxReplenisher:
 
         for r, c in zip(rows, cols, strict=True):
             qty = batched_qty[r, c]
-            if qty <= 0: continue
+            if qty <= 0:
+                continue
 
             t_idx = int(target_indices[r])
             p_idx = int(c)
@@ -1163,7 +1182,8 @@ class MinMaxReplenisher:
             # PERF: Use cached array instead of dict lookup
             target_id = self._node_id_arr[t_idx]
             source_id = self.store_supplier_map.get(target_id)
-            if not source_id: continue
+            if not source_id:
+                continue
 
             target_node = self.world.nodes.get(target_id)
 
@@ -1199,7 +1219,7 @@ class MinMaxReplenisher:
     # The pending_orders dict and associated methods were removed because:
     # 1. Real retail systems (Walmart, Target) don't track pending orders per-SKU
     # 2. They use Inventory Position (on-hand + in-transit) for reorder decisions
-    # 3. The dict could grow to 3M+ entries (6000 stores × 500 SKUs) causing
+    # 3. The dict could grow to 3M+ entries (6000 stores x 500 SKUs) causing
     #    memory explosion in 365-day runs
     # 4. The IP logic at line ~727 already prevents double-ordering correctly
     #

@@ -66,7 +66,8 @@ class Orchestrator:
         self.config = load_simulation_config()
         self._manifest = manifest  # Store for config hash computation
 
-        # Merge static world definitions into config for Engines that need them (e.g. POSEngine)
+        # Merge static world definitions into config for Engines
+        # that need them (e.g. POSEngine)
         self.config["promotions"] = manifest.get("promotions", [])
         self.config["packaging_types"] = manifest.get("packaging_types", [])
 
@@ -125,7 +126,8 @@ class Orchestrator:
             self._start_day = 1
             self._metrics_start_day = default_burn_in + 1 if default_burn_in > 0 else 1
         else:
-            # Cold-start WITHOUT auto-checkpoint (--no-checkpoint): start metrics immediately
+            # Cold-start WITHOUT auto-checkpoint (--no-checkpoint):
+            # start metrics immediately
             self._start_day = 1
             self._metrics_start_day = 1
 
@@ -146,7 +148,8 @@ class Orchestrator:
         base_demand_matrix = self.pos_engine.get_base_demand_matrix()
 
         # Initialize Manufacturing Engines (Milestone 5)
-        # MOVED UP: Initialize MRP Engine EARLY to get ABC classification for inventory priming
+        # MOVED UP: Initialize MRP Engine EARLY to get ABC classification
+        # for inventory priming
         self.mrp_engine = MRPEngine(
             self.world, self.state, self.config, self.pos_engine, base_demand_matrix
         )
@@ -218,7 +221,9 @@ class Orchestrator:
         # Perfect Order config (v0.39.0 - real calculation, not just risk delays)
         po_config = sim_params.get("perfect_order", {})
         self.po_damage_rate = po_config.get("damage_rate", 0.02)
-        self.po_documentation_error_rate = po_config.get("documentation_error_rate", 0.005)
+        self.po_documentation_error_rate = po_config.get(
+            "documentation_error_rate", 0.005
+        )
         self.po_on_time_tolerance_days = po_config.get("on_time_tolerance_days", 1)
 
         # Store base demand matrix for SLOB calculation (expected, not volatile)
@@ -258,7 +263,8 @@ class Orchestrator:
         # v0.19.12: Calculate RDC Demand Shares for production routing
         self.rdc_demand_shares = self._calculate_rdc_demand_shares()
 
-        # 9. Finalize warm-start if active (restore production orders and history buffers)
+        # 9. Finalize warm-start if active
+        # (restore production orders and history buffers)
         if self._warm_start_snapshot:
             self._finalize_warm_start_restoration()
 
@@ -532,7 +538,9 @@ class Orchestrator:
                         continue
                     link_key = (target_idx, source_idx)
                     # Initialize deque with noisy samples
-                    history = deque(maxlen=self.replenisher.lt_history_len)
+                    history: deque[float] = deque(
+                        maxlen=self.replenisher.lt_history_len
+                    )
                     for _ in range(self.replenisher.lt_history_len):
                         noise = np.random.normal(1.0, lt_noise_cv)
                         history.append(avg_val * max(0.5, noise))
@@ -579,7 +587,7 @@ class Orchestrator:
     # End Warm-Start Methods
     # =========================================================================
 
-    def _initialize_inventory(self) -> None:  # noqa: PLR0912, PLR0915
+    def _initialize_inventory(self) -> None:
         """
         Seed initial inventory across the network (Priming).
 
@@ -589,7 +597,7 @@ class Orchestrator:
         # Get manufacturing config for plant initial inventory
         sim_params = self.config.get("simulation_parameters", {})
         mfg_config = sim_params.get("manufacturing", {})
-        initial_plant_inv = mfg_config.get("initial_plant_inventory", {})
+        mfg_config.get("initial_plant_inventory", {})
 
         # Get priming config
         inv_config = sim_params.get("inventory", {})
@@ -642,7 +650,10 @@ class Orchestrator:
         day_1_seasonal = 1.0 + amplitude * np.sin(
             2 * np.pi * (1 - phase_shift) / cycle_days
         )
-        print(f"  Priming with seasonal adjustment: Day 1 factor = {day_1_seasonal:.4f}")
+        print(
+            f"  Priming with seasonal adjustment:"
+            f" Day 1 factor = {day_1_seasonal:.4f}"
+        )
 
         # Seed finished goods at RDCs and Stores
         for node_id, node in self.world.nodes.items():
@@ -652,7 +663,7 @@ class Orchestrator:
                     node_demand = base_demand_matrix[node_idx, :]
 
                     # Apply ABC-based priming
-                    # Vectorized operation: Create a vector of days supply based on product ABC class
+                    # Vectorized: days supply vector based on ABC class
                     store_days_vec = np.array([
                         abc_target_dos.get(
                             self.mrp_engine.abc_class[p_idx], store_days_supply
@@ -675,7 +686,9 @@ class Orchestrator:
                         # Use recursive discovery for RDC downstream demand
                         downstream_map: dict[str, list[str]] = {}
                         for link in self.world.links.values():
-                            downstream_map.setdefault(link.source_id, []).append(link.target_id)
+                            downstream_map.setdefault(
+                                link.source_id, []
+                            ).append(link.target_id)
 
                         visited = set()
                         stack = [node_id]
@@ -690,7 +703,9 @@ class Orchestrator:
                                     if child_node.type == NodeType.STORE:
                                         t_idx = self.state.node_id_to_idx.get(child_id)
                                         if t_idx is not None:
-                                            rdc_downstream_demand += base_demand_matrix[t_idx, :]
+                                            rdc_downstream_demand += (
+                                                base_demand_matrix[t_idx, :]
+                                            )
                                     else:
                                         stack.append(child_id)
 
@@ -705,8 +720,12 @@ class Orchestrator:
                             )
                             for p_idx in range(self.state.n_products)
                         ])
-                        # v0.28.0: Apply seasonal adjustment to match Day 1 actual demand
-                        rdc_sku_levels = rdc_downstream_demand * rdc_days_vec * day_1_seasonal
+                        # v0.28.0: Apply seasonal adjustment
+                        rdc_sku_levels = (
+                            rdc_downstream_demand
+                            * rdc_days_vec
+                            * day_1_seasonal
+                        )
                         self.state.perceived_inventory[node_idx, :] = rdc_sku_levels
                         self.state.actual_inventory[node_idx, :] = rdc_sku_levels
                     else:
@@ -739,28 +758,37 @@ class Orchestrator:
                             )
                             for p_idx in range(self.state.n_products)
                         ])
-                        # v0.28.0: Apply seasonal adjustment to match Day 1 actual demand
-                        dc_levels = downstream_demand * dc_days_vec * day_1_seasonal
+                        # v0.28.0: Apply seasonal adjustment
+                        dc_levels = (
+                            downstream_demand
+                            * dc_days_vec
+                            * day_1_seasonal
+                        )
                         self.state.perceived_inventory[node_idx, :] = dc_levels
                         self.state.actual_inventory[node_idx, :] = dc_levels
 
             # Seed raw materials at Plants
             # v0.20.0: Sized for safety supply to ensure production stability.
             # v0.36.0: Moved to config to allow scaling.
-            # v0.37.0: Demand-driven initialization (Velocity * Days) to fix flat buffer issues
+            # v0.37.0: Demand-driven init (Velocity * Days)
+            # to fix flat buffer issues
             elif node.type == NodeType.PLANT:
                 node_idx = self.state.node_id_to_idx.get(node_id)
                 if node_idx is not None:
                     # Calculate global demand per product
                     global_product_demand = np.sum(base_demand_matrix, axis=0)
 
-                    # Calculate derived ingredient demand: Product Demand @ Recipe Matrix
-                    # This tells us how much of each ingredient is needed globally per day
-                    ingredient_demand = global_product_demand @ self.state.recipe_matrix
+                    # Derived ingredient demand: Product Demand @ Recipe Matrix
+                    # How much of each ingredient needed globally per day
+                    ingredient_demand = (
+                        global_product_demand @ self.state.recipe_matrix
+                    )
 
                     # Target days supply for ingredients (default 14 from policy)
                     target_days = 14.0
-                    ing_policy = mfg_config.get("inventory_policies", {}).get("INGREDIENT")
+                    ing_policy = mfg_config.get(
+                        "inventory_policies", {}
+                    ).get("INGREDIENT")
                     if ing_policy:
                         target_days = ing_policy.get("target_days_supply", 14.0)
 
@@ -775,7 +803,7 @@ class Orchestrator:
                         if product.category == ProductCategory.INGREDIENT:
                             p_idx = self.state.product_id_to_idx.get(product.id)
                             if p_idx is not None:
-                                # Start with Target + Floor to be safe against lead time variance
+                                # Target + Floor for lead time variance
                                 qty = max(target_levels[p_idx], min_floor)
                                 self.state.update_inventory(node_id, product.id, qty)
 
@@ -802,15 +830,18 @@ class Orchestrator:
         runs burn-in phase first, saves checkpoint, then runs data collection.
         """
         # v0.39.4: Warn about memory usage for long runs with buffered logging
+        buffered_logging_day_threshold = 100
         total_days = days + (self._default_burn_in_days if self._needs_burn_in else 0)
         if (
-            total_days > 100
+            total_days > buffered_logging_day_threshold
             and self.writer.enable_logging
             and not self.writer.streaming
         ):
             print(
-                f"WARNING: Running {total_days} days with buffered logging may use 10-20GB RAM.\n"
-                f"  Consider: --streaming (writes incrementally) or --no-logging (fastest)"
+                f"WARNING: Running {total_days} days with"
+                f" buffered logging may use 10-20GB RAM.\n"
+                f"  Consider: --streaming (writes"
+                f" incrementally) or --no-logging (fastest)"
             )
 
         if self._needs_burn_in:
@@ -958,7 +989,7 @@ class Orchestrator:
 
         # 6. Transit & Arrival (Milestone 4.3)
         # PERF: Use batch removal to update in-transit tensor incrementally
-        active, arrived = self.logistics.update_shipments(
+        _active, arrived = self.logistics.update_shipments(
             self.state.active_shipments, day
         )
         self.state.remove_arrived_shipments(arrived)
@@ -991,6 +1022,7 @@ class Orchestrator:
             updated_orders,
             new_batches,
             plant_oee,
+            plant_teep,
         ) = self.transform_engine.process_production_orders(
             self.active_production_orders, day
         )
@@ -1064,6 +1096,7 @@ class Orchestrator:
                 daily_shipments,
                 arrived,
                 plant_oee,
+                plant_teep,
                 day,
                 ordered_qty=unconstrained_demand_qty,
                 shipped_qty=total_shipped_qty,
@@ -1142,12 +1175,20 @@ class Orchestrator:
         daily_shipments: list[Shipment],
         arrived: list[Shipment],
         plant_oee: dict[str, float],
+        plant_teep: dict[str, float],
         day: int,
         ordered_qty: float = 0.0,
         shipped_qty: float = 0.0,
         shrinkage_qty: float = 0.0,
     ) -> None:
         """Record simulation metrics for monitoring."""
+        # ABC class codes (0=A, 1=B, 2=C)
+        abc_class_a = 0
+        abc_class_b = 1
+        abc_class_c = 2
+        # Minimum FG inventory threshold to avoid divide-by-small-number
+        min_fg_inventory_threshold = 100.0
+
         # Record Service Level (Fill Rate)
         fill_rate = 1.0
         if ordered_qty > 0:
@@ -1170,9 +1211,9 @@ class Orchestrator:
             fg_abc_class = self.mrp_engine.abc_class[self._fg_product_mask]
 
             # Calculate fill rate by ABC class
-            a_mask = fg_abc_class == 0
-            b_mask = fg_abc_class == 1
-            c_mask = fg_abc_class == 2
+            a_mask = fg_abc_class == abc_class_a
+            b_mask = fg_abc_class == abc_class_b
+            c_mask = fg_abc_class == abc_class_c
 
             a_demand = np.sum(fg_demand[:, a_mask])
             b_demand = np.sum(fg_demand[:, b_mask])
@@ -1189,9 +1230,10 @@ class Orchestrator:
         # v0.39.4 FIX: Guard against near-zero inventory causing extreme turns
         fg_inventory = self.state.actual_inventory[:, self._fg_product_mask]
         total_fg_inv = np.sum(np.maximum(0, fg_inventory))
-        if total_fg_inv > 100.0:  # Minimum threshold prevents divide-by-small-number
-            daily_turn_rate = total_demand_qty / total_fg_inv  # Sales / Avg FG Inv
-            annual_turns = min(daily_turn_rate * 365, 50.0)  # Cap at 50x (2.5x industry max)
+        if total_fg_inv > min_fg_inventory_threshold:
+            daily_turn_rate = total_demand_qty / total_fg_inv
+            # Cap at 50x (2.5x industry max)
+            annual_turns = min(daily_turn_rate * 365, 50.0)
             self.monitor.record_inventory_turns(annual_turns)
 
             # Cash-to-Cash (Est: DIO + DSO - DPO)
@@ -1214,7 +1256,8 @@ class Orchestrator:
             # Config thresholds now represent AGE in days, not DOS:
             # - A-items: flag if sitting > threshold days (fast-turning)
             # - B-items: flag if sitting > threshold days
-            # - C-items: flag if sitting > threshold days (slow-turning, higher threshold)
+            # - C-items: flag if sitting > threshold days
+            #   (slow-turning, higher threshold)
             fg_inv_per_sku = np.sum(fg_inventory, axis=0)  # Sum across nodes
 
             # Get inventory-weighted average age per product
@@ -1228,9 +1271,13 @@ class Orchestrator:
             # Build threshold array per SKU based on ABC class
             # Config values are now AGE thresholds (days sitting), not DOS
             age_thresholds = np.where(
-                fg_abc_class == 0,
+                fg_abc_class == abc_class_a,
                 self.slob_threshold_a,
-                np.where(fg_abc_class == 1, self.slob_threshold_b, self.slob_threshold_c),
+                np.where(
+                    fg_abc_class == abc_class_b,
+                    self.slob_threshold_b,
+                    self.slob_threshold_c,
+                ),
             )
 
             # Flag SKUs with AGE > their ABC-specific threshold as SLOB
@@ -1241,9 +1288,9 @@ class Orchestrator:
             self.monitor.record_slob(slob_pct)
 
             # v0.39.2: SLOB diagnostic logging with age info
-            a_mask = fg_abc_class == 0
-            b_mask = fg_abc_class == 1
-            c_mask = fg_abc_class == 2
+            a_mask = fg_abc_class == abc_class_a
+            b_mask = fg_abc_class == abc_class_b
+            c_mask = fg_abc_class == abc_class_c
             a_avg_age = np.mean(fg_sku_age[a_mask]) if np.any(a_mask) else 0.0
             b_avg_age = np.mean(fg_sku_age[b_mask]) if np.any(b_mask) else 0.0
             c_avg_age = np.mean(fg_sku_age[c_mask]) if np.any(c_mask) else 0.0
@@ -1297,14 +1344,18 @@ class Orchestrator:
                 self.monitor.record_outbound_ftl_fill(fill_rate)
                 self.monitor.record_ftl_fill(fill_rate)  # Legacy compat
 
-        # Record OEE
+        # Record OEE and TEEP
         if plant_oee:
             avg_oee = sum(plant_oee.values()) / len(plant_oee)
             self.monitor.record_oee(avg_oee)
+        if plant_teep:
+            avg_teep = sum(plant_teep.values()) / len(plant_teep)
+            self.monitor.record_teep(avg_teep)
 
         # Perfect Order Rate (v0.39.0 - real calculation)
         # Perfect Order = On-time AND Undamaged AND Correct Documentation
-        # Note: "Complete" check handled by allocation - shipments are what was allocated
+        # Note: "Complete" check handled by allocation -
+        # shipments are what was allocated
         perfect_order_rate = self._calculate_perfect_order_rate(arrived, day)
         self.monitor.record_perfect_order(perfect_order_rate)
 
@@ -1465,7 +1516,8 @@ class Orchestrator:
         total_inventory = np.sum(np.maximum(0, self.state.actual_inventory))
 
         oee = report.get("oee", {}).get("mean", 0)
-        truck_fill = report.get("truck_fill", {}).get("mean", 0)
+        teep = report.get("teep", {}).get("mean", 0)
+        report.get("truck_fill", {}).get("mean", 0)
 
         # Use Store Service Level (Consumer OSA) for the Triangle Report
         # as it represents the actual "Service" delivered to customers.
@@ -1507,6 +1559,7 @@ class Orchestrator:
             f"   - LTL Shipments:             {ltl_count:,}",
             "--------------------------------------------------",
             f"Manufacturing OEE:              {oee * oee_scale:.1f}%",
+            f"TEEP (Total Utilization):       {teep * oee_scale:.1f}%",
             f"Perfect Order Rate:             {perfect_order:.1f}%",
             f"Cash-to-Cash Cycle:             {c2c:.1f} days",
             f"Scope 3 Emissions:              {scope3:.2f} kg/case",
@@ -1649,7 +1702,7 @@ class Orchestrator:
                         order.target_id, line.product_id, line.quantity
                     )
 
-    def _push_excess_rdc_inventory(self, day: int) -> list[Shipment]:  # noqa: PLR0912, PLR0915
+    def _push_excess_rdc_inventory(self, day: int) -> list[Shipment]:
         """
         Push excess RDC inventory to Customer DCs when DOS > threshold.
 

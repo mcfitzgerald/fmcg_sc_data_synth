@@ -72,9 +72,7 @@ class RiskEventManager:
         return any(e.event_type == event_type for e in self.active_events)
 
     def get_logistics_delay_multiplier(self) -> float:
-        """
-        Calculate cumulative delay multiplier from active PORT STRIKE events.
-        """
+        """Calculate cumulative delay multiplier from active PORT STRIKE events."""
         multiplier = 1.0
         if not self.enabled:
             return multiplier
@@ -142,9 +140,7 @@ class RiskEventManager:
         return down_dcs
 
     def get_emission_overrides(self) -> float:
-        """
-        Get CO2 cost multiplier from active CARBON TAX events.
-        """
+        """Get CO2 cost multiplier from active CARBON TAX events."""
         multiplier = 1.0
         if not self.enabled:
             return multiplier

@@ -80,9 +80,15 @@ class LogisticsEngine:
         for p_id, p_idx in self.state.product_id_to_idx.items():
             product = self.world.products.get(p_id)
             if product:
-                self._product_weight[p_idx] = max(product.weight_kg, self.epsilon_weight)
-                self._product_volume[p_idx] = max(product.volume_m3, self.epsilon_volume)
-                self._product_cases_per_pallet[p_idx] = max(product.cases_per_pallet, 1)
+                self._product_weight[p_idx] = max(
+                    product.weight_kg, self.epsilon_weight
+                )
+                self._product_volume[p_idx] = max(
+                    product.volume_m3, self.epsilon_volume
+                )
+                self._product_cases_per_pallet[p_idx] = max(
+                    product.cases_per_pallet, 1
+                )
 
     def _build_route_map(self) -> None:
         for link in self.world.links.values():
@@ -149,7 +155,8 @@ class LogisticsEngine:
             # Determine Channel Rules
             channel = target_node.channel if target_node else None
             rules = self._get_channel_rules(channel)
-            # Use channel-specific minimum, or default FTL minimum for non-channel routes
+            # Use channel-specific minimum, or default FTL
+            # minimum for non-channel routes
             min_pallets = rules.get(
                 "min_order_pallets", self.default_ftl_min_pallets
             )
@@ -193,7 +200,8 @@ class LogisticsEngine:
                 earliest_order_day = min(o.creation_day for o in route_orders)
 
             # --- OPTIMIZATION: Single Truck Fast-Path ---
-            # Most store orders (LTL) fit in one truck. Pre-calc totals to skip bin packing.
+            # Most store orders (LTL) fit in one truck.
+            # Pre-calc totals to skip bin packing.
             # PERF: Use cached product arrays instead of dict lookups
             route_weight = 0.0
             route_volume = 0.0
@@ -207,9 +215,17 @@ class LogisticsEngine:
                     valid_lines.append(line)
 
             # If everything fits in one truck, ship it immediately
-            if route_weight <= self.max_weight_kg and route_volume <= self.max_volume_m3:
+            if (
+                route_weight <= self.max_weight_kg
+                and route_volume <= self.max_volume_m3
+            ):
                 shipment = self._new_shipment(
-                    source_id, target_id, current_day, arrival_day, shipment_counter, earliest_order_day
+                    source_id,
+                    target_id,
+                    current_day,
+                    arrival_day,
+                    shipment_counter,
+                    earliest_order_day,
                 )
                 shipment_counter += 1
 
@@ -229,9 +245,16 @@ class LogisticsEngine:
             # Bin Packing Loop (Complex path for multi-truck routes)
             # PERF: Use cached product arrays instead of dict lookups
             current_shipment = self._new_shipment(
-                source_id, target_id, current_day, arrival_day, shipment_counter, earliest_order_day
+                source_id,
+                target_id,
+                current_day,
+                arrival_day,
+                shipment_counter,
+                earliest_order_day,
             )
             shipment_counter += 1
+
+            near_zero_threshold = 1e-9
 
             for line in lines_for_packing:
                 p_idx = self.state.product_id_to_idx.get(line.product_id)
@@ -242,7 +265,7 @@ class LogisticsEngine:
                 unit_vol = self._product_volume[p_idx]
                 remaining_qty = line.quantity
 
-                while remaining_qty > 1e-9:
+                while remaining_qty > near_zero_threshold:
                     # Check space
                     weight_space = self.max_weight_kg - current_shipment.total_weight_kg
                     vol_space = self.max_volume_m3 - current_shipment.total_volume_m3
@@ -270,7 +293,7 @@ class LogisticsEngine:
 
                     fit_qty = min(remaining_qty, max_by_weight, max_by_vol)
 
-                    if fit_qty < 1e-9:
+                    if fit_qty < near_zero_threshold:
                         if not current_shipment.lines:
                             # Item exceeds empty truck dimensions?
                             raise ValueError(
@@ -300,7 +323,9 @@ class LogisticsEngine:
             if current_shipment.lines:
                 # Add Emissions calculation
                 dist = link.distance_km if link else 0.0
-                current_shipment.emissions_kg = self._calculate_emissions(current_shipment, dist)
+                current_shipment.emissions_kg = (
+                    self._calculate_emissions(current_shipment, dist)
+                )
                 new_shipments.append(current_shipment)
 
         # ================================================================
@@ -323,13 +348,15 @@ class LogisticsEngine:
                 source_id, target_id = route
 
                 # Collect all lines from stale orders
-                lines_for_packing: list[OrderLine] = []
+                stale_lines_for_packing: list[OrderLine] = []
                 earliest_order_day = current_day
                 for order in route_orders:
-                    lines_for_packing.extend(order.lines)
-                    earliest_order_day = min(earliest_order_day, order.creation_day)
+                    stale_lines_for_packing.extend(order.lines)
+                    earliest_order_day = min(
+                        earliest_order_day, order.creation_day
+                    )
 
-                if not lines_for_packing:
+                if not stale_lines_for_packing:
                     continue
 
                 # Find lead time for this route
@@ -346,7 +373,7 @@ class LogisticsEngine:
                 )
                 shipment_counter += 1
 
-                for line in lines_for_packing:
+                for line in stale_lines_for_packing:
                     p_idx = self.state.product_id_to_idx.get(line.product_id)
                     if p_idx is not None:
                         unit_weight = self._product_weight[p_idx]
@@ -396,7 +423,13 @@ class LogisticsEngine:
         return active, arrived
 
     def _new_shipment(
-        self, source: str, target: str, day: int, arrival: int, counter: int, original_order_day: int | None = None
+        self,
+        source: str,
+        target: str,
+        day: int,
+        arrival: int,
+        counter: int,
+        original_order_day: int | None = None,
     ) -> Shipment:
         return Shipment(
             id=f"SHP-{day}-{source}-{target}-{counter}",
@@ -413,7 +446,10 @@ class LogisticsEngine:
         """Get logistics rules for a channel."""
         if not channel:
             return {}
-        res = self.channel_rules.get(channel.value, self.channel_rules.get(channel.name, {}))
+        res = self.channel_rules.get(
+            channel.value,
+            self.channel_rules.get(channel.name, {}),
+        )
         return dict(res) if res is not None else {}
 
     def _calculate_pallets(self, order: Order) -> float:
@@ -434,10 +470,17 @@ class LogisticsEngine:
         staged: dict[str, float] = {}
         for order in self.held_orders:
             for line in order.lines:
-                staged[line.product_id] = staged.get(line.product_id, 0.0) + line.quantity
+                staged[line.product_id] = (
+                    staged.get(line.product_id, 0.0)
+                    + line.quantity
+                )
         return staged
 
-    def generate_returns_from_arrivals(self, arrived_shipments: list[Shipment], day: int) -> list[Return]:
+    def generate_returns_from_arrivals(
+        self,
+        arrived_shipments: list[Shipment],
+        day: int,
+    ) -> list[Return]:
         """
         Generate returns (RMAs) from recently arrived shipments.
         Simulates 'Damage on Arrival' or immediate rejection.
@@ -458,16 +501,23 @@ class LogisticsEngine:
             if np.random.random() < return_prob:
                 # Generate a return
                 # Pick 1 random line to return
-                if not shipment.lines: continue
+                if not shipment.lines:
+                    continue
 
                 line = shipment.lines[np.random.randint(0, len(shipment.lines))]
 
                 # Return 10-50% of the quantity (damaged/expired)
                 return_qty = line.quantity * np.random.uniform(0.1, 0.5)
-                if return_qty < 1: return_qty = 1.0
+                min_return_qty = 1.0
+                return_qty = max(return_qty, min_return_qty)
 
                 # Disposition logic: 80% Restock (good), 20% Scrap (damaged)
-                disposition = "restock" if np.random.random() < 0.8 else "scrap"
+                restock_probability = 0.8
+                disposition = (
+                    "restock"
+                    if np.random.random() < restock_probability
+                    else "scrap"
+                )
 
                 rma_id = f"RMA-{day:03d}-{shipment.id[-6:]}"
 

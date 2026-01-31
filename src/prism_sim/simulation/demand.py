@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Any, cast
+from typing import Any, ClassVar, cast
 
 import numpy as np
 
@@ -37,7 +37,12 @@ class PromoCalendar:
     Vectorized implementation for high performance.
     """
 
-    def __init__(self, world: World, weeks_per_year: int = 52, config: dict[str, Any] | None = None) -> None:
+    def __init__(
+        self,
+        world: World,
+        weeks_per_year: int = 52,
+        config: dict[str, Any] | None = None,
+    ) -> None:
         self.world = world
         self.weeks_per_year = weeks_per_year
         self.config = config or {}
@@ -62,19 +67,26 @@ class PromoCalendar:
             hangover_mult = p.get("hangover_multiplier", 1.0)
             discount = p.get("discount_percent", 0.0)
 
-            affected_channels = p.get("affected_channels", []) # List of channel names
+            # List of channel names
+            affected_channels = p.get("affected_channels", [])
             affected_categories = p.get("affected_categories", ["all"])
 
             # Identify target SKUs
             target_skus = []
             for prod in self.world.products.values():
-                if "all" in affected_categories or prod.category.name in affected_categories:
+                if (
+                    "all" in affected_categories
+                    or prod.category.name in affected_categories
+                ):
                     target_skus.append(prod.id)
 
             # Identify target Nodes (Store/DC) based on Channel
-            # Promos apply to the demand-generating nodes (Stores, or DCs if they generate demand directly?
-            # Usually Stores generate demand. DCs generate aggregated demand via orders.
-            # POSEngine generates demand for STORE nodes (and maybe customer DCs).
+            # Promos apply to the demand-generating nodes (Stores,
+            # or DCs if they generate demand directly?
+            # Usually Stores generate demand. DCs generate aggregated
+            # demand via orders.
+            # POSEngine generates demand for STORE nodes
+            # (and maybe customer DCs).
             target_nodes = []
             for node in self.world.nodes.values():
                 if node.channel and node.channel.name in affected_channels:
@@ -83,21 +95,34 @@ class PromoCalendar:
             # Populate Index
             # 1. Promo Period
             for w in range(start, end + 1):
-                if w not in self._index: self._index[w] = {}
-                effect = PromoEffect(code, lift, hangover_mult, discount, is_hangover=False)
+                if w not in self._index:
+                    self._index[w] = {}
+                effect = PromoEffect(
+                    code, lift, hangover_mult, discount, is_hangover=False
+                )
                 self._apply_effect(w, target_nodes, target_skus, effect)
 
             # 2. Hangover Period
             for w in range(end + 1, end + 1 + hangover_wks):
-                if w > self.weeks_per_year: continue
-                if w not in self._index: self._index[w] = {}
-                effect = PromoEffect(code, 1.0, hangover_mult, 0.0, is_hangover=True)
+                if w > self.weeks_per_year:
+                    continue
+                if w not in self._index:
+                    self._index[w] = {}
+                effect = PromoEffect(
+                    code, 1.0, hangover_mult, 0.0, is_hangover=True
+                )
                 # Hangover lift applies to base, so multiplier is hangover_mult
                 # Actually PromoEffect definition above splits lift and hangover_mult.
                 # If is_hangover=True, we use hangover_mult.
                 self._apply_effect(w, target_nodes, target_skus, effect)
 
-    def _apply_effect(self, week: int, nodes: list[str], skus: list[str], effect: PromoEffect) -> None:
+    def _apply_effect(
+        self,
+        week: int,
+        nodes: list[str],
+        skus: list[str],
+        effect: PromoEffect,
+    ) -> None:
         """Apply effect to index."""
         # This naive storage might be big if we store per node/sku.
         # But we need granular lookup.
@@ -127,13 +152,18 @@ class PromoCalendar:
                 else:
                     self._index[week][n_id][s_id] = effect
 
-    def get_multiplier(self, week: int, node_id: str, product_id: str) -> float:
+    def get_multiplier(
+        self, week: int, node_id: str, product_id: str
+    ) -> float:
         """Get single multiplier (slow)."""
-        if week not in self._index: return 1.0
+        if week not in self._index:
+            return 1.0
         node_map = self._index[week].get(node_id)
-        if not node_map: return 1.0
+        if not node_map:
+            return 1.0
         effect = node_map.get(product_id)
-        if not effect: return 1.0
+        if not effect:
+            return 1.0
 
         if effect.is_hangover:
             return effect.hangover_multiplier
@@ -153,13 +183,19 @@ class PromoCalendar:
         # This is faster than iterating all nodes if promo is sparse
         for n_id, prod_map in week_data.items():
             n_idx = state.node_id_to_idx.get(n_id)
-            if n_idx is None: continue
+            if n_idx is None:
+                continue
 
             for p_id, effect in prod_map.items():
                 p_idx = state.product_id_to_idx.get(p_id)
-                if p_idx is None: continue
+                if p_idx is None:
+                    continue
 
-                mult = effect.hangover_multiplier if effect.is_hangover else effect.lift_multiplier
+                mult = (
+                    effect.hangover_multiplier
+                    if effect.is_hangover
+                    else effect.lift_multiplier
+                )
                 multipliers[n_idx, p_idx] = mult
 
         return multipliers
@@ -169,12 +205,39 @@ class POSEngine:
     """Point-of-Sale Engine. Generates daily consumer demand."""
 
     # Default segment weights - overridden by config if present
-    DEFAULT_CHANNEL_SEGMENT_WEIGHTS: dict[str, dict[ValueSegment, float]] = {
-        "B2M_LARGE": {ValueSegment.MAINSTREAM: 0.6, ValueSegment.VALUE: 0.3, ValueSegment.TRIAL: 0.05, ValueSegment.PREMIUM: 0.05},
-        "B2M_CLUB": {ValueSegment.VALUE: 0.7, ValueSegment.MAINSTREAM: 0.25, ValueSegment.PREMIUM: 0.05, ValueSegment.TRIAL: 0.0},
-        "B2M_DISTRIBUTOR": {ValueSegment.MAINSTREAM: 0.6, ValueSegment.VALUE: 0.3, ValueSegment.TRIAL: 0.05, ValueSegment.PREMIUM: 0.05},
-        "ECOMMERCE": {ValueSegment.MAINSTREAM: 0.4, ValueSegment.PREMIUM: 0.3, ValueSegment.VALUE: 0.2, ValueSegment.TRIAL: 0.1},
-        "DTC": {ValueSegment.PREMIUM: 0.5, ValueSegment.MAINSTREAM: 0.3, ValueSegment.TRIAL: 0.2, ValueSegment.VALUE: 0.0},
+    DEFAULT_CHANNEL_SEGMENT_WEIGHTS: ClassVar[
+        dict[str, dict[ValueSegment, float]]
+    ] = {
+        "B2M_LARGE": {
+            ValueSegment.MAINSTREAM: 0.6,
+            ValueSegment.VALUE: 0.3,
+            ValueSegment.TRIAL: 0.05,
+            ValueSegment.PREMIUM: 0.05,
+        },
+        "B2M_CLUB": {
+            ValueSegment.VALUE: 0.7,
+            ValueSegment.MAINSTREAM: 0.25,
+            ValueSegment.PREMIUM: 0.05,
+            ValueSegment.TRIAL: 0.0,
+        },
+        "B2M_DISTRIBUTOR": {
+            ValueSegment.MAINSTREAM: 0.6,
+            ValueSegment.VALUE: 0.3,
+            ValueSegment.TRIAL: 0.05,
+            ValueSegment.PREMIUM: 0.05,
+        },
+        "ECOMMERCE": {
+            ValueSegment.MAINSTREAM: 0.4,
+            ValueSegment.PREMIUM: 0.3,
+            ValueSegment.VALUE: 0.2,
+            ValueSegment.TRIAL: 0.1,
+        },
+        "DTC": {
+            ValueSegment.PREMIUM: 0.5,
+            ValueSegment.MAINSTREAM: 0.3,
+            ValueSegment.TRIAL: 0.2,
+            ValueSegment.VALUE: 0.0,
+        },
     }
 
     def __init__(
@@ -201,7 +264,8 @@ class POSEngine:
         calendar_config = config.get("simulation_parameters", {}).get("calendar", {})
         weeks_per_year = calendar_config.get("weeks_per_year", 52)
 
-        # Pass world_definition (stored in world? no, usually separately passed, but here we assume config has it)
+        # Pass world_definition (stored in world? no, usually
+        # separately passed, but here we assume config has it)
         # Orchestrator passes self.config which is simulation_config.
         # Promo data is in world_definition.
         # Wait, Orchestrator loads simulation_config into self.config.
@@ -214,8 +278,10 @@ class POSEngine:
         # self.config is simulation_config.
 
         # I need to merge manifest into config or access it?
-        # Since I cannot easily change Orchestrator passing right now (or I can?),
-        # I will assume that the user will update Orchestrator to pass the merged config or
+        # Since I cannot easily change Orchestrator passing
+        # right now (or I can?),
+        # I will assume that the user will update Orchestrator
+        # to pass the merged config or
         # that "promotions" are also in simulation_config?
         # NO, I put them in world_definition.json.
 
@@ -278,9 +344,12 @@ class POSEngine:
         for channel_name, segment_weights in self.channel_segment_weights.items():
             # Sort SKUs by segment affinity (higher weight = earlier rank)
             # Then alphabetically within same affinity for determinism
-            def sort_key(p: Any) -> tuple[float, str]:
-                seg_weight = segment_weights.get(p.value_segment, 0.0)
-                return (-seg_weight, p.id)  # Descending affinity, then alpha
+            def sort_key(
+                p: Any,
+                _sw: dict[ValueSegment, float] = segment_weights,
+            ) -> tuple[float, str]:
+                seg_weight = _sw.get(p.value_segment, 0.0)
+                return (-seg_weight, p.id)  # Descending affinity
 
             sorted_skus = sorted(finished_goods, key=sort_key)
 
@@ -300,9 +369,7 @@ class POSEngine:
         )
 
     def _init_base_demand(self) -> None:
-        """
-        Initializes base demand for Retail Stores based on Channel and Segment.
-        """
+        """Initializes base demand for Retail Stores based on Channel and Segment."""
         profiles = (
             self.config.get("simulation_parameters", {})
             .get("demand", {})
@@ -329,7 +396,9 @@ class POSEngine:
             # ECOM_FC and DTC still generate demand (no stores under them)
             if node.store_format:
                 if node.store_format.name in ("RETAILER_DC", "DISTRIBUTOR_DC"):
-                    continue  # These DCs aggregate store demand, don't generate directly
+                    # These DCs aggregate store demand,
+                    # don't generate directly
+                    continue
 
             n_idx = self.state.node_id_to_idx[n_id]
 
@@ -435,22 +504,32 @@ class POSEngine:
         """
         return self.base_demand.copy()
 
-    def get_deterministic_forecast(self, start_day: int, duration: int, aggregated: bool = True) -> np.ndarray:
+    def get_deterministic_forecast(
+        self,
+        start_day: int,
+        duration: int,
+        aggregated: bool = True,
+    ) -> np.ndarray:
         """
-        Calculate deterministic total demand over a future interval [start_day, start_day + duration).
+        Calculate deterministic total demand over a future interval
+        [start_day, start_day + duration).
         Excludes random noise components.
-        
+
         Args:
             start_day: Day to start forecast from.
             duration: Number of days to forecast.
-            aggregated: If True, returns [n_products]. If False, returns [n_nodes, n_products].
-        
+            aggregated: If True, returns [n_products].
+                If False, returns [n_nodes, n_products].
+
         Returns: Forecasted demand tensor.
         """
         if aggregated:
             total_forecast = np.zeros(self.state.n_products, dtype=np.float64)
         else:
-            total_forecast = np.zeros((self.state.n_nodes, self.state.n_products), dtype=np.float64)
+            total_forecast = np.zeros(
+                (self.state.n_nodes, self.state.n_products),
+                dtype=np.float64,
+            )
 
         # Get demand config
         demand_config = self.config.get("simulation_parameters", {}).get("demand", {})

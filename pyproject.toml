@@ -1,6 +1,6 @@
 [project]
 name = "prism-sim"
-version = "0.39.6"
+version = "0.39.7"
 description = ""
 authors = [
     {name = "Your Name",email = "you@example.com"}
@@ -66,7 +66,19 @@ ignore = [
     "D205", # 1 blank line required between summary line and description
     "D212", # Multi-line docstring summary at second line (conflicts with D213)
     "D415", # First line should end with a period, question mark, or exclamation point
+    "PLC0415", # Import not at top of file (lazy imports used intentionally)
+    "PLW0603", # Using the global statement (acceptable in monitor singleton pattern)
 ]
+
+[tool.ruff.lint.pylint]
+max-branches = 35
+max-args = 10
+max-statements = 130
+max-returns = 8
+
+[tool.ruff.lint.per-file-ignores]
+"src/prism_sim/agents/replenishment.py" = ["N806"]  # Math notation (mu_L, sigma_L)
+"src/prism_sim/generators/network.py" = ["N806"]  # Math notation (R = random)
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"

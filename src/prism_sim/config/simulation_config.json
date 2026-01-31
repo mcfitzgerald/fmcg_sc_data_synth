@@ -234,15 +234,15 @@
       },
       "category_profiles": {
         "ORAL_CARE": {
-          "base_daily_demand": 3.2,
-          "sku_proportion": 0.4
+          "base_daily_demand": 8.0,
+          "sku_proportion": 0.45
         },
         "PERSONAL_WASH": {
-          "base_daily_demand": 3.2,
-          "sku_proportion": 0.35
+          "base_daily_demand": 5.5,
+          "sku_proportion": 0.30
         },
         "HOME_CARE": {
-          "base_daily_demand": 3.2,
+          "base_daily_demand": 2.0,
           "sku_proportion": 0.25
         },
         "INGREDIENT": {
@@ -411,20 +411,20 @@
       "default_num_lines": 8,
       "plant_parameters": {
         "PLANT-OH": {
-          "description": "Legacy plant - upgraded efficiency, still higher downtime",
+          "description": "Legacy plant - serves HOME_CARE and PERSONAL_WASH",
           "efficiency_factor": 0.78,
           "unplanned_downtime_pct": 0.1,
-          "num_lines": 2,
+          "num_lines": 4,
           "supported_categories": [
             "HOME_CARE",
             "PERSONAL_WASH"
           ]
         },
         "PLANT-TX": {
-          "description": "Modern high-speed facility (realistic OEE)",
+          "description": "Modern high-speed ORAL_CARE facility",
           "efficiency_factor": 0.88,
           "unplanned_downtime_pct": 0.04,
-          "num_lines": 6,
+          "num_lines": 2,
           "supported_categories": [
             "ORAL_CARE"
           ]
@@ -433,20 +433,21 @@
           "description": "Flexible multi-category facility",
           "efficiency_factor": 0.82,
           "unplanned_downtime_pct": 0.06,
-          "num_lines": 7,
+          "num_lines": 3,
           "supported_categories": [
             "ORAL_CARE",
             "PERSONAL_WASH"
           ]
         },
         "PLANT-GA": {
-          "description": "Standard facility",
+          "description": "Standard facility with oral care overflow",
           "efficiency_factor": 0.8,
           "unplanned_downtime_pct": 0.07,
-          "num_lines": 7,
+          "num_lines": 5,
           "supported_categories": [
             "PERSONAL_WASH",
-            "HOME_CARE"
+            "HOME_CARE",
+            "ORAL_CARE"
           ]
         }
       },

@@ -309,7 +309,10 @@ class PhantomInventoryQuirk:
                 self._rng.uniform(self.shrinkage_factor_min, self.shrinkage_factor_max)
                 * self.shrinkage_pct
             )
-            shrink_qty = min(current_qty * shrink_factor, current_qty)  # Never exceed actual
+            # Never exceed actual
+            shrink_qty = min(
+                current_qty * shrink_factor, current_qty
+            )
 
             # Apply to actual inventory
             state.actual_inventory[node_idx, prod_idx] -= shrink_qty
@@ -451,12 +454,12 @@ class SingleSourceFragilityQuirk:
             .get("single_source_fragility", {})
         )
         self.enabled = quirk_config.get("enabled", True)
-        self.cascade_delay_multiplier = quirk_config.get("cascade_delay_multiplier", 2.5)
+        self.cascade_delay_multiplier = quirk_config.get(
+            "cascade_delay_multiplier", 2.5
+        )
 
     def apply_fragility(self, batches: list[Any], spof_ingredient_id: str) -> None:
-        """
-        Apply delays to production batches that depend on SPOF ingredient.
-        """
+        """Apply delays to production batches that depend on SPOF ingredient."""
         if not self.enabled or not spof_ingredient_id:
             return
 
@@ -493,9 +496,7 @@ class DataDecayQuirk:
         self._rng = np.random.default_rng(seed)
 
     def check_rejection(self, batch: Any, current_day: int) -> bool:
-        """
-        Check if a batch should be rejected due to data decay/expiry risk.
-        """
+        """Check if a batch should be rejected due to data decay/expiry risk."""
         if not self.enabled:
             return False
 
@@ -627,7 +628,8 @@ class QuirkManager:
         # In-place status update for batches
         for batch in batches:
             if self.data_decay.check_rejection(batch, current_day):
-                # We need a status enum here, but assuming string for now based on context
+                # We need a status enum here, but assuming
+                # string for now based on context
                 # or import BatchStatus if available.
                 # Assuming simple string set for now as 'rejected'
                 if hasattr(batch, "status"):

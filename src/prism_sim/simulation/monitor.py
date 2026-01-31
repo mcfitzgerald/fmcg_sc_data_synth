@@ -62,12 +62,14 @@ class RealismMonitor:
 
         # Accumulators for metrics
         self.oee_tracker = WelfordAccumulator()
+        self.teep_tracker = WelfordAccumulator()
         self.truck_fill_tracker = WelfordAccumulator()  # Combined (legacy)
         self.slob_tracker = WelfordAccumulator()  # SLOB: Slow Moving & Obsolete
         self.cost_tracker = WelfordAccumulator()
         self.inventory_turns_tracker = WelfordAccumulator()
         self.service_level_tracker = WelfordAccumulator()  # Aggregate Fill Rate
-        self.store_service_level_tracker = WelfordAccumulator()  # Consumer Service Level
+        # Consumer Service Level
+        self.store_service_level_tracker = WelfordAccumulator()
 
         # v0.24.0: Separate FTL and LTL tracking
         # FTL fill rate is the meaningful metric (target 85%)
@@ -104,6 +106,9 @@ class RealismMonitor:
 
     def record_oee(self, oee_value: float) -> None:
         self.oee_tracker.update(oee_value)
+
+    def record_teep(self, teep_value: float) -> None:
+        self.teep_tracker.update(teep_value)
 
     def record_service_level(self, fill_rate: float) -> None:
         self.service_level_tracker.update(fill_rate)
@@ -190,6 +195,11 @@ class RealismMonitor:
                     else "DRIFT"
                 ),
             },
+            "teep": {
+                "mean": self.teep_tracker.mean,
+                "std": self.teep_tracker.std_dev,
+                "description": "Total Effective Equipment Performance",
+            },
             "truck_fill": {
                 "mean": self.truck_fill_tracker.mean,
                 "target": self.truck_fill_target,
@@ -261,7 +271,12 @@ class RealismMonitor:
             },
             "perfect_order_rate": {
                 "mean": self.perfect_order_tracker.mean,
-                "status": "OK" if self.perfect_order_tracker.mean >= self.perfect_order_threshold else "LOW"
+                "status": (
+                    "OK"
+                    if self.perfect_order_tracker.mean
+                    >= self.perfect_order_threshold
+                    else "LOW"
+                )
             },
             "cash_to_cash_days": {
                 "mean": self.cash_to_cash_tracker.mean,
@@ -306,7 +321,12 @@ class PhysicsAuditor:
     [Task 6.6] [Intent: 5. Validation - Physics Audit]
     """
 
-    def __init__(self, state: StateManager, world: World, config: dict[str, Any]) -> None:
+    def __init__(
+        self,
+        state: StateManager,
+        world: World,
+        config: dict[str, Any],
+    ) -> None:
         self.state = state
         self.world = world
         self.config = config
@@ -385,7 +405,9 @@ class PhysicsAuditor:
             for line in s.lines:
                 prod_idx = self.state.product_id_to_idx.get(line.product_id)
                 if prod_idx is not None:
-                    self.current_flows.allocation_out[source_idx, prod_idx] += line.quantity
+                    self.current_flows.allocation_out[
+                        source_idx, prod_idx
+                    ] += line.quantity
 
     def record_production(self, batches: list[Batch]) -> None:
         """Record finished goods added and raw materials consumed in production."""
@@ -399,7 +421,9 @@ class PhysicsAuditor:
             # Record FG output
             prod_idx = self.state.product_id_to_idx.get(b.product_id)
             if prod_idx is not None:
-                self.current_flows.production_in[plant_idx, prod_idx] += b.quantity_cases
+                self.current_flows.production_in[
+                    plant_idx, prod_idx
+                ] += b.quantity_cases
 
             # Record Ingredient consumption
             for ing_id, qty in b.ingredients_consumed.items():
@@ -428,7 +452,8 @@ class PhysicsAuditor:
         Validate I_t = I_{t-1} + Inflows - Outflows.
 
         Conservation Law:
-        Opening + Receipts + ProdIn - Sales - AllocationOut - Consumed - Shrinkage == Closing
+        Opening + Receipts + ProdIn - Sales
+        - AllocationOut - Consumed - Shrinkage == Closing
 
         Note: We track allocation_out (inventory decremented at allocation time) instead
         of shipments_out to fix the FTL consolidation timing mismatch where inventory

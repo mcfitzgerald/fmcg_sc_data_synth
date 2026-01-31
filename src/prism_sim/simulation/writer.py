@@ -347,7 +347,7 @@ class SimulationWriter:
     - **Parquet:** Columnar compression, fast analytics (requires pyarrow).
     """
 
-    def __init__(  # noqa: PLR0913
+    def __init__(
         self,
         output_dir: str = "data/output",
         enable_logging: bool = False,
@@ -387,9 +387,9 @@ class SimulationWriter:
 
         # Initialize writers or buffers
         self._orders_writer: StreamingCSVWriter | StreamingParquetWriter | None = None
-        self._production_orders_writer: StreamingCSVWriter | StreamingParquetWriter | None = (
-            None
-        )
+        self._production_orders_writer: (
+            StreamingCSVWriter | StreamingParquetWriter | None
+        ) = None
         self._shipments_writer: StreamingCSVWriter | StreamingParquetWriter | None = (
             None
         )

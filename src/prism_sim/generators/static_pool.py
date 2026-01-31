@@ -120,7 +120,10 @@ class StaticDataPool:
         if not path.exists():
             # Fallback to faked names if file missing (prevents crash)
             fake_cities = self._generate_pool(self._faker.city, 100)
-            return [{"city": c, "state": "US", "lat": 0.0, "lon": 0.0} for c in fake_cities]
+            return [
+                {"city": c, "state": "US", "lat": 0.0, "lon": 0.0}
+                for c in fake_cities
+            ]
 
         with open(path, encoding="utf-8") as f:
             reader = csv.DictReader(f)

@@ -420,7 +420,7 @@ class StateManager:
 
         When fresh inventory (age 0) arrives, it blends with existing
         inventory to produce a new weighted average age:
-            new_age = (old_qty × old_age + new_qty × 0) / total_qty
+            new_age = (old_qty x old_age + new_qty x 0) / total_qty
 
         This preserves age information while correctly modeling FIFO
         consumption at the aggregate level.
@@ -435,7 +435,7 @@ class StateManager:
 
         new_total = current_qty + qty
         if new_total > 0:
-            # Weighted average: (old_qty × old_age + new_qty × 0) / total
+            # Weighted average: (old_qty x old_age + new_qty x 0) / total
             self.inventory_age[node_idx, product_idx] = (
                 current_qty * current_age
             ) / new_total
@@ -464,8 +464,8 @@ class StateManager:
         new_total = current_qty + delta_tensor
 
         # Weighted average age calculation (vectorized)
-        # new_age = (old_qty × old_age + new_qty × 0) / new_total
-        # Simplifies to: new_age = (old_qty × old_age) / new_total
+        # new_age = (old_qty x old_age + new_qty x 0) / new_total
+        # Simplifies to: new_age = (old_qty x old_age) / new_total
         with np.errstate(divide='ignore', invalid='ignore'):
             new_age = np.where(
                 new_total > 0,
@@ -490,7 +490,7 @@ class StateManager:
         Returns:
             np.ndarray: Shape [n_products] - weighted average age per SKU
         """
-        # Numerator: sum of (inventory × age) across nodes
+        # Numerator: sum of (inventory x age) across nodes
         weighted_age_sum = np.sum(
             self.inventory_age * np.maximum(0, self.actual_inventory), axis=0
         )

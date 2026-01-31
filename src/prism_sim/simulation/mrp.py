@@ -351,7 +351,7 @@ class MRPEngine:
         DEATH SPIRAL ROOT CAUSE:
         When expected_daily_demand exceeds plant capacity, MRP floors
         (70-90% of expected) create impossible production targets.
-        Example: 21M expected demand × 0.8 floor = 16.8M requested,
+        Example: 21M expected demand x 0.8 floor = 16.8M requested,
         but plants can only produce 8-9M. The backlog accumulates,
         causing more changeovers and less actual production time.
 
@@ -592,13 +592,19 @@ class MRPEngine:
 
         This matches the seasonality calculation in POSEngine.generate_demand().
         """
-        return float(1.0 + self._seasonality_amplitude * np.sin(
-            2 * np.pi * (day - self._seasonality_phase_shift) / self._seasonality_cycle_days
-        ))
+        phase = (
+            (day - self._seasonality_phase_shift)
+            / self._seasonality_cycle_days
+        )
+        return float(
+            1.0 + self._seasonality_amplitude
+            * np.sin(2 * np.pi * phase)
+        )
 
     def _get_daily_capacity(self, day: int) -> float:
         """
-        v0.29.0: Get production capacity for a specific day, accounting for seasonal flex.
+        v0.29.0: Get production capacity for a specific day,
+        accounting for seasonal flex.
 
         Mirrors demand seasonality so MRP can plan with accurate capacity knowledge:
         - Peak demand → higher capacity available (overtime, extra shifts)
@@ -617,12 +623,19 @@ class MRPEngine:
             return self._max_daily_capacity
 
         # Apply same sinusoidal pattern as demand seasonality
-        capacity_factor = 1.0 + self._capacity_amplitude * np.sin(
-            2 * np.pi * (day - self._seasonality_phase_shift) / self._seasonality_cycle_days
+        phase = (
+            (day - self._seasonality_phase_shift)
+            / self._seasonality_cycle_days
         )
-        return float(self._max_daily_capacity * capacity_factor)
+        capacity_factor = (
+            1.0 + self._capacity_amplitude
+            * np.sin(2 * np.pi * phase)
+        )
+        return float(
+            self._max_daily_capacity * capacity_factor
+        )
 
-    def generate_production_orders(  # noqa: PLR0912, PLR0915
+    def generate_production_orders(
         self,
         current_day: int,
         rdc_shipments: list[Shipment],  # FIX 3: Accept Shipments instead of Orders
@@ -866,7 +879,7 @@ class MRPEngine:
 
         return production_orders
 
-    def _generate_rate_based_orders(  # noqa: PLR0912, PLR0913, PLR0915
+    def _generate_rate_based_orders(
         self,
         current_day: int,
         avg_daily_demand_vec: np.ndarray,
@@ -910,11 +923,16 @@ class MRPEngine:
         # preventing overproduction during troughs that causes SLOB accumulation.
         seasonal_factor = self._get_seasonal_factor(current_day)
 
-        # v0.36.0 Demand Sensing: Cache future deterministic forecast for the planning horizon.
-        # This includes deterministic seasonality and upcoming promotions.
+        # v0.36.0 Demand Sensing: Cache future deterministic
+        # forecast for the planning horizon.
+        # This includes deterministic seasonality and promos.
         if self.pos_engine is not None:
             forecast_duration = self.production_horizon_days
-            network_forecast = self.pos_engine.get_deterministic_forecast(current_day, forecast_duration)
+            network_forecast = (
+                self.pos_engine.get_deterministic_forecast(
+                    current_day, forecast_duration
+                )
+            )
             # Planning daily rate = Total Forecast over horizon / Duration
             planning_daily_rate_vec = network_forecast / forecast_duration
         else:
@@ -944,7 +962,8 @@ class MRPEngine:
 
             # v0.39.3 FIX: Use expected demand as FLOOR to prevent death spiral
             #
-            # v0.39.2 BUG: Using today's actual POS demand directly caused a death spiral:
+            # v0.39.2 BUG: Using today's actual POS demand
+            # directly caused a death spiral:
             # 1. Day 1: Service = 89% → only 89% of demand is met
             # 2. pos_demand_vec reflects what was SOLD, not what was DEMANDED
             # 3. MRP sees lower "demand" → produces less
@@ -956,7 +975,8 @@ class MRPEngine:
             # - Never let actual sales pull production below expected baseline
             #
             # FIX: demand_for_dos = max(expected, weighted blend of actual + expected)
-            # The demand_floor_weight config controls the blend (default 0.8 expected)
+            # The demand_floor_weight config controls the blend
+            # (default 0.8 expected)
             demand_floor_weight = float(
                 self.config.get("simulation_parameters", {})
                 .get("manufacturing", {})
@@ -970,14 +990,22 @@ class MRPEngine:
             if pos_demand_vec is not None:
                 actual = float(pos_demand_vec[p_idx])
                 # Weighted blend: mostly expected, with actual for upward sensing
-                blended = actual * (1 - demand_floor_weight) + expected * demand_floor_weight
+                blended = (
+                    actual * (1 - demand_floor_weight)
+                    + expected * demand_floor_weight
+                )
                 # FLOOR: never go below expected (prevents death spiral)
                 demand_for_dos = max(expected, blended)
-                # v0.39.4: Diagnostic logging to verify demand floor is active
-                if p_idx < 5:  # Log first few SKUs for sampling
+                # v0.39.4: Diagnostic logging to verify
+                # demand floor is active
+                diag_sample_size = 5
+                if p_idx < diag_sample_size:
                     mrp_logger.debug(
-                        f"Demand floor: SKU={product_id} expected={expected:.0f} "
-                        f"actual={actual:.0f} blended={blended:.0f} -> demand_for_dos={demand_for_dos:.0f}"
+                        f"Demand floor: SKU={product_id} "
+                        f"expected={expected:.0f} "
+                        f"actual={actual:.0f} "
+                        f"blended={blended:.0f} -> "
+                        f"demand_for_dos={demand_for_dos:.0f}"
                     )
             elif planning_daily_rate_vec is not None:
                 # Use planning rate but floor at expected
@@ -989,7 +1017,7 @@ class MRPEngine:
                 demand_for_dos = max(seasonal_expected, seasonal_sustainable, 1.0)
 
             # v0.39.2 FIX: Decouple batch sizing from forecast totals
-            # Simple formula: rate × horizon (no recycling of 14-day totals)
+            # Simple formula: rate x horizon (no recycling of 14-day totals)
             batch_qty_base = demand_for_dos * abc_horizon
 
             # Calculate inventory position
@@ -1027,11 +1055,12 @@ class MRPEngine:
                 # v0.39.3 FIX: ABC-differentiated production WITHOUT cascading penalties
                 #
                 # v0.39.2 BUG: Cascading penalties destroyed C-item production:
-                #   c_production_factor (0.5) × DOS throttle (0.3) = 0.15 (85% cut!)
+                #   c_production_factor (0.5) x DOS throttle (0.3) = 0.15 (85% cut!)
                 #   This guaranteed C-item stockouts and SLOB from aged inventory.
                 #
                 # INDUSTRY REALITY (Colgate, P&G):
-                # - C-items get LONGER production horizons (campaign runs), not smaller batches
+                # - C-items get LONGER production horizons
+                #   (campaign runs), not smaller batches
                 # - Monthly C-item campaigns vs weekly A-item runs
                 # - C-items have lower DOS triggers (can tolerate longer replenishment)
                 #
@@ -1053,10 +1082,13 @@ class MRPEngine:
                 # C-items: NO production factor penalty
                 # Their 21-day horizon (config) already creates larger batches
 
-                # v0.39.3 FIX: DOS throttling ONLY for A/B items (high inventory levels)
-                # C-items do NOT get DOS throttling - their longer horizon and
-                # age-based SLOB tracking (v0.39.2) handle inventory control.
-                if abc != 2:  # A/B items only
+                # v0.39.3 FIX: DOS throttling ONLY for A/B
+                # items (high inventory levels).
+                # C-items do NOT get DOS throttling - their
+                # longer horizon and age-based SLOB tracking
+                # (v0.39.2) handle inventory control.
+                abc_class_c = 2
+                if abc != abc_class_c:  # A/B items only
                     if dos_position > 60.0:  # noqa: PLR2004
                         batch_qty *= 0.5
                     elif dos_position > 45.0:  # noqa: PLR2004
@@ -1100,7 +1132,8 @@ class MRPEngine:
             return float(self.trigger_dos_c)
 
         # v0.36.2: Shuffle to break ties (e.g. multiple items with 0 inventory)
-        # Without shuffle, the same "tail" items always lose the tie-break and never run.
+        # Without shuffle, the same "tail" items always lose
+        # the tie-break and never run.
         np.random.shuffle(candidates)
 
         # Sort by Critical Ratio ascending (lowest ratio = most critical)
@@ -1142,10 +1175,11 @@ class MRPEngine:
             max_skus = self.max_skus_per_plant_per_day
 
             # Split candidates by ABC class
-            # Candidates are already sorted by critical ratio (ascending)
-            a_items = [c for c in plant_candidates if c[4] == 0]  # abc == 0
-            b_items = [c for c in plant_candidates if c[4] == 1]  # abc == 1
-            c_items = [c for c in plant_candidates if c[4] == 2]  # abc == 2
+            # Candidates already sorted by critical ratio (asc)
+            abc_a, abc_b, abc_c = 0, 1, 2
+            a_items = [c for c in plant_candidates if c[4] == abc_a]
+            b_items = [c for c in plant_candidates if c[4] == abc_b]
+            c_items = [c for c in plant_candidates if c[4] == abc_c]
 
             # Calculate slot allocation
             a_slots = int(max_skus * a_slot_pct)
@@ -1293,7 +1327,8 @@ class MRPEngine:
         Returns:
             np.ndarray: Shape [n_products] - average daily consumption
         """
-        return np.mean(self._consumption_history, axis=0)
+        result: np.ndarray = np.mean(self._consumption_history, axis=0)
+        return result
 
     def _estimate_demand(self, product_idx: int, daily_demand: np.ndarray) -> float:
         """
@@ -1503,7 +1538,7 @@ class MRPEngine:
             return self._create_immediate_pos(current_day, candidate_lines)
 
         # Add new lines to pending pool by supplier
-        for plant_id, supplier_id, ing_id, qty, dos in candidate_lines:
+        for plant_id, supplier_id, ing_id, qty, _dos in candidate_lines:
             # Create a supplier key that includes plant for proper routing
             supplier_key = f"{supplier_id}|{plant_id}"
 

@@ -18,7 +18,9 @@ class RecipeMatrixBuilder:
     def __init__(self, products: list[Product], recipes: list[Recipe]) -> None:
         self.products = products
         self.recipes = recipes
-        self.product_id_to_idx: dict[str, int] = {p.id: i for i, p in enumerate(products)}
+        self.product_id_to_idx: dict[str, int] = {
+            p.id: i for i, p in enumerate(products)
+        }
         self.n_products = len(products)
 
     def build_matrix(self) -> NDArray[np.float64]:
@@ -43,7 +45,8 @@ class RecipeMatrixBuilder:
                         matrix[i, j] = qty
                     else:
                         # In a strict simulation, this might be an error.
-                        # For now, we assume ingredients might be outside the list if filtering happened.
+                        # For now, we assume ingredients might be
+                        # outside the list if filtering happened.
                         pass
 
         return matrix

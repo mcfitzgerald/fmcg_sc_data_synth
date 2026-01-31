@@ -5,6 +5,37 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.39.7] - 2026-01-31
+
+### OEE/TEEP Overhaul & Lint Compliance
+
+#### 1. OEE Fix: Eliminate Double-Counted Efficiency (`transform.py`)
+- **Bug:** `efficiency_factor` was baked into line capacity hours AND applied again as the OEE Performance component, double-counting speed losses
+- **Fix:** Capacity hours now use `hours_per_day * (1 - downtime)` only; efficiency is captured solely via the OEE Performance component
+- **Impact:** OEE numbers now reflect the standard SMRP/Vorne decomposition
+
+#### 2. OEE Denominator: Planned Production Time (`transform.py`)
+- **Before:** OEE denominator was raw calendar time (24h × all lines), penalizing plants with no demand
+- **After:** OEE denominator is planned production time (active lines only); idle lines with no demand are a Schedule Loss excluded from OEE per industry standards
+- **Impact:** OEE reflects true manufacturing effectiveness, not utilization
+
+#### 3. TEEP Metric (`transform.py`, `orchestrator.py`, `monitor.py`)
+- Added Total Effective Equipment Performance (TEEP = OEE × Utilization)
+- TEEP uses raw calendar time (24h × all lines) as denominator, revealing total hidden capacity
+- Tracked via `RealismMonitor.teep_tracker`, reported in Triangle Report
+
+#### 4. Config Rebalancing (`simulation_config.json`)
+- Differentiated category demand profiles: ORAL_CARE 8.0, PERSONAL_WASH 5.5, HOME_CARE 2.0 (was 3.2 uniform)
+- Rebalanced plant line counts to match category throughput needs (OH:4, TX:2, CA:3, GA:5)
+- Added ORAL_CARE to PLANT-GA supported categories for overflow capacity
+
+#### 5. Full Lint Compliance
+- **Ruff:** Fixed all 169 errors (E501, E701, RUF002/3, PLR2004, B023, RUF012); adjusted pylint limits for DES simulation complexity
+- **Mypy:** Fixed all 5 errors (no-any-return, no-redef, unused-ignore, var-annotated)
+- **Semgrep:** Audited all 237 hardcoded-values findings — confirmed zero config violations
+- Removed 6 stale `noqa` directives; added `PLC0415`, `PLW0603` to ignore list
+- All 33 source files now pass `ruff check`, `mypy --strict`, and `semgrep`
+
 ## [0.39.6] - 2026-01-25
 
 ### Performance Optimization Release

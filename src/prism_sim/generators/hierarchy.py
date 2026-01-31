@@ -84,7 +84,7 @@ class ProductGenerator:
                 )
             )
 
-    def generate_products(  # noqa: PLR0912
+    def generate_products(
         self, n_skus: int = 500
     ) -> list[Product]:
         """
@@ -195,7 +195,7 @@ class ProductGenerator:
 
         return products
 
-    def _create_single_sku(  # noqa: PLR0913
+    def _create_single_sku(
         self,
         category: ProductCategory,
         brands: list[str],
@@ -354,7 +354,7 @@ class ProductGenerator:
 
         return ingredients
 
-    def generate_recipes(  # noqa: PLR0912, PLR0915
+    def generate_recipes(
         self, products: list[Product], ingredients: list[Product]
     ) -> list[Recipe]:
         """Generate recipes using logic-driven semantic BOM rules."""

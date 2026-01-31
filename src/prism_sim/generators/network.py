@@ -85,7 +85,8 @@ class NetworkGenerator:
         supplier_cities = self.pool.sample_cities(n_suppliers)
         for i, city_data in enumerate(supplier_cities):
             node_id = f"SUP-{i+1:03d}"
-            # v0.35.6: All suppliers have infinite capacity. SPOF uses dedicated supplier.
+            # v0.35.6: All suppliers have infinite capacity.
+            # SPOF uses dedicated supplier.
             capacity = float("inf")
             suppliers.append(Node(
                 id=node_id,
@@ -158,7 +159,9 @@ class NetworkGenerator:
 
             # Stores under this DC
             for j in range(stores_per_retailer_dc):
-                lat, lon = self._get_jittered_coords(city_data["lat"], city_data["lon"], jitter)
+                lat, lon = self._get_jittered_coords(
+                    city_data["lat"], city_data["lon"], jitter
+                )
                 store_node = Node(
                     id=f"STORE-RET-{i+1:03d}-{j+1:04d}",
                     name=f"{account_name} Store #{j+1}",
@@ -261,7 +264,10 @@ class NetworkGenerator:
 
         # Suppliers -> Plants (Nearest 2)
         for supplier in suppliers:
-            dists = [(self._haversine(supplier.lat, supplier.lon, p.lat, p.lon), p) for p in plants]
+            dists = [
+                (self._haversine(supplier.lat, supplier.lon, p.lat, p.lon), p)
+                for p in plants
+            ]
             dists.sort(key=lambda x: x[0])
             for _, plant in dists[:2]:
                 add_geo_link(supplier, plant)
@@ -288,7 +294,10 @@ class NetworkGenerator:
         # RDCs -> Club Stores (Nearest RDC)
         club_stores = [s for s in stores if s.store_format == StoreFormat.CLUB]
         for store in club_stores:
-            dists = [(self._haversine(store.lat, store.lon, r.lat, r.lon), r) for r in rdcs]
+            dists = [
+                (self._haversine(store.lat, store.lon, r.lat, r.lon), r)
+                for r in rdcs
+            ]
             dists.sort(key=lambda x: x[0])
             closest_rdc = dists[0][1]
             add_geo_link(closest_rdc, store)

@@ -166,8 +166,10 @@ class TransformEngine:
                 downtime = p_config.get("unplanned_downtime_pct", global_downtime)
 
                 # Calculate effective capacity hours PER LINE
-                # Effective = Total Hours * (1 - Downtime) * Efficiency
-                hours_per_line = self.hours_per_day * (1.0 - downtime) * efficiency
+                # Effective = Total Hours * (1 - Downtime)
+                # Note: efficiency_factor is NOT applied here - it is captured
+                # solely via the OEE Performance component to avoid double-counting
+                hours_per_line = self.hours_per_day * (1.0 - downtime)
 
                 # Store efficiency factor for OEE Performance calculation
                 self._plant_efficiency[node_id] = efficiency
@@ -324,7 +326,9 @@ class TransformEngine:
 
     def process_production_orders(
         self, orders: list[ProductionOrder], current_day: int
-    ) -> tuple[list[ProductionOrder], list[Batch], dict[str, float]]:
+    ) -> tuple[
+        list[ProductionOrder], list[Batch], dict[str, float], dict[str, float]
+    ]:
         """
         Process Production Orders for the current day using Line logic.
 
@@ -333,10 +337,11 @@ class TransformEngine:
             current_day: Current simulation day
 
         Returns:
-            Tuple of (updated_orders, new_batches, plant_oee)
+            Tuple of (updated_orders, new_batches, plant_oee, plant_teep)
         """
         new_batches: list[Batch] = []
         plant_oee: dict[str, float] = {}
+        plant_teep: dict[str, float] = {}
 
         # v0.29.0: Apply seasonal capacity factor for flexible capacity
         seasonal_factor = self._get_seasonal_capacity_factor(current_day)
@@ -376,49 +381,65 @@ class TransformEngine:
                 new_batches.append(batch)
                 self.batches.append(batch)
 
-        # Calculate OEE for each plant using standard formula:
-        # OEE = Availability × Performance × Quality
+        # Calculate OEE and TEEP for each plant.
         #
-        # v0.35.2 FIX: Use RAW scheduled hours (24h × lines), not pre-reduced capacity.
-        # Previous bug: max_capacity_hours already had efficiency baked in, then
-        # efficiency was applied AGAIN as Performance factor = double-counting.
+        # OEE = Availability x Performance x Quality
+        #   Uses Planned Production Time as denominator (only lines
+        #   that received work). Per SMRP/Vorne standards, idle lines
+        #   with no demand are a Schedule Loss excluded from OEE.
         #
-        # Correct formula:
-        # - Availability = (run + changeover) / (24h × num_lines) - raw utilization
-        # - Performance = plant efficiency_factor (0.78-0.88 per config)
+        # TEEP = OEE x Utilization
+        #   Uses raw calendar time (24h x all lines) as denominator.
+        #   Reveals total hidden capacity for strategic planning.
+        #
+        # Components:
+        # - Availability = (run + changeover) / planned_production_time
+        # - Performance = efficiency_factor (0.78-0.88 per config)
         # - Quality = yield % (98.5%)
-        #
-        # Note: unplanned_downtime_pct currently reduces capacity upfront rather than
-        # causing random stoppages. This is a simplification - true OEE would have
-        # downtime events reduce Availability dynamically.
+        # - Utilization = planned_time / (24h x all lines)
         for plant_id, plant_state in self._plant_states.items():
             num_lines = len(plant_state.lines)
-            # Use RAW scheduled hours: 24h × num_lines (not pre-reduced capacity)
-            total_scheduled_raw = self.hours_per_day * num_lines
             total_run = sum(line.run_hours_today for line in plant_state.lines)
             total_changeover = sum(
                 line.changeover_hours_today for line in plant_state.lines
             )
+            actual_operating = total_run + total_changeover
 
-            if total_scheduled_raw > 0:
-                # Availability = actual operating time / raw scheduled time
-                # This captures both changeover losses AND idle capacity
-                actual_operating = total_run + total_changeover
-                availability = actual_operating / total_scheduled_raw
+            # Performance and Quality are the same for OEE and TEEP
+            performance = self._plant_efficiency.get(plant_id, 0.85)
+            quality = self.default_yield_percent / 100.0
 
-                # Performance = plant efficiency factor (speed losses, minor stops)
-                # From config: 0.78-0.88 depending on plant
-                performance = self._plant_efficiency.get(plant_id, 0.85)
+            # Count active lines (lines that received at least one order)
+            active_lines = sum(
+                1
+                for line in plant_state.lines
+                if line.run_hours_today > 0 or line.changeover_hours_today > 0
+            )
 
-                # Quality = yield (good output / total output)
-                quality = self.default_yield_percent / 100.0
-
-                # OEE = A × P × Q
+            # OEE: denominator = planned production time (active lines)
+            # Each active line's planned time = hours_per_day x (1-dt)
+            # which equals max_capacity_hours (set in _initialize)
+            if active_lines > 0:
+                planned_production_time = sum(
+                    line.max_capacity_hours
+                    for line in plant_state.lines
+                    if line.run_hours_today > 0
+                    or line.changeover_hours_today > 0
+                )
+                availability = actual_operating / planned_production_time
                 plant_oee[plant_id] = availability * performance * quality
             else:
                 plant_oee[plant_id] = 0.0
 
-        return sorted_orders, new_batches, plant_oee
+            # TEEP: denominator = raw calendar time (all lines)
+            total_calendar_time = self.hours_per_day * num_lines
+            if total_calendar_time > 0:
+                utilization = actual_operating / total_calendar_time
+                plant_teep[plant_id] = utilization * performance * quality
+            else:
+                plant_teep[plant_id] = 0.0
+
+        return sorted_orders, new_batches, plant_oee, plant_teep
 
     def _process_single_order(
         self, order: ProductionOrder, current_day: int
@@ -455,7 +476,10 @@ class TransformEngine:
 
         # Check for changeover penalty on THIS LINE
         changeover_time = 0.0
-        if line.last_product_id is not None and line.last_product_id != order.product_id:
+        if (
+            line.last_product_id is not None
+            and line.last_product_id != order.product_id
+        ):
             changeover_time = recipe.changeover_time_hours * self.changeover_multiplier
 
         # How much can we actually produce today on THIS LINE?
