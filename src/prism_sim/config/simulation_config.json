@@ -180,19 +180,31 @@
         "push_allocation_enabled": true,
         "push_threshold_dos": 21.0,
         "channel_profiles": {
-          "B2M_LARGE": {
+          "MASS_RETAIL": {
             "target_days": 8.0,
             "reorder_point_days": 4.0,
             "batch_size": 500.0,
             "smoothing_factor": 0.3
           },
-          "B2M_CLUB": {
+          "GROCERY": {
+            "target_days": 8.0,
+            "reorder_point_days": 4.0,
+            "batch_size": 400.0,
+            "smoothing_factor": 0.3
+          },
+          "CLUB": {
             "target_days": 8.0,
             "reorder_point_days": 4.0,
             "batch_size": 200.0,
             "smoothing_factor": 0.2
           },
-          "B2M_DISTRIBUTOR": {
+          "PHARMACY": {
+            "target_days": 8.0,
+            "reorder_point_days": 4.0,
+            "batch_size": 100.0,
+            "smoothing_factor": 0.2
+          },
+          "DISTRIBUTOR": {
             "target_days": 8.0,
             "reorder_point_days": 4.0,
             "batch_size": 100.0,
@@ -255,16 +267,35 @@
         "CONVENIENCE": 0.5,
         "CLUB": 15.0,
         "ECOM_FC": 50.0,
+        "DTC_FC": 50.0,
         "PHARMACY": 0.8
       },
       "channel_value_segment_mix": {
-        "B2M_CLUB": {
+        "MASS_RETAIL": {
+          "VALUE": 0.3,
+          "MAINSTREAM": 0.5,
+          "PREMIUM": 0.15,
+          "TRIAL": 0.05
+        },
+        "GROCERY": {
+          "VALUE": 0.35,
+          "MAINSTREAM": 0.45,
+          "PREMIUM": 0.15,
+          "TRIAL": 0.05
+        },
+        "CLUB": {
           "VALUE": 0.7,
           "MAINSTREAM": 0.25,
           "PREMIUM": 0.05,
           "TRIAL": 0.0
         },
-        "B2M_LARGE": {
+        "PHARMACY": {
+          "VALUE": 0.15,
+          "MAINSTREAM": 0.45,
+          "PREMIUM": 0.3,
+          "TRIAL": 0.1
+        },
+        "DISTRIBUTOR": {
           "VALUE": 0.3,
           "MAINSTREAM": 0.5,
           "PREMIUM": 0.15,
@@ -275,6 +306,12 @@
           "PREMIUM": 0.3,
           "VALUE": 0.2,
           "TRIAL": 0.1
+        },
+        "DTC": {
+          "PREMIUM": 0.5,
+          "MAINSTREAM": 0.3,
+          "TRIAL": 0.2,
+          "VALUE": 0.0
         },
         "default": {
           "VALUE": 0.3,
@@ -309,17 +346,27 @@
       },
       "default_lead_time_days": 3.0,
       "channel_rules": {
-        "B2M_LARGE": {
+        "MASS_RETAIL": {
           "mode": "FTL",
           "min_order_pallets": 20,
           "target_fill_rate": 0.9
         },
-        "B2M_CLUB": {
+        "GROCERY": {
+          "mode": "FTL",
+          "min_order_pallets": 15,
+          "target_fill_rate": 0.9
+        },
+        "CLUB": {
           "mode": "FTL",
           "min_order_pallets": 15,
           "target_fill_rate": 0.85
         },
-        "B2M_DISTRIBUTOR": {
+        "PHARMACY": {
+          "mode": "FTL",
+          "min_order_pallets": 5,
+          "target_fill_rate": 0.8
+        },
+        "DISTRIBUTOR": {
           "mode": "FTL",
           "min_order_pallets": 10,
           "target_fill_rate": 0.8

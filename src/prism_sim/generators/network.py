@@ -131,8 +131,8 @@ class NetworkGenerator:
         stores: list[Node] = []
         dc_to_stores: dict[str, list[Node]] = {}
 
-        # A. B2M_LARGE (Retailer DCs + their stores)
-        n_retailer_dcs = target_counts.get("retailer_dcs", 20)
+        # A. MASS_RETAIL (Retailer DCs + their stores)
+        n_retailer_dcs = target_counts.get("retailer_dcs", 15)
         stores_per_retailer_dc = target_counts.get("stores_per_retailer_dc", 100)
 
         retailer_companies = self.pool.sample_companies(n_retailer_dcs)
@@ -150,7 +150,7 @@ class NetworkGenerator:
                 location=f"{city_data['city']}, {city_data['state']}",
                 lat=city_data["lat"],
                 lon=city_data["lon"],
-                channel=CustomerChannel.B2M_LARGE,
+                channel=CustomerChannel.MASS_RETAIL,
                 store_format=StoreFormat.RETAILER_DC,
                 parent_account_id=f"ACCT-RET-{i+1:03d}"
             )
@@ -169,15 +169,59 @@ class NetworkGenerator:
                     location=dc_node.location,
                     lat=lat,
                     lon=lon,
-                    channel=CustomerChannel.B2M_LARGE,
+                    channel=CustomerChannel.MASS_RETAIL,
+                    store_format=StoreFormat.HYPERMARKET,
+                    parent_account_id=dc_id
+                )
+                stores.append(store_node)
+                dc_to_stores[dc_id].append(store_node)
+
+        # B. GROCERY (Grocery DCs + their stores)
+        n_grocery_dcs = target_counts.get("grocery_dcs", 10)
+        stores_per_grocery_dc = target_counts.get("stores_per_grocery_dc", 100)
+
+        grocery_companies = self.pool.sample_companies(n_grocery_dcs)
+        grocery_dc_cities = self.pool.sample_cities(n_grocery_dcs)
+
+        for i in range(n_grocery_dcs):
+            account_name = grocery_companies[i]
+            city_data = grocery_dc_cities[i]
+            dc_id = f"GRO-DC-{i+1:03d}"
+
+            dc_node = Node(
+                id=dc_id,
+                name=f"{account_name} Grocery DC",
+                type=NodeType.DC,
+                location=f"{city_data['city']}, {city_data['state']}",
+                lat=city_data["lat"],
+                lon=city_data["lon"],
+                channel=CustomerChannel.GROCERY,
+                store_format=StoreFormat.RETAILER_DC,
+                parent_account_id=f"ACCT-GRO-{i+1:03d}"
+            )
+            customer_dcs.append(dc_node)
+            dc_to_stores[dc_id] = []
+
+            for j in range(stores_per_grocery_dc):
+                lat, lon = self._get_jittered_coords(
+                    city_data["lat"], city_data["lon"], jitter
+                )
+                store_node = Node(
+                    id=f"STORE-GRO-{i+1:03d}-{j+1:04d}",
+                    name=f"{account_name} Grocery #{j+1}",
+                    type=NodeType.STORE,
+                    location=dc_node.location,
+                    lat=lat,
+                    lon=lon,
+                    channel=CustomerChannel.GROCERY,
                     store_format=StoreFormat.SUPERMARKET,
                     parent_account_id=dc_id
                 )
                 stores.append(store_node)
                 dc_to_stores[dc_id].append(store_node)
 
-        # B. B2M_CLUB (Direct to RDC)
-        n_club_stores = target_counts.get("club_stores", 30)
+        # C. CLUB (Direct to RDC)
+        n_club_stores = target_counts.get("club_stores", 47)
         club_cities = self.pool.sample_cities(n_club_stores)
 
         for i, city in enumerate(club_cities):
@@ -188,14 +232,30 @@ class NetworkGenerator:
                 location=f"{city['city']}, {city['state']}",
                 lat=city["lat"],
                 lon=city["lon"],
-                channel=CustomerChannel.B2M_CLUB,
+                channel=CustomerChannel.CLUB,
                 store_format=StoreFormat.CLUB
             ))
 
-        # C. B2M_DISTRIBUTOR (Distributor DCs + small retailers)
-        n_distributor_dcs = target_counts.get("distributor_dcs", 8)
-        n_small_retailers = target_counts.get("small_retailers", 4000)
-        stores_per_distributor = n_small_retailers // n_distributor_dcs
+        # D. PHARMACY (Direct to nearest RDC, like CLUB)
+        n_pharmacy_stores = target_counts.get("pharmacy_stores", 375)
+        pharmacy_cities = self.pool.sample_cities(n_pharmacy_stores)
+
+        for i, city in enumerate(pharmacy_cities):
+            stores.append(Node(
+                id=f"STORE-PHARM-{i+1:04d}",
+                name=f"Pharmacy Store {i+1}",
+                type=NodeType.STORE,
+                location=f"{city['city']}, {city['state']}",
+                lat=city["lat"],
+                lon=city["lon"],
+                channel=CustomerChannel.PHARMACY,
+                store_format=StoreFormat.PHARMACY
+            ))
+
+        # E. DISTRIBUTOR (Distributor DCs + small retailers)
+        n_distributor_dcs = target_counts.get("distributor_dcs", 3)
+        n_small_retailers = target_counts.get("small_retailers", 900)
+        stores_per_distributor = n_small_retailers // max(n_distributor_dcs, 1)
 
         dist_cities = self.pool.sample_cities(n_distributor_dcs)
         for i, city in enumerate(dist_cities):
@@ -207,7 +267,7 @@ class NetworkGenerator:
                 location=f"{city['city']}, {city['state']}",
                 lat=city["lat"],
                 lon=city["lon"],
-                channel=CustomerChannel.B2M_DISTRIBUTOR,
+                channel=CustomerChannel.DISTRIBUTOR,
                 store_format=StoreFormat.DISTRIBUTOR_DC
             )
             customer_dcs.append(dc_node)
@@ -222,15 +282,15 @@ class NetworkGenerator:
                     location=dc_node.location,
                     lat=lat,
                     lon=lon,
-                    channel=CustomerChannel.B2M_DISTRIBUTOR,
+                    channel=CustomerChannel.DISTRIBUTOR,
                     store_format=StoreFormat.CONVENIENCE,
                     parent_account_id=dc_id
                 )
                 stores.append(store_node)
                 dc_to_stores[dc_id].append(store_node)
 
-        # D. ECOMMERCE (Leaf nodes)
-        n_ecom_fcs = target_counts.get("ecom_fcs", 10)
+        # F. ECOMMERCE (Leaf DCs)
+        n_ecom_fcs = target_counts.get("ecom_fcs", 18)
         ecom_cities = self.pool.sample_cities(n_ecom_fcs)
         for i, city in enumerate(ecom_cities):
             customer_dcs.append(Node(
@@ -242,6 +302,21 @@ class NetworkGenerator:
                 lon=city["lon"],
                 channel=CustomerChannel.ECOMMERCE,
                 store_format=StoreFormat.ECOM_FC
+            ))
+
+        # G. DTC (Leaf DCs)
+        n_dtc_fcs = target_counts.get("dtc_fc", 3)
+        dtc_cities = self.pool.sample_cities(n_dtc_fcs)
+        for i, city in enumerate(dtc_cities):
+            customer_dcs.append(Node(
+                id=f"DTC-FC-{i+1:03d}",
+                name=f"DTC FC {i+1}",
+                type=NodeType.DC,
+                location=f"{city['city']}, {city['state']}",
+                lat=city["lat"],
+                lon=city["lon"],
+                channel=CustomerChannel.DTC,
+                store_format=StoreFormat.DTC_FC
             ))
 
         nodes.extend(customer_dcs)
@@ -294,6 +369,17 @@ class NetworkGenerator:
         # RDCs -> Club Stores (Nearest RDC)
         club_stores = [s for s in stores if s.store_format == StoreFormat.CLUB]
         for store in club_stores:
+            dists = [
+                (self._haversine(store.lat, store.lon, r.lat, r.lon), r)
+                for r in rdcs
+            ]
+            dists.sort(key=lambda x: x[0])
+            closest_rdc = dists[0][1]
+            add_geo_link(closest_rdc, store)
+
+        # RDCs -> Pharmacy Stores (Nearest RDC, like Club)
+        pharmacy_stores = [s for s in stores if s.store_format == StoreFormat.PHARMACY]
+        for store in pharmacy_stores:
             dists = [
                 (self._haversine(store.lat, store.lon, r.lat, r.lon), r)
                 for r in rdcs

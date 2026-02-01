@@ -17,19 +17,31 @@ from prism_sim.simulation.world import World
 
 # Default channel policies - overridden by config if present
 DEFAULT_CHANNEL_POLICIES: dict[str, dict[str, float]] = {
-    "B2M_LARGE": {
+    "MASS_RETAIL": {
         "target_days": 21.0,
         "reorder_point_days": 14.0,
         "batch_size": 500.0,
         "smoothing_factor": 0.3,
     },
-    "B2M_CLUB": {
+    "GROCERY": {
+        "target_days": 21.0,
+        "reorder_point_days": 14.0,
+        "batch_size": 400.0,
+        "smoothing_factor": 0.3,
+    },
+    "CLUB": {
         "target_days": 21.0,
         "reorder_point_days": 14.0,
         "batch_size": 200.0,
         "smoothing_factor": 0.2,
     },
-    "B2M_DISTRIBUTOR": {
+    "PHARMACY": {
+        "target_days": 21.0,
+        "reorder_point_days": 14.0,
+        "batch_size": 100.0,
+        "smoothing_factor": 0.2,
+    },
+    "DISTRIBUTOR": {
         "target_days": 21.0,
         "reorder_point_days": 14.0,
         "batch_size": 100.0,
@@ -40,6 +52,12 @@ DEFAULT_CHANNEL_POLICIES: dict[str, dict[str, float]] = {
         "reorder_point_days": 7.0,
         "batch_size": 50.0,
         "smoothing_factor": 0.4,
+    },
+    "DTC": {
+        "target_days": 10.0,
+        "reorder_point_days": 5.0,
+        "batch_size": 25.0,
+        "smoothing_factor": 0.5,
     },
     "default": {
         "target_days": 14.0,
@@ -464,14 +482,14 @@ class MinMaxReplenisher:
                 continue
 
             # Customer DCs: DC type but NOT manufacturer RDCs
-            # EXCLUDE ECOM_FC - they're B2C nodes
+            # EXCLUDE ECOM_FC and DTC_FC - they're B2C nodes
             # B2C nodes should use POS demand, not outflow
-            # ECOM FCs sell directly to consumers
-            is_ecom_fc = node.store_format == StoreFormat.ECOM_FC
+            # ECOM/DTC FCs sell directly to consumers
+            is_b2c_fc = node.store_format in (StoreFormat.ECOM_FC, StoreFormat.DTC_FC)
             if (
                 node.type == NodeType.DC
                 and not n_id.startswith("RDC-")
-                and not is_ecom_fc
+                and not is_b2c_fc
             ):
                 self._customer_dc_indices.add(idx)
 

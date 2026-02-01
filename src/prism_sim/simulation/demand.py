@@ -208,19 +208,31 @@ class POSEngine:
     DEFAULT_CHANNEL_SEGMENT_WEIGHTS: ClassVar[
         dict[str, dict[ValueSegment, float]]
     ] = {
-        "B2M_LARGE": {
+        "MASS_RETAIL": {
             ValueSegment.MAINSTREAM: 0.6,
             ValueSegment.VALUE: 0.3,
             ValueSegment.TRIAL: 0.05,
             ValueSegment.PREMIUM: 0.05,
         },
-        "B2M_CLUB": {
+        "GROCERY": {
+            ValueSegment.MAINSTREAM: 0.5,
+            ValueSegment.VALUE: 0.35,
+            ValueSegment.TRIAL: 0.05,
+            ValueSegment.PREMIUM: 0.1,
+        },
+        "CLUB": {
             ValueSegment.VALUE: 0.7,
             ValueSegment.MAINSTREAM: 0.25,
             ValueSegment.PREMIUM: 0.05,
             ValueSegment.TRIAL: 0.0,
         },
-        "B2M_DISTRIBUTOR": {
+        "PHARMACY": {
+            ValueSegment.MAINSTREAM: 0.45,
+            ValueSegment.PREMIUM: 0.3,
+            ValueSegment.VALUE: 0.15,
+            ValueSegment.TRIAL: 0.1,
+        },
+        "DISTRIBUTOR": {
             ValueSegment.MAINSTREAM: 0.6,
             ValueSegment.VALUE: 0.3,
             ValueSegment.TRIAL: 0.05,
@@ -363,9 +375,9 @@ class POSEngine:
                 for i, sku in enumerate(sorted_skus)
             }
 
-        # Keep global weights as fallback (use B2M_LARGE as default)
+        # Keep global weights as fallback (use MASS_RETAIL as default)
         self.sku_popularity_weights = self.channel_sku_weights.get(
-            "B2M_LARGE", {}
+            "MASS_RETAIL", {}
         )
 
     def _init_base_demand(self) -> None:
@@ -383,7 +395,7 @@ class POSEngine:
                 continue
 
             # Identify Channel
-            channel_name = "B2M_LARGE" # Default
+            channel_name = "MASS_RETAIL"  # Default
             if node.channel:
                 channel_name = node.channel.name
 

@@ -11,10 +11,12 @@ class NodeType(enum.Enum):
 
 
 class CustomerChannel(enum.Enum):
-    B2M_LARGE = "b2m_large"        # Big retailers (Walmart DC, Target DC) - FTL
-    B2M_CLUB = "b2m_club"          # Club stores (Costco, Sam's) - FTL pallets
-    B2M_DISTRIBUTOR = "b2m_dist"   # 3P Distributors (consolidate for small retailers)
-    ECOMMERCE = "ecommerce"        # Amazon, pure-play digital
+    MASS_RETAIL = "mass_retail"    # Big retailers (Walmart DC, Target DC) - FTL
+    GROCERY = "grocery"            # Traditional grocery (Kroger, Albertsons) - FTL
+    CLUB = "club"                  # Club stores (Costco, Sam's) - FTL pallets
+    PHARMACY = "pharmacy"          # Pharmacy chains (CVS, Walgreens) - FTL
+    DISTRIBUTOR = "distributor"    # 3P Distributors (consolidate for small retailers)
+    ECOMMERCE = "ecommerce"       # Amazon, pure-play digital
     DTC = "dtc"                    # Direct to consumer (parcel)
 
 
@@ -27,6 +29,7 @@ class StoreFormat(enum.Enum):
     PHARMACY = "pharmacy"         # CVS, Walgreens
     DISTRIBUTOR_DC = "distributor_dc"  # 3P distributor warehouse
     ECOM_FC = "ecom_fc"           # E-commerce fulfillment center
+    DTC_FC = "dtc_fc"             # Direct-to-consumer fulfillment center
 
 
 @dataclass

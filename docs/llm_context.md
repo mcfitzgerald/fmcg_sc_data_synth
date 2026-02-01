@@ -349,14 +349,16 @@ The `--derive-lines` calibration uses physics-based efficiency decomposition:
 ### Customer Channels (`CustomerChannel` enum)
 | Channel | Description | Logistics Mode |
 |---------|-------------|----------------|
-| `B2M_LARGE` | Big retailers (Walmart DC, Target DC) | FTL |
-| `B2M_CLUB` | Club stores (Costco, Sam's Club) | FTL |
-| `B2M_DISTRIBUTOR` | 3P Distributors | FTL |
+| `MASS_RETAIL` | Big retailers (Walmart DC, Target DC) | FTL |
+| `GROCERY` | Traditional grocery (Kroger, Albertsons) | FTL |
+| `CLUB` | Club stores (Costco, Sam's Club) | FTL |
+| `PHARMACY` | Pharmacy chains (CVS, Walgreens) | FTL |
+| `DISTRIBUTOR` | 3P Distributors | FTL |
 | `ECOMMERCE` | Amazon, pure-play digital | FTL |
 | `DTC` | Direct to consumer | Parcel |
 
 ### Store Formats (`StoreFormat` enum)
-`RETAILER_DC`, `HYPERMARKET`, `SUPERMARKET`, `CLUB`, `CONVENIENCE`, `PHARMACY`, `DISTRIBUTOR_DC`, `ECOM_FC`
+`RETAILER_DC`, `HYPERMARKET`, `SUPERMARKET`, `CLUB`, `CONVENIENCE`, `PHARMACY`, `DISTRIBUTOR_DC`, `ECOM_FC`, `DTC_FC`
 
 ---
 

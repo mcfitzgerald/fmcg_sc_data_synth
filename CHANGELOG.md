@@ -5,6 +5,60 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.44.0] - 2026-02-01
+
+### Channel Restructure — 7-Channel Model + B2M Rename
+
+Replaces the 5-channel model (3 B2M + ECOMMERCE + DTC) with an industry-standard 7-channel model. Fixes volume distribution to match HPC benchmarks and eliminates dead code (DTC nodes never generated, volume_pct mismatch).
+
+#### Channel Rename (B2M removal)
+
+- `B2M_LARGE` → `MASS_RETAIL` — Walmart, Target (hypermarket format)
+- `B2M_CLUB` → `CLUB` — Costco, Sam's Club
+- `B2M_DISTRIBUTOR` → `DISTRIBUTOR` — Independent grocers, convenience stores
+
+#### New Channels
+
+- **GROCERY** — Kroger, Albertsons (10 DCs × 100 stores, supermarket format, ~20% volume)
+- **PHARMACY** — CVS, Walgreens (375 stores direct to RDC, pharmacy format, ~6% volume)
+
+#### DTC Implementation
+
+- DTC nodes now actually generated (3 DTC_FC fulfillment centers)
+- Added `DTC_FC` store format enum
+- Added `DTC_FC` format scale factor (50.0, matching ECOM_FC)
+
+#### Network Rebalance
+
+| Channel | Old Nodes | New Nodes | Old Volume | New Volume | Industry HPC |
+|---------|-----------|-----------|------------|------------|-------------|
+| MASS_RETAIL | 2,020 (20 DCs × 100) | 1,515 (15 DCs × 100) | ~40% | ~30% | 30-35% |
+| GROCERY | — | 1,010 (10 DCs × 100) | — | ~20% | 15-20% |
+| CLUB | 30 | 47 | ~9% | ~14% | 12-16% |
+| PHARMACY | — | 375 | — | ~6% | 5-8% |
+| DISTRIBUTOR | 4,008 (8 DCs × 500) | 903 (3 DCs × 300) | ~40% | ~9% | 8-15% |
+| ECOMMERCE | 10 | 18 | ~10% | ~18% | 17-19% |
+| DTC | 0 (dead code) | 3 | 0% | ~3% | 2-3% |
+
+- **Total weighted demand:** ~5,005 (vs ~4,950 — demand neutral)
+- **Total nodes:** ~3,933 (vs ~4,130 — slightly fewer, faster sim)
+- **Distributor stores:** 900 (vs 4,000) — higher per-SKU demand → better (s,S) behavior
+
+#### Mass retail format fix
+
+- Mass retail stores now use `HYPERMARKET` format (was incorrectly `SUPERMARKET`)
+- Grocery stores correctly use `SUPERMARKET` format
+
+#### Files Modified
+
+- `src/prism_sim/network/core.py` — Renamed 3 enum values, added GROCERY + PHARMACY channels, added DTC_FC format
+- `src/prism_sim/generators/network.py` — Renamed refs, added GROCERY/PHARMACY/DTC generation blocks, pharmacy→RDC linking
+- `src/prism_sim/config/world_definition.json` — Renamed all B2M keys, rebalanced node counts, added GROCERY + PHARMACY + DTC configs
+- `src/prism_sim/config/simulation_config.json` — Renamed all B2M keys, added DTC_FC scale factor, added GROCERY + PHARMACY channel configs
+- `src/prism_sim/agents/replenishment.py` — Renamed 3 keys in DEFAULT_CHANNEL_POLICIES, added GROCERY + PHARMACY + DTC entries
+- `src/prism_sim/simulation/demand.py` — Renamed 3 keys + 2 fallback strings, added GROCERY + PHARMACY entries
+- `docs/llm_context.md` — Updated channel tables
+
 ## [0.43.0] - 2026-02-01
 
 ### Store Replenishment Fix, Production Throughput, Analysis Script Migration
