@@ -95,8 +95,8 @@
         "trigger_dos_c": 6
       },
       "abc_production_factors": {
-        "_comment": "v0.41.0: A-buffer reduced for net-requirement scheduling (was 1.3)",
-        "a_buffer": 1.15,
+        "_comment": "v0.42.0: A-buffer raised to 1.22 — with Phase 4 ABC-aware clipping, higher buffer is safe",
+        "a_buffer": 1.22,
         "b_buffer": 1.1,
         "c_production_factor": 1.0,
         "_c_note": "C-items no longer penalized - use longer horizon instead"
@@ -168,8 +168,8 @@
         "store_batch_size_cases": 100.0,
         "lead_time_history_len": 20,
         "min_history_days": 7,
-        "emergency_dos_threshold": 2.0,
-        "_emergency_note": "v0.39.3: Bypass stagger when any product DOS < threshold",
+        "emergency_dos_threshold": 3.0,
+        "_emergency_note": "v0.42.0: Raised from 2.0 to 3.0 — gives stores 1-day earlier warning for A-items with 1-day lead times",
         "segmentation": {
           "_comment": "v0.39.5: C-items raised from 1.0 to 1.65 (95% service target) to prevent starvation",
           "A": 2.33,
@@ -349,11 +349,12 @@
         "inventory_cap_dos": 30.0,
         "diagnostics_enabled": true,
         "abc_production_enabled": true,
-        "a_production_buffer": 1.15,
+        "a_capacity_share": 0.65,
+        "a_production_buffer": 1.22,
         "b_production_buffer": 1.1,
         "c_production_factor": 1.0,
-        "demand_floor_weight": 0.8,
-        "_demand_floor_note": "v0.39.3: 80% expected + 20% actual prevents death spiral",
+        "demand_floor_weight": 0.65,
+        "_demand_floor_note": "v0.42.0: 65% expected + 35% actual — lets demand signal through faster for promo/peak responsiveness",
         "campaign_batching": {
           "enabled": true,
           "production_horizon_days": 14,
@@ -365,8 +366,11 @@
           "trigger_dos_a": 10,
           "trigger_dos_b": 8,
           "trigger_dos_c": 6,
-          "_sku_slot_note": "v0.39.5: Increased from 50 to 70 for better C-item coverage",
-          "max_skus_per_plant_per_day": 70
+          "_sku_slot_note": "v0.42.0: Increased from 70 to 80 — with 60/25/15 ABC slot split, gives 1.61d A-item rotation",
+          "max_skus_per_plant_per_day": 80,
+          "a_slot_pct": 0.60,
+          "b_slot_pct": 0.25,
+          "c_slot_pct": 0.15
         },
         "po_consolidation": {
           "enabled": true,

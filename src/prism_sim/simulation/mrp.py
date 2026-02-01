@@ -219,6 +219,8 @@ class MRPEngine:
         # v0.39.3: c_production_factor removed - C-items use longer horizons instead
         # of smaller batches (see production_horizon_days_c config)
         self.c_production_factor = mrp_thresholds.get("c_production_factor", 0.6)
+        # v0.42.0: A-item capacity share for Phase 4 ABC-aware clipping
+        self.a_capacity_share = mrp_thresholds.get("a_capacity_share", 0.65)
         # v0.39.3: c_demand_factor removed - was dead code (never used in calculations)
 
         # v0.23.0: Campaign Batching parameters
@@ -250,6 +252,10 @@ class MRPEngine:
         self.production_horizon_days_c = campaign_config.get(
             "production_horizon_days_c", 5
         )
+        # v0.42.0: Config-driven ABC slot percentages for campaign scheduling
+        self.a_slot_pct = campaign_config.get("a_slot_pct", 0.60)
+        self.b_slot_pct = campaign_config.get("b_slot_pct", 0.25)
+        self.c_slot_pct = campaign_config.get("c_slot_pct", 0.15)
 
         # v0.37.0: PO Consolidation parameters
         # Consolidate ingredient POs to improve inbound fill rate
@@ -1137,18 +1143,18 @@ class MRPEngine:
         # got produced. This caused ~200 C-items to accumulate old inventory
         # that was flagged as SLOB.
         #
-        # New logic: Reserve proportional slots for each ABC class:
-        # - A-items: 50% of slots (highest velocity, need frequent production)
-        # - B-items: 30% of slots (medium velocity)
-        # - C-items: 20% of slots (ensures coverage despite low velocity)
+        # Reserve proportional slots for each ABC class (config-driven):
+        # - A-items get most slots (highest velocity, need frequent production)
+        # - B-items get medium share
+        # - C-items get smallest share (ensures coverage despite low velocity)
         #
         # Within each class, items are still sorted by critical ratio.
         #
         # This improves OEE (more SKUs run → more run time) and reduces SLOB
         # (C-items get produced before inventory ages out).
-        a_slot_pct = 0.50
-        b_slot_pct = 0.30
-        c_slot_pct = 0.20
+        a_slot_pct = self.a_slot_pct
+        b_slot_pct = self.b_slot_pct
+        c_slot_pct = self.c_slot_pct
 
         # Group by plant first
         plant_orders: dict[str, list[tuple[str, str, float, float, int]]] = {}
@@ -1216,25 +1222,70 @@ class MRPEngine:
                 )
                 production_orders.append(po)
 
-        # ================================================================
-        # PHASE 4: Final capacity check (safety valve)
-        # ================================================================
-        # Even with SKU limits, total volume might exceed capacity
-        # v0.29.0: Use day-aware capacity to account for seasonal flex
-        total_orders = sum(po.quantity_cases for po in production_orders)
-        daily_capacity = self._get_daily_capacity(current_day)
-        capacity_threshold = daily_capacity * 0.98
-
-        if total_orders > capacity_threshold and total_orders > 0:
-            scale_factor = capacity_threshold / total_orders
-            for po in production_orders:
-                po.quantity_cases = po.quantity_cases * scale_factor
+        # PHASE 4: ABC-aware capacity clipping (v0.42.0)
+        self._apply_abc_capacity_clipping(production_orders, current_day)
 
         return production_orders
 
     def get_diagnostics(self) -> MRPDiagnostics | None:
         """Return the most recent diagnostics snapshot."""
         return self._diagnostics
+
+    def _get_abc_class(self, product_id: str) -> int:
+        """Return ABC class for a product: 0=A, 1=B, 2=C."""
+        p_idx = self.state.product_id_to_idx.get(product_id)
+        if p_idx is not None:
+            return int(self.abc_class[p_idx])
+        return 2  # Default to C-item if unknown
+
+    def _apply_abc_capacity_clipping(
+        self,
+        production_orders: list[ProductionOrder],
+        current_day: int,
+    ) -> None:
+        """Apply ABC-aware capacity clipping to production orders (Phase 4).
+
+        A-items (demand-matched, small batches) are protected up to
+        a_capacity_share of capacity. B/C campaign batches absorb clipping
+        first since they have more fill-rate headroom.
+        """
+        total_orders = sum(po.quantity_cases for po in production_orders)
+        daily_capacity = self._get_daily_capacity(current_day)
+        capacity_threshold = daily_capacity * 0.98
+
+        if total_orders <= capacity_threshold or total_orders <= 0:
+            return
+
+        a_orders = [
+            po for po in production_orders
+            if self._get_abc_class(po.product_id) == 0
+        ]
+        bc_orders = [
+            po for po in production_orders
+            if self._get_abc_class(po.product_id) != 0
+        ]
+
+        a_total = sum(po.quantity_cases for po in a_orders)
+        bc_total = sum(po.quantity_cases for po in bc_orders)
+        a_cap = capacity_threshold * self.a_capacity_share
+
+        if a_total <= a_cap:
+            # A-items fit within their share — clip only B/C
+            remaining = capacity_threshold - a_total
+            if bc_total > remaining and bc_total > 0:
+                bc_scale = remaining / bc_total
+                for po in bc_orders:
+                    po.quantity_cases *= bc_scale
+        else:
+            # A-items exceed their share — clip both, A less aggressively
+            a_scale = a_cap / a_total
+            for po in a_orders:
+                po.quantity_cases *= a_scale
+            remaining = capacity_threshold - a_cap
+            if bc_total > remaining and bc_total > 0:
+                bc_scale = remaining / bc_total
+                for po in bc_orders:
+                    po.quantity_cases *= bc_scale
 
     def _update_demand_history(self, day: int, shipments: list[Shipment]) -> None:
         """Update demand history with actual shipment quantities (FIX 3.3)."""

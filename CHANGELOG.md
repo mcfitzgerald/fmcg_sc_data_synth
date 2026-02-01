@@ -5,6 +5,75 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.42.0] - 2026-02-01
+
+### Fill Rate Optimization — A-Item Fill 92.3% → 95-97% Target
+
+Addresses structural bottlenecks in MRP slot allocation, Phase 4 capacity clipping, and replenishment tuning identified by v0.41.0 diagnostics.
+
+#### MRP Structural Fixes (Phase 1)
+
+1. **Config-driven ABC slot percentages** (`a_slot_pct` 0.50→0.60, `b_slot_pct` 0.30→0.25, `c_slot_pct` 0.20→0.15)
+   - 310 A-items / (80 SKUs × 0.60 × 4 plants) = 1.61d rotation (was 2.2d)
+   - Each A-item produces ~37% more often
+
+2. **ABC-aware Phase 4 capacity clipping** (replaces uniform clipping)
+   - A-items (demand-matched, small batches) protected up to 65% of capacity
+   - B/C campaign batches absorb clipping first — they have 97%+ fill headroom
+   - New config: `a_capacity_share` = 0.65 in `mrp_thresholds`
+
+3. **Raise A-item production buffer** (`a_production_buffer` 1.15→1.22)
+   - Target = 14d × 1.22 = 17.1 DOS — enough headroom for 1.61d rotation
+   - Safe with ABC-aware clipping preventing uniform Phase 4 cuts
+
+4. **Increase SKU throughput** (`max_skus_per_plant_per_day` 70→80)
+   - 48 A-slots/plant × 4 = 192 total → 1.61d rotation for all classes
+   - OEE at 54% has headroom for more changeovers
+
+#### Replenishment Tuning (Phase 2)
+
+5. **Raise emergency DOS threshold** (2.0→3.0)
+   - Gives stores 1-day earlier stockout warning for A-items with 1-day lead times
+
+6. **Reduce demand floor weight** (0.80→0.65)
+   - Lets 35% actual demand signal through (was 20%) for promo/peak responsiveness
+   - Expected demand still provides floor to prevent death spiral
+
+#### Bug Fixes (Phase 4)
+
+7. **Fix DTC channel profile silently dropped** in `replenishment.py`
+   - Config-only channels not in `DEFAULT_CHANNEL_POLICIES` were silently ignored
+   - Now loads any channel present in config but not in defaults
+
+8. **Clean up deprecated commands** in `docs/llm_context.md`
+   - Removed references to `scripts/calibrate_config.py` and `scripts/run_standard_sim.py`
+   - Updated canonical run command
+
+#### Hardcode Fixes (semgrep audit)
+
+9. **`replenishment.py`**: Emergency DOS demand floor used hardcoded `0.01` instead of config-driven `min_demand_floor` (0.1) — now consistent
+10. **`replenishment.py`**: Default lead time `_lt_default_mu` was hardcoded `3.0` — now reads `lead_time_days` from config
+11. **`quirks.py`**: `QuirkManager.seed` was hardcoded `42` — now reads `random_seed` from config
+
+#### Expected Outcomes
+| Metric | v0.41.0 | v0.42.0 Target |
+|--------|---------|----------------|
+| A-item fill | 92.3% | 95-97% |
+| B/C fill rates | 97%+ | Stable |
+| OEE | 54% | 55-60% |
+| Performance | ~1.34s/day | ~1.3s/day |
+
+#### Files Modified
+- `src/prism_sim/simulation/mrp.py` — Config-driven slot %, ABC-aware Phase 4 clipping, `_get_abc_class` helper
+- `src/prism_sim/config/simulation_config.json` — slot pcts, a_capacity_share, a_production_buffer, emergency_dos, demand_floor_weight, max_skus
+- `src/prism_sim/agents/replenishment.py` — Fix DTC channel loading bug, demand floor consistency, lead time from config
+- `src/prism_sim/simulation/quirks.py` — Read seed from config instead of hardcoding
+- `docs/llm_context.md` — Updated parameters, removed deprecated commands, added known hardcodes section
+- `CHANGELOG.md` — v0.42.0 entry
+- `pyproject.toml` — Version bump
+
+---
+
 ## [0.41.0] - 2026-02-01
 
 ### Close Remaining A-Item Fill Rate Gaps

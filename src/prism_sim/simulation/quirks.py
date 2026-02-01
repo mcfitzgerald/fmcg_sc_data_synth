@@ -530,7 +530,7 @@ class QuirkManager:
     """
 
     config: dict[str, Any]
-    seed: int = 42
+    seed: int = 0  # Overridden in __post_init__ from config
 
     # Individual quirk engines
     port_congestion: PortCongestionQuirk = field(init=False)
@@ -542,6 +542,13 @@ class QuirkManager:
 
     def __post_init__(self) -> None:
         """Initialize individual quirk engines."""
+        # v0.42.0: Read seed from config instead of hardcoding
+        if self.seed == 0:
+            self.seed = int(
+                self.config.get("simulation_parameters", {})
+                .get("global_constants", {})
+                .get("random_seed", 42)
+            )
         self.port_congestion = PortCongestionQuirk(self.config, self.seed)
         self.optimism_bias = OptimismBiasQuirk(self.config)
         self.phantom_inventory = PhantomInventoryQuirk(self.config, self.seed + 1)

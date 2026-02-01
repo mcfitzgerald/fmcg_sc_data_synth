@@ -106,6 +106,27 @@ class MinMaxReplenisher:
                 ),
             }
 
+        # v0.42.0: Load config-only channels not in defaults (e.g., DTC)
+        default_fallback = DEFAULT_CHANNEL_POLICIES.get("default", {})
+        for key, config_policy in config_policies.items():
+            if key.upper() not in self.channel_policies and key != "default":
+                self.channel_policies[key.upper()] = {
+                    "target_days": config_policy.get(
+                        "target_days", default_fallback.get("target_days", 12.0)
+                    ),
+                    "reorder_point_days": config_policy.get(
+                        "reorder_point_days",
+                        default_fallback.get("reorder_point_days", 8.0),
+                    ),
+                    "batch_size": config_policy.get(
+                        "batch_size", default_fallback.get("batch_size", 100.0)
+                    ),
+                    "smoothing_factor": config_policy.get(
+                        "smoothing_factor",
+                        default_fallback.get("smoothing_factor", 0.2),
+                    ),
+                }
+
         # Config-driven thresholds (previously hardcoded)
         self.min_demand_floor = float(params.get("min_demand_floor", 0.1))
         self.default_min_qty = float(params.get("default_min_qty", 10.0))
@@ -174,8 +195,8 @@ class MinMaxReplenisher:
         # Default values used for links without history
         self._lt_mu_cache_sparse: dict[tuple[int, int], float] = {}
         self._lt_sigma_cache_sparse: dict[tuple[int, int], float] = {}
-        self._lt_default_mu = 3.0
-        self._lt_default_sigma = 0.0
+        self._lt_default_mu = float(params.get("lead_time_days", 3.0))
+        self._lt_default_sigma = 0.0  # No variability assumed until history builds
 
         # Track which specific links need cache update (not all of them)
         self._lt_dirty_links: set[tuple[int, int]] = set()
@@ -837,10 +858,9 @@ class MinMaxReplenisher:
                         node_demand = np.ones(self.state.n_products) * 0.1
 
                     # Calculate DOS for non-ingredient products
-                    _demand_floor = 0.01
                     with np.errstate(divide="ignore", invalid="ignore"):
                         node_dos = np.where(
-                            node_demand > _demand_floor,
+                            node_demand > self.min_demand_floor,
                             node_inv / node_demand,
                             np.inf,
                         )

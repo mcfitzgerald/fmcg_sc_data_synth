@@ -86,7 +86,6 @@ The simulation enforces these constraints - violations indicate bugs:
 | Script | Purpose |
 |--------|---------|
 | `scripts/generate_static_world.py` | Generate static world data (products, recipes, nodes, links) |
-| `scripts/calibrate_config.py` | Derive optimal simulation parameters from world definition |
 | `scripts/generate_warm_start.py` | Generate warm-start snapshot manually |
 | `scripts/export_erp_format.py` | **ETL:** Transform sim CSVs to normalized ERP tables (SQL-ready) |
 
@@ -116,33 +115,17 @@ All files are `.csv` by default or `.parquet` with `--format parquet`. Parquet u
 
 ## 4. Setup & Workflow (Order of Operations)
 
-The standard workflow enforces configuration integrity and consistent initialization. Always use `scripts/run_standard_sim.py` for reproducible runs.
-
-### Standard Simulation Flow
+### Running the Simulation
 
 ```bash
-# 1. Full Pipeline (Rebuild -> Calibrate -> Simulate)
-#    Use this after changing world_definition.json or simulation_config.json
-poetry run python scripts/run_standard_sim.py --rebuild --recalibrate --days 365
+# Full diagnostic (365 days, streaming Parquet — canonical run)
+poetry run python run_simulation.py --days 365 --streaming --format parquet --inventory-sample-rate 1
 
-# 2. Fast Diagnostic (Uses existing checkpoint)
-#    Use this for quick iterations if config hasn't changed
-poetry run python scripts/run_standard_sim.py --days 30 --no-logging
-```
+# Quick sanity check (50 days, no data export)
+poetry run python run_simulation.py --days 50 --no-logging
 
-### Manual Steps (for debugging only)
-
-If you need to run steps individually:
-
-```bash
-# A. Generate World (if topology/products changed)
+# Regenerate static world (after changing world_definition.json)
 poetry run python scripts/generate_static_world.py
-
-# B. Calibrate Physics (if capacity/demand changed)
-poetry run python scripts/calibrate_config.py --apply
-
-# C. Run Simulation (Orchestrator handles burn-in/checkpointing)
-poetry run python run_simulation.py --days 365
 ```
 
 **Key Concepts:**
@@ -240,16 +223,17 @@ MRP uses expected demand as floor to prevent death spiral from low service:
 blended = actual * (1 - demand_floor_weight) + expected * demand_floor_weight
 demand_for_dos = max(expected, blended)  # Never go below expected
 ```
-- **Config:** `demand_floor_weight` (default 0.8 = 80% expected, 20% actual)
-- **Rationale:** Industry uses forecasts as floor; actual sales only for upward sensing
+- **Config:** `demand_floor_weight` (default 0.65 = 65% expected, 35% actual)
+- **Rationale:** Reduced from 0.8 in v0.42.0 to improve promo/peak responsiveness while retaining floor
 
-### ABC Production Buffers (v0.39.3, updated v0.41.0)
-- **A-Items:** `a_production_buffer` = 1.15x (applied to target inventory in net-requirement calculation; reduced from 1.3 in v0.41.0 since net-requirement produces continuously)
+### ABC Production Buffers (v0.39.3, updated v0.42.0)
+- **A-Items:** `a_production_buffer` = 1.22x (raised from 1.15 in v0.42.0 — safe with ABC-aware Phase 4 clipping)
 - **B-Items:** `b_production_buffer` = 1.1x (modest buffer, applied to batch qty)
 - **C-Items:** No penalty factor - use longer horizons (21 days) instead
 
-### Emergency Replenishment (v0.39.3)
-Bypass order staggering when any product DOS < `emergency_dos_threshold` (default 2.0):
+### Emergency Replenishment (v0.39.3, updated v0.42.0)
+Bypass order staggering when any product DOS < `emergency_dos_threshold` (default 3.0):
+- Raised from 2.0 to 3.0 in v0.42.0 for 1-day earlier stockout prevention
 - Prevents stores with empty shelves from waiting for scheduled order day
 - Critical stockouts trigger immediate action regardless of schedule
 
@@ -312,7 +296,7 @@ batch_qty        = max(net_requirement, 0)           # Skip if at/above target
 
 - **Self-regulating:** Items at target produce nothing; depleted items get proportionally larger batches
 - **Demand-matched:** Total daily A-item production ≈ total A-item daily demand (natural equilibrium)
-- **Smooth loading:** 310 A-items across 140 A-slots → each item produced every ~2.2 days
+- **Smooth loading:** 310 A-items across 192 A-slots (80 SKUs × 0.60 × 4 plants) → each item produced every ~1.6 days
 - **No trigger gate:** Eliminates idle capacity between trigger firings
 
 ### B/C Items: Campaign Trigger Scheduling
@@ -327,9 +311,9 @@ B/C items retain the original trigger-based approach:
 ### Common Phases (All ABC Classes)
 
 3. **Priority Sorting:** Critical Ratio (`DOS/Trigger`) with shuffle tie-breaker
-4. **ABC Slot Reservation:** 50/30/20 split (A/B/C) with overflow redistribution
-5. **Capacity Cap:** 98% safety valve (raised from 95% in v0.41.0; TransformEngine enforces physical capacity)
-6. **SKU Limit:** Max SKUs/plant/day to cap changeover overhead
+4. **ABC Slot Reservation:** 60/25/15 split (A/B/C, config-driven) with overflow redistribution
+5. **Capacity Cap:** 98% with ABC-aware clipping — A-items protected up to 65% of capacity, B/C absorb clipping first (v0.42.0)
+6. **SKU Limit:** 80 SKUs/plant/day to cap changeover overhead
 
 **Configuration:** `simulation_config.json` → `manufacturing.mrp_thresholds.campaign_batching`
 
@@ -452,27 +436,21 @@ Every decision impacts the balance between:
 ## 18. Key Commands
 
 ```bash
-# Run Simulation (buffered mode, CSV)
-poetry run python run_simulation.py
-poetry run python run_simulation.py --days 365
-poetry run python run_simulation.py --days 50 --no-logging  # Quick sanity check
+# Run Simulation (canonical 365-day run, streaming Parquet)
+poetry run python run_simulation.py --days 365 --streaming --format parquet --inventory-sample-rate 1
+
+# Quick sanity check (50 days, no data export)
+poetry run python run_simulation.py --days 50 --no-logging
 
 # Streaming mode (required for 365-day logged runs to avoid OOM)
-poetry run python run_simulation.py --days 365 --streaming
 poetry run python run_simulation.py --days 365 --streaming --format parquet
-
-# Daily inventory snapshots (default=1, use 7 for weekly)
-poetry run python run_simulation.py --days 365 --streaming --format parquet --inventory-sample-rate 1
 
 # Type Check & Lint
 poetry run mypy src/
 poetry run ruff check src/
 
-# Generate Static World
+# Generate Static World (after changing world_definition.json)
 poetry run python scripts/generate_static_world.py
-
-# Calibrate Config
-poetry run python scripts/calibrate_config.py --apply
 ```
 
 **CLI Flags for Data Export:**
@@ -630,3 +608,21 @@ Orchestrator
     └──→ PhysicsAuditor.audit()
               └──→ validate mass balance
 ```
+
+---
+
+## 22. Known Hardcodes (Deferred Config Migration)
+
+The following values are hardcoded but working correctly. They should be migrated to config files in a future hygiene pass:
+
+| File | Line(s) | Value(s) | What it controls |
+|------|---------|----------|-----------------|
+| `simulation/logistics.py` | ~493 | `return_prob=0.05` | Return/RMA probability per shipment |
+| `simulation/logistics.py` | ~511 | `min_return_qty=1.0` | Minimum return quantity (cases) |
+| `simulation/logistics.py` | ~515 | `restock_probability=0.8` | Restock vs scrap disposition |
+| `simulation/logistics.py` | ~510 | `uniform(0.1, 0.5)` | Return qty range (% of line qty) |
+| `simulation/mrp.py` | ~1095 | `60.0/45.0`, `0.5/0.7` | B-item DOS throttling thresholds and scale factors |
+| `agents/replenishment.py` | ~906 | `forecast_horizon=14` | Proactive demand sensing lookahead (days) |
+| `simulation/orchestrator.py` | ~1192 | `min_fg_inventory_threshold=100.0` | Inventory turns divide-by-zero guard |
+
+**Priority:** The `logistics.py` returns subsystem has the most values (4) with zero config coverage. The `mrp.py` B-item throttling thresholds are the most impactful but B-fill is 99%+ so there's no urgency.
