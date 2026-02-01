@@ -5,6 +5,41 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.40.0] - 2026-02-01
+
+### Net-Requirement Production Scheduling for A-Items (MPS-Style)
+
+Replace reactive trigger-based production for A-items with schedule-based net-requirement planning. B/C items keep their existing campaign triggers unchanged.
+
+#### Problem
+Trigger-based scheduling creates feast/famine oscillation: items produce nothing until DOS < threshold, then produce a huge batch. Plants alternate between idle and overloaded. The v0.40.0 attempt of raising `trigger_dos_a` flooded the candidate pool and shrank all batches via the capacity cap, dropping A-item fill from 90.6% to 72.3%.
+
+#### Solution
+A-items now use net-requirement (MPS-style) batch sizing:
+```python
+target_inventory = demand_rate * horizon * buffer  # 14d × 1.3 = 18.2 DOS target
+net_requirement  = target_inventory - inventory_position
+batch_qty        = max(net_requirement, 0)
+```
+- Each A-item gets a small, demand-matched batch every ~2.2 days (310 items / 140 A-slots)
+- Items at/above target produce nothing (self-regulating)
+- No trigger gate = no idle capacity = no feast/famine
+- Phase 2-4 (sorting, slot reservation, capacity cap) unchanged
+
+#### Results (365-day simulation)
+| Metric | Before | After | Change |
+|--------|--------|-------|--------|
+| A-item fill | 90.6% | 92.8% | +2.2pp |
+| OEE | 50.7% | 59.4% | +8.7pp |
+| Prod/demand ratio | 0.71 | 0.85 | +0.14 |
+| B-item fill | ~98.7% | 97.8% | Stable |
+| C-item fill | ~98.5% | 97.0% | Stable |
+
+#### Files Modified
+- `src/prism_sim/simulation/mrp.py` — Phase 1 branched: A-items use net-requirement, B/C keep triggers
+
+---
+
 ## [0.39.8] - 2026-01-31
 
 ### Inventory Serialization Optimization (Parquet + DictionaryArray + Background Thread)

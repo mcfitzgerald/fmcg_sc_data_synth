@@ -1101,6 +1101,7 @@ class Orchestrator:
                 ordered_qty=unconstrained_demand_qty,
                 shipped_qty=total_shipped_qty,
                 shrinkage_qty=shrinkage_qty,
+                actual_sales=actual_sales,
             )
             self._log_daily_data(
                 raw_orders,
@@ -1180,6 +1181,7 @@ class Orchestrator:
         ordered_qty: float = 0.0,
         shipped_qty: float = 0.0,
         shrinkage_qty: float = 0.0,
+        actual_sales: np.ndarray | None = None,
     ) -> None:
         """Record simulation metrics for monitoring."""
         # ABC class codes (0=A, 1=B, 2=C)
@@ -1196,18 +1198,23 @@ class Orchestrator:
         self.monitor.record_service_level(fill_rate)
 
         # Record Store Service Level (On-Shelf Availability proxy)
+        # v0.40.0 FIX: Use pre-sales actual_sales from step 2 instead of
+        # recalculating from end-of-day inventory (which overstates fill rate
+        # because arrivals and production have replenished stock since step 2).
         total_demand_qty = np.sum(daily_demand)
         if total_demand_qty > 0:
-            available = np.maximum(0, self.state.actual_inventory)
-            actual_sales = np.minimum(daily_demand, available)
-            store_fill_rate = np.sum(actual_sales) / total_demand_qty
+            if actual_sales is not None:
+                store_fill_rate = np.sum(actual_sales) / total_demand_qty
+            else:
+                available = np.maximum(0, self.state.actual_inventory)
+                actual_sales = np.minimum(daily_demand, available)
+                store_fill_rate = np.sum(actual_sales) / total_demand_qty
             self.monitor.record_store_service_level(store_fill_rate)
 
             # v0.26.0: ABC-class service level breakdown for mix analysis
             # Helps diagnose whether service level drift is due to A-item stockouts
             fg_demand = daily_demand[:, self._fg_product_mask]
-            fg_available = available[:, self._fg_product_mask]
-            fg_sales = np.minimum(fg_demand, fg_available)
+            fg_sales = actual_sales[:, self._fg_product_mask]
             fg_abc_class = self.mrp_engine.abc_class[self._fg_product_mask]
 
             # Calculate fill rate by ABC class

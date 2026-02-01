@@ -243,9 +243,9 @@ demand_for_dos = max(expected, blended)  # Never go below expected
 - **Config:** `demand_floor_weight` (default 0.8 = 80% expected, 20% actual)
 - **Rationale:** Industry uses forecasts as floor; actual sales only for upward sensing
 
-### ABC Production Buffers (v0.39.3)
-- **A-Items:** `a_production_buffer` = 1.3x (increased buffer for service)
-- **B-Items:** `b_production_buffer` = 1.1x (modest buffer)
+### ABC Production Buffers (v0.39.3, updated v0.40.0)
+- **A-Items:** `a_production_buffer` = 1.3x (applied to target inventory in net-requirement calculation)
+- **B-Items:** `b_production_buffer` = 1.1x (modest buffer, applied to batch qty)
 - **C-Items:** No penalty factor - use longer horizons (21 days) instead
 
 ### Emergency Replenishment (v0.39.3)
@@ -296,18 +296,40 @@ Products are dynamically classified every 7 days based on cumulative sales volum
 
 ---
 
-## 11. Campaign Batching
+## 11. Production Scheduling (ABC-Branched)
 
-Instead of producing all SKUs daily, use campaign-style production:
+Production uses ABC-branched scheduling (v0.40.0): A-items use net-requirement (MPS-style), B/C items use campaign triggers.
+
+### A-Items: Net-Requirement Scheduling (v0.40.0)
+
+Instead of trigger-based feast/famine, A-items compute the gap between target inventory and current position:
+
+```python
+target_inventory = demand_rate × horizon × buffer   # 14d × 1.3 = 18.2 DOS target
+net_requirement  = target_inventory - inventory_position
+batch_qty        = max(net_requirement, 0)           # Skip if at/above target
+```
+
+- **Self-regulating:** Items at target produce nothing; depleted items get proportionally larger batches
+- **Demand-matched:** Total daily A-item production ≈ total A-item daily demand (natural equilibrium)
+- **Smooth loading:** 310 A-items across 140 A-slots → each item produced every ~2.2 days
+- **No trigger gate:** Eliminates idle capacity between trigger firings
+
+### B/C Items: Campaign Trigger Scheduling
+
+B/C items retain the original trigger-based approach:
 
 1. **Trigger-Based Production:** Only produce when DOS < threshold
-   - Configurable per ABC class (e.g., A=31, B=27, C=22 days)
+   - Configurable per ABC class (B=27, C=22 days)
 
 2. **Batch Sizing:** Produce `production_horizon_days` worth per SKU
 
-3. **SKU Limit:** Max SKUs/plant/day to cap changeover overhead
+### Common Phases (All ABC Classes)
 
-4. **Priority Sorting:** Critical Ratio (`DOS/Trigger`) with shuffle tie-breaker
+3. **Priority Sorting:** Critical Ratio (`DOS/Trigger`) with shuffle tie-breaker
+4. **ABC Slot Reservation:** 50/30/20 split (A/B/C) with overflow redistribution
+5. **Capacity Cap:** 95% safety valve (rarely fires with demand-matched A-item batches)
+6. **SKU Limit:** Max SKUs/plant/day to cap changeover overhead
 
 **Configuration:** `simulation_config.json` → `manufacturing.mrp_thresholds.campaign_batching`
 
@@ -315,8 +337,8 @@ Instead of producing all SKUs daily, use campaign-style production:
 
 The `--derive-lines` calibration uses physics-based efficiency decomposition:
 
-1. **DOS Cycling Factor (~50%):** Lines sit idle when DOS > trigger. Products cycle through production when DOS drops below trigger, then wait until DOS falls again.
-   - Formula: `dos_coverage = horizon / (horizon + avg_trigger) × stagger_benefit`
+1. **DOS Cycling Factor:** For B/C items, lines sit idle when DOS > trigger. A-items now produce continuously via net-requirement, improving utilization.
+   - Formula (B/C): `dos_coverage = horizon / (horizon + avg_trigger) × stagger_benefit`
 
 2. **Variability Buffer (~1.25x):** Reserve capacity for demand peaks (seasonality + noise).
    - Formula: `buffer = 1 / (1 - safety_z × combined_cv)`

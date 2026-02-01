@@ -1037,37 +1037,38 @@ class MRPEngine:
                 trigger_dos = self.trigger_dos_c
 
             # ============================================================
-            # CAMPAIGN BATCHING: Trigger when DOS < threshold
-            # v0.35.6 FIX: Prevent 365-day service level drift
+            # PHASE 1: ABC-branched candidate selection
             # ============================================================
-            # ROOT CAUSE: A-items trigger at DOS < 14, produce 7-day batch,
-            # then wait until DOS < 14 again. Over 365 days, small timing
-            # mismatches compound - demand variability causes occasional
-            # stockouts that accumulate as unfulfilled backlog.
-            #
-            # FIX: Increase A-item production buffer and lower trigger
-            # threshold to ensure more frequent, proactive production.
-            # Also protect B-items from being crowded out.
-            if dos_position < trigger_dos:
-                # v0.36.0: Use the forecast-based batch quantity
+
+            if abc == 0:
+                # --------------------------------------------------------
+                # A-ITEMS: Net-requirement scheduling (MPS-style)
+                # --------------------------------------------------------
+                # Instead of trigger-based feast/famine, compute the gap
+                # between target inventory and current inventory position.
+                # Each A-item gets a small, demand-matched batch every
+                # ~2.2 days (310 items / 140 A-slots), keeping plants
+                # steadily loaded and inventory near target.
+                target_inventory = (
+                    demand_for_dos * abc_horizon * self.a_production_buffer
+                )
+                net_requirement = target_inventory - inventory_position
+
+                if net_requirement < absolute_min:
+                    continue  # At or above target — no production needed
+
+                batch_qty = net_requirement
+                plant_id = self._select_plant(product_id)
+                candidates.append(
+                    (product_id, plant_id, dos_position, batch_qty, abc)
+                )
+
+            elif dos_position < trigger_dos:
+                # --------------------------------------------------------
+                # B/C ITEMS: Campaign trigger logic (unchanged)
+                # --------------------------------------------------------
                 batch_qty = batch_qty_base
 
-                # v0.39.3 FIX: ABC-differentiated production WITHOUT cascading penalties
-                #
-                # v0.39.2 BUG: Cascading penalties destroyed C-item production:
-                #   c_production_factor (0.5) x DOS throttle (0.3) = 0.15 (85% cut!)
-                #   This guaranteed C-item stockouts and SLOB from aged inventory.
-                #
-                # INDUSTRY REALITY (Colgate, P&G):
-                # - C-items get LONGER production horizons
-                #   (campaign runs), not smaller batches
-                # - Monthly C-item campaigns vs weekly A-item runs
-                # - C-items have lower DOS triggers (can tolerate longer replenishment)
-                #
-                # FIX: Apply buffers OR DOS throttling, NEVER cascade both
-                # - A-items: buffer up to prevent stockouts
-                # - B-items: moderate buffer for balanced coverage
-                # - C-items: NO penalty - longer horizon (21d from config) handles SLOB
                 b_production_buffer = float(
                     self.config.get("simulation_parameters", {})
                     .get("manufacturing", {})
@@ -1075,40 +1076,28 @@ class MRPEngine:
                     .get("b_production_buffer", 1.1)
                 )
 
-                if abc == 0:  # A-item
-                    batch_qty *= self.a_production_buffer  # 1.3 from config (increased)
-                elif abc == 1:  # B-item
-                    batch_qty *= b_production_buffer  # 1.1 - modest buffer
+                if abc == 1:  # B-item
+                    batch_qty *= b_production_buffer
                 # C-items: NO production factor penalty
                 # Their 21-day horizon (config) already creates larger batches
 
-                # v0.39.3 FIX: DOS throttling ONLY for A/B
-                # items (high inventory levels).
-                # C-items do NOT get DOS throttling - their
-                # longer horizon and age-based SLOB tracking
-                # (v0.39.2) handle inventory control.
+                # DOS throttling for B-items only (high inventory levels).
+                # C-items skip DOS throttling — longer horizon and
+                # age-based SLOB tracking handle inventory control.
                 abc_class_c = 2
-                if abc != abc_class_c:  # A/B items only
+                if abc != abc_class_c:  # B-items only
                     if dos_position > 60.0:  # noqa: PLR2004
                         batch_qty *= 0.5
                     elif dos_position > 45.0:  # noqa: PLR2004
                         batch_qty *= 0.7
-                # C-items: No DOS throttling - prevents cascading penalty
 
-                # Apply ABC-based minimum to ensure A-items always get coverage
-                if abc == 0:  # A-item minimum
-                    min_batch = demand_for_dos * 7.0  # At least 1 week
-                    batch_qty = max(batch_qty, min_batch)
-
-                # Skip if batch too small
                 if batch_qty < absolute_min:
                     continue
 
-                # Get plant assignment
                 plant_id = self._select_plant(product_id)
-
-                # Add to candidates: (product_id, plant_id, dos, batch_qty, abc)
-                candidates.append((product_id, plant_id, dos_position, batch_qty, abc))
+                candidates.append(
+                    (product_id, plant_id, dos_position, batch_qty, abc)
+                )
 
         # ================================================================
         # PHASE 2: Sort by priority (lowest Critical Ratio first)
