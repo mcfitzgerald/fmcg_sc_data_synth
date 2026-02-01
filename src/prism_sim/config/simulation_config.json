@@ -165,7 +165,7 @@
         "min_safety_stock_days": 3.0,
         "variance_lookback_days": 28,
         "order_cycle_days": 1,
-        "store_batch_size_cases": 100.0,
+        "store_batch_size_cases": 20.0,
         "lead_time_history_len": 20,
         "min_history_days": 7,
         "emergency_dos_threshold": 3.0,
@@ -205,10 +205,10 @@
             "smoothing_factor": 0.2
           },
           "DISTRIBUTOR": {
-            "target_days": 8.0,
-            "reorder_point_days": 4.0,
-            "batch_size": 100.0,
-            "smoothing_factor": 0.1
+            "target_days": 10.0,
+            "reorder_point_days": 5.0,
+            "batch_size": 25.0,
+            "smoothing_factor": 0.3
           },
           "ECOMMERCE": {
             "target_days": 6.0,
@@ -324,8 +324,8 @@
     "inventory": {
       "initial_fg_level": 5.0,
       "initialization": {
-        "_comment": "v0.43.0: Reduced from 14 to 8 — faster store inventory cycle, aligned with lower target_days_supply",
-        "store_days_supply": 8.0,
+        "_comment": "v0.44.0: Raised from 8 to 10 — more buffer for low-volume formats (pharmacy 0.8x, convenience 0.5x)",
+        "store_days_supply": 10.0,
         "rdc_days_supply": 21.0,
         "rdc_store_multiplier": 80.0,
         "customer_dc_days_supply": 14.0,
