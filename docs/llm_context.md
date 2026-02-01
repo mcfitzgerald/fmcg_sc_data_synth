@@ -82,12 +82,24 @@ The simulation enforces these constraints - violations indicate bugs:
 | **Product/SKU generation** | `generators/hierarchy.py` | `ProductGenerator` |
 | **Network topology** | `generators/network.py` | `NetworkGenerator` |
 
-### Scripts
+### Utility Scripts
 | Script | Purpose |
 |--------|---------|
 | `scripts/generate_static_world.py` | Generate static world data (products, recipes, nodes, links) |
 | `scripts/generate_warm_start.py` | Generate warm-start snapshot manually |
-| `scripts/export_erp_format.py` | **ETL:** Transform sim CSVs to normalized ERP tables (SQL-ready) |
+| `scripts/export_erp_format.py` | **ETL:** Transform sim output to normalized ERP tables (SQL-ready) |
+
+### Diagnostic Analysis Scripts (Parquet-based, `data/output` default)
+| Script | Purpose | Key technique |
+|--------|---------|---------------|
+| `scripts/analysis/diagnose_a_item_fill.py` | 4-layer A-item fill rate root cause analysis (measurement, stockout location, root cause, ranking) | PyArrow row-group streaming for inventory.parquet |
+| `scripts/analysis/diagnose_service_level.py` | Service level trend, echelon breakdown, worst performers, degradation phases | PyArrow row-group streaming for inventory.parquet |
+| `scripts/analysis/diagnose_slob.py` | SLOB inventory: echelon distribution, DOS, velocity, imbalance, production vs demand | PyArrow row-group streaming for inventory.parquet |
+| `scripts/analysis/analyze_bullwhip.py` | Bullwhip effect: echelon variance amplification, production oscillation, order batching | Lightweight (no inventory load) |
+| `scripts/analysis/check_plant_balance.py` | Plant production load balance (batches per plant, zero-production days) | Lightweight |
+| `scripts/analysis/analyze_results.py` | General results overview (orders, shipments, batches, inventory) | **Legacy CSV — needs migration** |
+
+**Note:** `find_missing_skus.py`, `find_trapped_inventory.py`, `analyze_batches.py`, `analyze_production_mix.py`, `quick_check.py`, and `debug_head.py` are legacy CSV scripts. Use the Parquet-based diagnostic scripts above for current analysis.
 
 ### Data Export (`simulation/writer.py`)
 | Concept | Key Classes |
@@ -296,7 +308,7 @@ batch_qty        = max(net_requirement, 0)           # Skip if at/above target
 
 - **Self-regulating:** Items at target produce nothing; depleted items get proportionally larger batches
 - **Demand-matched:** Total daily A-item production ≈ total A-item daily demand (natural equilibrium)
-- **Smooth loading:** 310 A-items across 192 A-slots (80 SKUs × 0.60 × 4 plants) → each item produced every ~1.6 days
+- **Smooth loading:** 310 A-items across 240 A-slots (100 SKUs × 0.60 × 4 plants) → each item produced every ~1.3 days
 - **No trigger gate:** Eliminates idle capacity between trigger firings
 
 ### B/C Items: Campaign Trigger Scheduling
@@ -304,7 +316,7 @@ batch_qty        = max(net_requirement, 0)           # Skip if at/above target
 B/C items retain the original trigger-based approach:
 
 1. **Trigger-Based Production:** Only produce when DOS < threshold
-   - Configurable per ABC class (B=27, C=22 days)
+   - Configurable per ABC class: `trigger_dos_b`=5, `trigger_dos_c`=4 (v0.43.0)
 
 2. **Batch Sizing:** Produce `production_horizon_days` worth per SKU
 
@@ -313,7 +325,7 @@ B/C items retain the original trigger-based approach:
 3. **Priority Sorting:** Critical Ratio (`DOS/Trigger`) with shuffle tie-breaker
 4. **ABC Slot Reservation:** 60/25/15 split (A/B/C, config-driven) with overflow redistribution
 5. **Capacity Cap:** 98% with ABC-aware clipping — A-items protected up to 65% of capacity, B/C absorb clipping first (v0.42.0)
-6. **SKU Limit:** 80 SKUs/plant/day to cap changeover overhead
+6. **SKU Limit:** 100 SKUs/plant/day to cap changeover overhead (v0.43.0, raised from 80)
 
 **Configuration:** `simulation_config.json` → `manufacturing.mrp_thresholds.campaign_batching`
 
@@ -435,31 +447,51 @@ Every decision impacts the balance between:
 
 ## 18. Key Commands
 
+### Simulation
 ```bash
-# Run Simulation (canonical 365-day run, streaming Parquet)
+# Full diagnostic run (365 days, streaming Parquet — canonical)
 poetry run python run_simulation.py --days 365 --streaming --format parquet --inventory-sample-rate 1
 
-# Quick sanity check (50 days, no data export)
+# Quick sanity check (50 days, metrics only, no data export)
 poetry run python run_simulation.py --days 50 --no-logging
-
-# Streaming mode (required for 365-day logged runs to avoid OOM)
-poetry run python run_simulation.py --days 365 --streaming --format parquet
-
-# Type Check & Lint
-poetry run mypy src/
-poetry run ruff check src/
-
-# Generate Static World (after changing world_definition.json)
-poetry run python scripts/generate_static_world.py
 ```
 
-**CLI Flags for Data Export:**
-- `--streaming` — Write data incrementally (prevents memory exhaustion on long runs)
-- `--format parquet` — Use Parquet output (columnar compression, dictionary-encoded strings)
-- `--inventory-sample-rate N` — Log inventory every N days (1=daily, 7=weekly)
-- `--no-logging` — Skip all data export (fastest, metrics only)
+**CLI Flags:**
+| Flag | Purpose |
+|------|---------|
+| `--days N` | N days of steady-state data (after automatic 90-day burn-in) |
+| `--streaming` | Write data incrementally (required for 365-day logged runs) |
+| `--format parquet` | Parquet output (columnar, dictionary-encoded strings) |
+| `--inventory-sample-rate N` | Inventory snapshots every N days (1=daily, 7=weekly) |
+| `--no-logging` | Skip data export (fastest, Triangle Report metrics only) |
+| `--no-checkpoint` | Disable auto-checkpointing (always cold-start) |
 
-**Note:** Use full simulations (50-365 days) for integration testing. Check Triangle Report metrics for validation.
+### Post-Run Diagnostics
+```bash
+# A-item fill rate root cause (4-layer analysis)
+poetry run python scripts/analysis/diagnose_a_item_fill.py
+
+# Service level trend + degradation analysis
+poetry run python scripts/analysis/diagnose_service_level.py
+
+# SLOB inventory + echelon imbalance
+poetry run python scripts/analysis/diagnose_slob.py
+
+# Bullwhip effect detection
+poetry run python scripts/analysis/analyze_bullwhip.py
+
+# Plant production load balance
+poetry run python scripts/analysis/check_plant_balance.py
+```
+
+All diagnostic scripts default to `data/output` and accept a positional path argument or `--data-dir`.
+
+### Other
+```bash
+poetry run ruff check src/               # Lint
+poetry run mypy src/                      # Type check
+poetry run python scripts/generate_static_world.py  # Regenerate static world
+```
 
 ---
 
@@ -516,7 +548,7 @@ When simulation behaves unexpectedly:
 
 2.  **Utilization Balance (Plant Load)**
     *   *Symptom:* Global capacity looks fine, but service is low.
-    *   *Check:* Compare `batches.csv` counts by `plant_id`.
+    *   *Check:* Compare `batches.parquet` counts by `plant_id` (use `check_plant_balance.py`).
     *   *Red Flag:* One plant has 20k batches, another has 2k.
     *   *Fix:* Adjust `supported_categories` in `simulation_config.json` to offload work to the idle plant.
 
@@ -531,7 +563,7 @@ When simulation behaves unexpectedly:
 
 4.  **Starvation & Exclusion (The "Long Tail")**
     *   *Symptom:* Service Level is 50-60%. Top items are 98%, Bottom items are 0%.
-    *   *Check:* Count unique `product_id` in `batches.csv` vs. Total SKUs.
+    *   *Check:* Count unique `product_id` in `batches.parquet` vs. Total SKUs.
     *   *Red Flag:* 500 Total SKUs, but only 370 ever produced.
     *   *Fix:* The sorting logic is starving C-items. Implement **Fairness Sorting** (Critical Ratio) or **Randomized Tie-Breaking** to force rotation.
 
@@ -551,9 +583,11 @@ Once physics are valid (Capacity > Demand) and flow is moving:
 
 ### Key Diagnostic Scripts
 
-*   `scripts/analysis/check_plant_balance.py`: Reveals idle plants.
-*   `scripts/analysis/find_missing_skus.py`: Reveals starving products.
-*   `scripts/analysis/find_trapped_inventory.py`: Reveals where stock is stuck.
+*   `diagnose_a_item_fill.py` — Full root cause analysis: measurement validation, stockout location, allocation/production/lead-time/replenishment breakdown, ranked causes
+*   `diagnose_service_level.py` — Service level trend over time, by echelon, by product category, worst performers, degradation phases
+*   `diagnose_slob.py` — Inventory distribution by echelon, DOS analysis, velocity/turns, SLOB identification, production vs demand ratio
+*   `check_plant_balance.py` — Plant load balance (batches/day, zero-production days)
+*   `analyze_bullwhip.py` — Echelon variance amplification (CV ratios), production oscillation, order batching effects
 
 ---
 

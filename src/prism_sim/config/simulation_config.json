@@ -153,8 +153,8 @@
         "c_allocation_priority": 3
       },
       "replenishment": {
-        "target_days_supply": 12.0,
-        "reorder_point_days": 8.0,
+        "target_days_supply": 6.0,
+        "reorder_point_days": 3.0,
         "min_order_qty": 100.0,
         "batch_size_cases": 100.0,
         "backlog_penalty_factor": 2.0,
@@ -164,7 +164,7 @@
         "service_level_z": 1.65,
         "min_safety_stock_days": 3.0,
         "variance_lookback_days": 28,
-        "order_cycle_days": 3,
+        "order_cycle_days": 1,
         "store_batch_size_cases": 100.0,
         "lead_time_history_len": 20,
         "min_history_days": 7,
@@ -181,38 +181,38 @@
         "push_threshold_dos": 21.0,
         "channel_profiles": {
           "B2M_LARGE": {
-            "target_days": 16.0,
-            "reorder_point_days": 12.0,
+            "target_days": 8.0,
+            "reorder_point_days": 4.0,
             "batch_size": 500.0,
             "smoothing_factor": 0.3
           },
           "B2M_CLUB": {
-            "target_days": 14.0,
-            "reorder_point_days": 10.0,
+            "target_days": 8.0,
+            "reorder_point_days": 4.0,
             "batch_size": 200.0,
             "smoothing_factor": 0.2
           },
           "B2M_DISTRIBUTOR": {
-            "target_days": 14.0,
-            "reorder_point_days": 10.0,
+            "target_days": 8.0,
+            "reorder_point_days": 4.0,
             "batch_size": 100.0,
             "smoothing_factor": 0.1
           },
           "ECOMMERCE": {
-            "target_days": 8.0,
-            "reorder_point_days": 6.0,
+            "target_days": 6.0,
+            "reorder_point_days": 3.0,
             "batch_size": 50.0,
             "smoothing_factor": 0.4
           },
           "DTC": {
-            "target_days": 7.0,
-            "reorder_point_days": 5.0,
+            "target_days": 5.0,
+            "reorder_point_days": 2.0,
             "batch_size": 25.0,
             "smoothing_factor": 0.5
           },
           "default": {
-            "target_days": 12.0,
-            "reorder_point_days": 8.0,
+            "target_days": 6.0,
+            "reorder_point_days": 3.0,
             "batch_size": 100.0,
             "smoothing_factor": 0.2
           }
@@ -287,8 +287,8 @@
     "inventory": {
       "initial_fg_level": 5.0,
       "initialization": {
-        "_comment": "v0.39.4: Aligned with baseline_reference and FMCG norms (P&G 66 DOS, Colgate 89 DOS)",
-        "store_days_supply": 14.0,
+        "_comment": "v0.43.0: Reduced from 14 to 8 — faster store inventory cycle, aligned with lower target_days_supply",
+        "store_days_supply": 8.0,
         "rdc_days_supply": 21.0,
         "rdc_store_multiplier": 80.0,
         "customer_dc_days_supply": 14.0,
@@ -362,12 +362,12 @@
           "production_horizon_days_b": 14,
           "production_horizon_days_c": 21,
           "_c_horizon_note": "v0.39.3: 3-week campaigns for C-items (less frequent, larger batches)",
-          "_trigger_note": "v0.39.5: Lowered triggers to prevent feast/famine oscillation",
-          "trigger_dos_a": 10,
-          "trigger_dos_b": 8,
-          "trigger_dos_c": 6,
-          "_sku_slot_note": "v0.42.0: Increased from 70 to 80 — with 60/25/15 ABC slot split, gives 1.61d A-item rotation",
-          "max_skus_per_plant_per_day": 80,
+          "_trigger_note": "v0.43.0: Lowered triggers further for more frequent, smaller batches",
+          "trigger_dos_a": 7,
+          "trigger_dos_b": 5,
+          "trigger_dos_c": 4,
+          "_sku_slot_note": "v0.43.0: Increased from 80 to 100 — with 60/25/15 ABC slot split, gives ~1.3d A-item rotation",
+          "max_skus_per_plant_per_day": 100,
           "a_slot_pct": 0.60,
           "b_slot_pct": 0.25,
           "c_slot_pct": 0.15

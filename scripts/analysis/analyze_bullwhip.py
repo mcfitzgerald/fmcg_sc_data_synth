@@ -8,12 +8,11 @@ import pandas as pd
 
 
 def load_data(results_dir: Path) -> dict:
-    """Load all result CSVs from a results directory."""
+    """Load result Parquet files from a results directory."""
     return {
-        "orders": pd.read_csv(results_dir / "orders.csv"),
-        "shipments": pd.read_csv(results_dir / "shipments.csv"),
-        "batches": pd.read_csv(results_dir / "batches.csv"),
-        "inventory": pd.read_csv(results_dir / "inventory.csv"),
+        "orders": pd.read_parquet(results_dir / "orders.parquet"),
+        "shipments": pd.read_parquet(results_dir / "shipments.parquet"),
+        "batches": pd.read_parquet(results_dir / "batches.parquet"),
     }
 
 
@@ -119,7 +118,7 @@ def analyze_order_batching(data: dict) -> None:
 
 def main():
     parser = argparse.ArgumentParser(description="Analyze bullwhip effects in simulation results")
-    parser.add_argument("results_dir", type=Path, help="Path to results directory")
+    parser.add_argument("results_dir", type=Path, nargs="?", default=Path("data/output"), help="Path to results directory")
     args = parser.parse_args()
 
     if not args.results_dir.exists():

@@ -15,31 +15,36 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pyarrow.parquet as pq
 
 
 def load_data(results_dir: Path) -> dict:
-    """Load simulation results."""
+    """Load simulation results from Parquet files."""
     data = {}
 
-    # Inventory
-    inventory_file = results_dir / "inventory.csv"
+    # Inventory - stream via PyArrow row groups for memory safety
+    inventory_file = results_dir / "inventory.parquet"
     if inventory_file.exists():
+        pf = pq.ParquetFile(inventory_file)
+        n_rg = pf.metadata.num_row_groups
+        print(f"  Streaming inventory.parquet ({pf.metadata.num_rows:,} rows, {n_rg} RGs)...")
         chunks = []
-        for chunk in pd.read_csv(inventory_file, chunksize=500000):
+        for rg_idx in range(n_rg):
+            chunk = pf.read_row_group(rg_idx).to_pandas()
             chunks.append(chunk)
         data["inventory"] = pd.concat(chunks, ignore_index=True)
         print(f"  Loaded {len(data['inventory']):,} inventory records")
 
     # Shipments for velocity calculation
-    shipments_file = results_dir / "shipments.csv"
+    shipments_file = results_dir / "shipments.parquet"
     if shipments_file.exists():
-        data["shipments"] = pd.read_csv(shipments_file)
+        data["shipments"] = pd.read_parquet(shipments_file)
         print(f"  Loaded {len(data['shipments']):,} shipment lines")
 
     # Batches for production reference
-    batches_file = results_dir / "batches.csv"
+    batches_file = results_dir / "batches.parquet"
     if batches_file.exists():
-        data["batches"] = pd.read_csv(batches_file)
+        data["batches"] = pd.read_parquet(batches_file)
         print(f"  Loaded {len(data['batches']):,} batch records")
 
     return data
@@ -389,12 +394,16 @@ def main():
         "results_dir",
         type=Path,
         nargs="?",
-        default=Path("data/results/v0.19_365day"),
+        default=Path("data/output"),
         help="Path to results directory",
     )
+    parser.add_argument("--data-dir", type=Path, help="Alias for results_dir")
     parser.add_argument("--csv", action="store_true", help="Export detailed CSV files")
     parser.add_argument("--dos-threshold", type=int, default=60, help="DOS threshold for SLOB (default: 60)")
     args = parser.parse_args()
+
+    if args.data_dir:
+        args.results_dir = args.data_dir
 
     if not args.results_dir.exists():
         print(f"Error: {args.results_dir} does not exist")
@@ -404,7 +413,7 @@ def main():
     data = load_data(args.results_dir)
 
     if "inventory" not in data:
-        print("Error: Missing inventory.csv")
+        print("Error: Missing inventory.parquet")
         return 1
 
     print("\nAnalyzing inventory by echelon...")

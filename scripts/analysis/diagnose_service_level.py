@@ -15,30 +15,34 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pyarrow.parquet as pq
 
 
 def load_data(results_dir: Path) -> dict:
-    """Load simulation results with chunked reading for large files."""
+    """Load simulation results from Parquet files."""
     data = {}
 
-    # Orders - manageable size
-    orders_file = results_dir / "orders.csv"
+    # Orders
+    orders_file = results_dir / "orders.parquet"
     if orders_file.exists():
-        data["orders"] = pd.read_csv(orders_file)
+        data["orders"] = pd.read_parquet(orders_file)
         print(f"  Loaded {len(data['orders']):,} order lines")
 
-    # Shipments - can be large
-    shipments_file = results_dir / "shipments.csv"
+    # Shipments
+    shipments_file = results_dir / "shipments.parquet"
     if shipments_file.exists():
-        data["shipments"] = pd.read_csv(shipments_file)
+        data["shipments"] = pd.read_parquet(shipments_file)
         print(f"  Loaded {len(data['shipments']):,} shipment lines")
 
-    # Inventory - sample for large files
-    inventory_file = results_dir / "inventory.csv"
+    # Inventory - stream via PyArrow row groups for memory safety
+    inventory_file = results_dir / "inventory.parquet"
     if inventory_file.exists():
-        # Read in chunks and aggregate by day/node type
+        pf = pq.ParquetFile(inventory_file)
+        n_rg = pf.metadata.num_row_groups
+        print(f"  Streaming inventory.parquet ({pf.metadata.num_rows:,} rows, {n_rg} RGs)...")
         chunks = []
-        for chunk in pd.read_csv(inventory_file, chunksize=500000):
+        for rg_idx in range(n_rg):
+            chunk = pf.read_row_group(rg_idx).to_pandas()
             chunks.append(chunk)
         data["inventory"] = pd.concat(chunks, ignore_index=True)
         print(f"  Loaded {len(data['inventory']):,} inventory records")
@@ -336,11 +340,15 @@ def main():
         "results_dir",
         type=Path,
         nargs="?",
-        default=Path("data/results/v0.19_365day"),
+        default=Path("data/output"),
         help="Path to results directory",
     )
+    parser.add_argument("--data-dir", type=Path, help="Alias for results_dir")
     parser.add_argument("--csv", action="store_true", help="Export detailed CSV files")
     args = parser.parse_args()
+
+    if args.data_dir:
+        args.results_dir = args.data_dir
 
     if not args.results_dir.exists():
         print(f"Error: {args.results_dir} does not exist")
@@ -350,7 +358,7 @@ def main():
     data = load_data(args.results_dir)
 
     if "orders" not in data or "shipments" not in data:
-        print("Error: Missing orders.csv or shipments.csv")
+        print("Error: Missing orders.parquet or shipments.parquet")
         return 1
 
     print("\nAnalyzing service level trends...")

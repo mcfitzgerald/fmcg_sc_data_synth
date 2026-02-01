@@ -5,6 +5,59 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.43.0] - 2026-02-01
+
+### Store Replenishment Fix, Production Throughput, Analysis Script Migration
+
+Addresses the two root causes of A-item fill rate miss (92.4% vs 95-97% target): store order gap of 27.1 days (vs config order_cycle=3) and production/demand ratio of 72%.
+
+#### Store Replenishment Frequency (Phase 1)
+
+1. **`order_cycle_days`: 3 → 1** — Eliminates `hash(n_id) % cycle` stagger that blocked 2/3 of stores from evaluating (s,S) policy each day. Stores still only order when inventory < ROP.
+
+2. **Channel profile target/ROP reduction** — All channels reduced to tighter (s,S) bands:
+   - B2M_LARGE: 16/12 → 8/4, B2M_CLUB: 14/10 → 8/4, B2M_DISTRIBUTOR: 14/10 → 8/4
+   - ECOMMERCE: 8/6 → 6/3, DTC: 7/5 → 5/2, default: 12/8 → 6/3
+
+3. **Base replenishment params** — `target_days_supply` 12→6, `reorder_point_days` 8→3
+
+4. **Store initialization** — `store_days_supply` 14→8 (faster initial cycle)
+
+#### Production Throughput (Phase 2)
+
+5. **`max_skus_per_plant_per_day`: 80 → 100** — With 60/25/15 ABC slot split and 4 plants: 240 A-slots/day → 310 A-items rotate every ~1.3 days (was 1.6d)
+
+6. **DOS trigger thresholds lowered** — `trigger_dos_a` 10→7, `trigger_dos_b` 8→5, `trigger_dos_c` 6→4. More frequent, smaller batches reduce feast/famine oscillation.
+
+#### Analysis Script Migration (Phase 3)
+
+7. **4 scripts migrated from CSV to Parquet** with proper defaults and argparse:
+   - `diagnose_service_level.py` — Parquet + PyArrow streaming for inventory + `--data-dir`
+   - `check_plant_balance.py` — Full rewrite with Parquet, argparse, pathlib
+   - `diagnose_slob.py` — Parquet + PyArrow streaming for inventory + `--data-dir`
+   - `analyze_bullwhip.py` — Parquet + default path + removed unused inventory load
+
+#### 50-Day Sanity Check Results
+| Metric | v0.42.0 | v0.43.0 (50d) | Target |
+|--------|---------|---------------|--------|
+| A-item fill | 92.4% | 93.2% | 95-97% |
+| B-item fill | 97.6% | 98.9% | >96% |
+| C-item fill | 97.1% | 97.1% | >95% |
+| OEE | 54.5% | 56.4% | >50% |
+| Inventory Turns | 4.81x | 6.17x | 5.0-6.0x |
+| Performance | 1.34 s/day | 1.16 s/day | <2.5 s/day |
+
+#### Files Modified
+- `src/prism_sim/config/simulation_config.json` — All config parameter changes
+- `scripts/analysis/diagnose_service_level.py` — CSV→Parquet + streaming + default path
+- `scripts/analysis/check_plant_balance.py` — CSV→Parquet + argparse + default path
+- `scripts/analysis/diagnose_slob.py` — CSV→Parquet + streaming + default path
+- `scripts/analysis/analyze_bullwhip.py` — CSV→Parquet + default path
+- `CHANGELOG.md` — v0.43.0 entry
+- `pyproject.toml` — Version bump
+
+---
+
 ## [0.42.0] - 2026-02-01
 
 ### Fill Rate Optimization — A-Item Fill 92.3% → 95-97% Target
