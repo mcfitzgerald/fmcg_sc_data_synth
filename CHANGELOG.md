@@ -5,6 +5,49 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.41.0] - 2026-02-01
+
+### Close Remaining A-Item Fill Rate Gaps
+
+Address two gaps identified by v0.40.0 diagnostics: replenishment too infrequent (mean order gap 27.8d vs config 5d) and production capacity shortfall (prod/demand ratio 0.85).
+
+#### Changes
+
+1. **Reduce store order cycle** (`order_cycle_days` 5 → 3)
+   - With cycle=5, stores only evaluate replenishment every 5th day via `hash(n_id) % order_cycle_days` stagger
+   - Cycle=3 means ~33% of stores order each day (vs 20%), catching low-velocity A-items sooner
+   - Expected mean order gap reduction: 27.8d → 15-18d
+
+2. **Add production line to PLANT-GA** (`num_lines` 5 → 6)
+   - PLANT-GA is the most flexible plant (supports all 3 categories)
+   - Adds ~315K cases/day (~7% capacity increase): `24h × 0.93 × 0.80 × 17,667 avg_rate`
+   - Network capacity: ~4.55M → ~4.87M cases/day
+
+3. **Reduce A-item production buffer** (`a_production_buffer` 1.3 → 1.15)
+   - With net-requirement scheduling (v0.40.0), buffer sets target inventory
+   - 1.3 → 18.2 DOS target → net-requirements routinely exceed capacity → Phase 4 clips uniformly
+   - 1.15 → 16.1 DOS target → net-requirements closer to capacity → less clipping, more B/C headroom
+
+4. **Raise Phase 4 capacity cap** (0.95 → 0.98)
+   - TransformEngine already enforces physical line-level capacity with changeover penalties
+   - Excess orders carry to next day as IN_PROGRESS — no physics violation
+   - Lets ~3% more production through while retaining 2% safety margin
+
+#### Expected Outcomes
+| Metric | v0.40.0 | v0.41.0 Target |
+|--------|---------|----------------|
+| A-item fill | 92.8% | 95-97% |
+| Prod/demand ratio | 0.85 | 0.93-0.97 |
+| B/C fill rates | 97-98% | Stable |
+| Mean A-item order gap | 27.8d | 15-18d |
+| OEE | 59.4% | 55-65% |
+
+#### Files Modified
+- `src/prism_sim/config/simulation_config.json` — `order_cycle_days`, `a_production_buffer`, PLANT-GA `num_lines`
+- `src/prism_sim/simulation/mrp.py` — Phase 4 capacity cap
+
+---
+
 ## [0.40.0] - 2026-02-01
 
 ### Net-Requirement Production Scheduling for A-Items (MPS-Style)

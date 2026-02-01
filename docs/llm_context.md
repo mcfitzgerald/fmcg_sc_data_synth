@@ -148,7 +148,7 @@ poetry run python run_simulation.py --days 365
 **Key Concepts:**
 - **Auto-Checkpointing:** The Orchestrator automatically detects config changes (hash check). If changed, it runs a 90-day burn-in and saves a snapshot. If unchanged, it loads the snapshot and runs immediately.
 - **Demand Sensing:** Agents (MRP/Replenishment) now use proactive demand forecasts from `POSEngine` to build stock ahead of promotions and seasonality.
-- **P&G Scale:** The simulation is calibrated to ~4M cases/day (realistic North American FMCG volume) with ~32 production lines network-wide.
+- **P&G Scale:** The simulation is calibrated to ~4M cases/day (realistic North American FMCG volume) with ~33 production lines network-wide (15 default + 4 OH + 2 TX + 3 CA + 6 GA + 3 other).
 
 **Simulation Run Lengths:**
 - **Full diagnostic (365 days):** Required for accurate KPIs. Includes 90-day burn-in + 365 data days. Use `--streaming --format parquet` for logged runs.
@@ -243,8 +243,8 @@ demand_for_dos = max(expected, blended)  # Never go below expected
 - **Config:** `demand_floor_weight` (default 0.8 = 80% expected, 20% actual)
 - **Rationale:** Industry uses forecasts as floor; actual sales only for upward sensing
 
-### ABC Production Buffers (v0.39.3, updated v0.40.0)
-- **A-Items:** `a_production_buffer` = 1.3x (applied to target inventory in net-requirement calculation)
+### ABC Production Buffers (v0.39.3, updated v0.41.0)
+- **A-Items:** `a_production_buffer` = 1.15x (applied to target inventory in net-requirement calculation; reduced from 1.3 in v0.41.0 since net-requirement produces continuously)
 - **B-Items:** `b_production_buffer` = 1.1x (modest buffer, applied to batch qty)
 - **C-Items:** No penalty factor - use longer horizons (21 days) instead
 
@@ -305,7 +305,7 @@ Production uses ABC-branched scheduling (v0.40.0): A-items use net-requirement (
 Instead of trigger-based feast/famine, A-items compute the gap between target inventory and current position:
 
 ```python
-target_inventory = demand_rate × horizon × buffer   # 14d × 1.3 = 18.2 DOS target
+target_inventory = demand_rate × horizon × buffer   # 14d × 1.15 = 16.1 DOS target
 net_requirement  = target_inventory - inventory_position
 batch_qty        = max(net_requirement, 0)           # Skip if at/above target
 ```
@@ -328,7 +328,7 @@ B/C items retain the original trigger-based approach:
 
 3. **Priority Sorting:** Critical Ratio (`DOS/Trigger`) with shuffle tie-breaker
 4. **ABC Slot Reservation:** 50/30/20 split (A/B/C) with overflow redistribution
-5. **Capacity Cap:** 95% safety valve (rarely fires with demand-matched A-item batches)
+5. **Capacity Cap:** 98% safety valve (raised from 95% in v0.41.0; TransformEngine enforces physical capacity)
 6. **SKU Limit:** Max SKUs/plant/day to cap changeover overhead
 
 **Configuration:** `simulation_config.json` → `manufacturing.mrp_thresholds.campaign_batching`

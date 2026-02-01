@@ -1223,7 +1223,7 @@ class MRPEngine:
         # v0.29.0: Use day-aware capacity to account for seasonal flex
         total_orders = sum(po.quantity_cases for po in production_orders)
         daily_capacity = self._get_daily_capacity(current_day)
-        capacity_threshold = daily_capacity * 0.95
+        capacity_threshold = daily_capacity * 0.98
 
         if total_orders > capacity_threshold and total_orders > 0:
             scale_factor = capacity_threshold / total_orders

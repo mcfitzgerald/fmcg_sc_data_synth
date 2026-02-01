@@ -95,8 +95,8 @@
         "trigger_dos_c": 6
       },
       "abc_production_factors": {
-        "_comment": "v0.39.3: Rebalanced for service recovery without over-production",
-        "a_buffer": 1.3,
+        "_comment": "v0.41.0: A-buffer reduced for net-requirement scheduling (was 1.3)",
+        "a_buffer": 1.15,
         "b_buffer": 1.1,
         "c_production_factor": 1.0,
         "_c_note": "C-items no longer penalized - use longer horizon instead"
@@ -164,7 +164,7 @@
         "service_level_z": 1.65,
         "min_safety_stock_days": 3.0,
         "variance_lookback_days": 28,
-        "order_cycle_days": 5,
+        "order_cycle_days": 3,
         "store_batch_size_cases": 100.0,
         "lead_time_history_len": 20,
         "min_history_days": 7,
@@ -349,7 +349,7 @@
         "inventory_cap_dos": 30.0,
         "diagnostics_enabled": true,
         "abc_production_enabled": true,
-        "a_production_buffer": 1.3,
+        "a_production_buffer": 1.15,
         "b_production_buffer": 1.1,
         "c_production_factor": 1.0,
         "demand_floor_weight": 0.8,
@@ -443,7 +443,7 @@
           "description": "Standard facility with oral care overflow",
           "efficiency_factor": 0.8,
           "unplanned_downtime_pct": 0.07,
-          "num_lines": 5,
+          "num_lines": 6,
           "supported_categories": [
             "PERSONAL_WASH",
             "HOME_CARE",
