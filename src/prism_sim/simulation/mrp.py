@@ -122,8 +122,11 @@ class MRPEngine:
         self.rate_based_production = mrp_thresholds.get(
             "rate_based_production", False
         )
-        # Only throttle production if DOS exceeds this many days
-        self.inventory_cap_dos = mrp_thresholds.get("inventory_cap_dos", 45.0)
+        # v0.46.0: ABC-differentiated inventory DOS caps (negative feedback loop)
+        # When a product's DOS exceeds its cap, skip production until consumed.
+        self.inventory_cap_dos_a = mrp_thresholds.get("inventory_cap_dos_a", 25.0)
+        self.inventory_cap_dos_b = mrp_thresholds.get("inventory_cap_dos_b", 35.0)
+        self.inventory_cap_dos_c = mrp_thresholds.get("inventory_cap_dos_c", 45.0)
 
         # v0.28.0: Seasonality parameters for demand-aware MRP
         # Without this, MRP uses flat expected demand for DOS/batch calculations,
@@ -135,6 +138,13 @@ class MRPEngine:
         self._seasonality_cycle_days = season_config.get("cycle_days", 365)
         # v0.29.0: Capacity amplitude for flexible production capacity
         self._capacity_amplitude = season_config.get("capacity_amplitude", 0.0)
+
+        # v0.46.0: Seasonal floor minimum percentage
+        # During seasonal troughs, the demand floor tracks seasonality but never
+        # drops below this fraction of expected demand (prevents death spiral).
+        self._seasonal_floor_min_pct = mrp_thresholds.get(
+            "seasonal_floor_min_pct", 0.85
+        )
 
         # Diagnostics storage
         self._diagnostics: MRPDiagnostics | None = None
@@ -222,6 +232,20 @@ class MRPEngine:
         # v0.42.0: A-item capacity share for Phase 4 ABC-aware clipping
         self.a_capacity_share = mrp_thresholds.get("a_capacity_share", 0.65)
         # v0.39.3: c_demand_factor removed - was dead code (never used in calculations)
+
+        # v0.46.0: SLOB production dampening
+        # When a product's weighted inventory age exceeds its ABC-class SLOB
+        # threshold, reduce batch size to slow further accumulation of aged stock.
+        validation_config = config.get("simulation_parameters", {}).get(
+            "validation", {}
+        )
+        slob_abc = validation_config.get("slob_abc_thresholds", {})
+        self.slob_threshold_a = float(slob_abc.get("A", 60.0))
+        self.slob_threshold_b = float(slob_abc.get("B", 90.0))
+        self.slob_threshold_c = float(slob_abc.get("C", 120.0))
+        self.slob_dampening_factor = mrp_thresholds.get(
+            "slob_dampening_factor", 0.5
+        )
 
         # v0.23.0: Campaign Batching parameters
         # DEATH SPIRAL FIX: Instead of producing all 500 SKUs daily (25h changeover),
@@ -944,6 +968,9 @@ class MRPEngine:
         else:
             planning_daily_rate_vec = None
 
+        # v0.46.0: Pre-compute weighted inventory ages for SLOB dampening
+        product_ages = self.state.get_weighted_age_by_product()
+
         for product_id in self._finished_product_ids:
             p_idx = self.state.product_id_to_idx.get(product_id)
             if p_idx is None:
@@ -1000,8 +1027,13 @@ class MRPEngine:
                     actual * (1 - demand_floor_weight)
                     + expected * demand_floor_weight
                 )
-                # FLOOR: never go below expected (prevents death spiral)
-                demand_for_dos = max(expected, blended)
+                # v0.46.0: Seasonal-aware floor — tracks trough downward but
+                # never below min_pct of expected (death spiral prevention).
+                # Previously: max(expected, blended) — always clipped to annual avg.
+                seasonal_floor = expected * max(
+                    seasonal_factor, self._seasonal_floor_min_pct
+                )
+                demand_for_dos = max(seasonal_floor, blended)
                 # v0.39.4: Diagnostic logging to verify
                 # demand floor is active
                 diag_sample_size = 5
@@ -1034,6 +1066,18 @@ class MRPEngine:
             # Calculate DOS
             dos_position = inventory_position / max(demand_for_dos, 0.1)
 
+            # v0.46.0: DOS cap guard — skip production when inventory is sufficient.
+            # This is the missing negative feedback loop: when DOS exceeds the
+            # ABC-differentiated cap, production stops until inventory is consumed.
+            if abc == 0:
+                cap_dos = self.inventory_cap_dos_a
+            elif abc == 1:
+                cap_dos = self.inventory_cap_dos_b
+            else:
+                cap_dos = self.inventory_cap_dos_c
+            if dos_position > cap_dos:
+                continue
+
             # Get trigger threshold for this ABC class (abc already computed above)
             if abc == 0:  # A-item
                 trigger_dos = self.trigger_dos_a
@@ -1045,6 +1089,15 @@ class MRPEngine:
             # ============================================================
             # PHASE 1: ABC-branched candidate selection
             # ============================================================
+
+            # v0.46.0: Pre-compute product age for SLOB dampening
+            product_age = float(product_ages[p_idx])
+            if abc == 0:
+                slob_thresh = self.slob_threshold_a
+            elif abc == 1:
+                slob_thresh = self.slob_threshold_b
+            else:
+                slob_thresh = self.slob_threshold_c
 
             if abc == 0:
                 # --------------------------------------------------------
@@ -1064,6 +1117,11 @@ class MRPEngine:
                     continue  # At or above target — no production needed
 
                 batch_qty = net_requirement
+
+                # v0.46.0: SLOB dampening — reduce batch for aged inventory
+                if product_age > slob_thresh:
+                    batch_qty *= self.slob_dampening_factor
+
                 plant_id = self._select_plant(product_id)
                 candidates.append(
                     (product_id, plant_id, dos_position, batch_qty, abc)
@@ -1096,6 +1154,10 @@ class MRPEngine:
                         batch_qty *= 0.5
                     elif dos_position > 45.0:  # noqa: PLR2004
                         batch_qty *= 0.7
+
+                # v0.46.0: SLOB dampening — reduce batch for aged inventory
+                if product_age > slob_thresh:
+                    batch_qty *= self.slob_dampening_factor
 
                 if batch_qty < absolute_min:
                     continue

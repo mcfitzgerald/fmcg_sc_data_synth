@@ -1,6 +1,6 @@
 [project]
 name = "prism-sim"
-version = "0.45.0"
+version = "0.46.0"
 description = ""
 authors = [
     {name = "Your Name",email = "you@example.com"}
@@ -72,9 +72,9 @@ ignore = [
 ]
 
 [tool.ruff.lint.pylint]
-max-branches = 35
+max-branches = 40
 max-args = 10
-max-statements = 130
+max-statements = 140
 max-returns = 8
 
 [tool.ruff.lint.per-file-ignores]

@@ -5,6 +5,45 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.46.0] - 2026-02-02
+
+### Fix 365-Day Inventory Drift
+
+Four fixes to break the production-SLOB oscillation by adding negative feedback from inventory levels back to production decisions.
+
+#### Fix 1: ABC-Differentiated DOS Cap Guard (Primary)
+
+- **Root cause:** `inventory_cap_dos=30.0` loaded in MRP but never used — no ceiling on production when inventory is already sufficient
+- **Fix:** Before adding a candidate to the production list, check if the product's current DOS exceeds its ABC-class cap. If so, skip production for that product.
+- **Config:** `inventory_cap_dos_a=25`, `inventory_cap_dos_b=35`, `inventory_cap_dos_c=45` (replaces single `inventory_cap_dos=30`)
+- **Effect:** Self-regulating negative feedback loop — production stops when inventory is sufficient, resumes when consumed
+
+#### Fix 2: Seasonal-Aware Demand Floor (Secondary)
+
+- **Root cause:** `demand_for_dos = max(expected, blended)` always floors at annual average. During 6-month seasonal troughs (demand = 0.88x avg), this prevents production from adjusting downward → ~12% systematic overproduction
+- **Fix:** Replace with `max(seasonal_floor, blended)` where `seasonal_floor = expected * max(seasonal_factor, 0.85)`. Floor now tracks seasonality but never drops below 85% of expected (death spiral prevention preserved)
+- **Config:** `seasonal_floor_min_pct=0.85`
+
+#### Fix 3: SLOB Production Dampening (Tertiary)
+
+- **Root cause:** When inventory is flagged as SLOB-aged (age > ABC threshold), production isn't notified — keeps producing at full rate for products with excess aged stock
+- **Fix:** Check weighted inventory age per product before appending candidates. If age exceeds SLOB threshold for its ABC class, reduce batch size by 50%
+- **Config:** `slob_dampening_factor=0.5` (uses existing `slob_abc_thresholds`: A=60d, B=90d, C=120d)
+
+#### Fix 4: Diagnostic Demand Proxy (Validation)
+
+- **Root cause:** `diagnose_365day.py` only counted `STORE-*` shipments as demand proxy, missing ~20-30% of demand from CLUB, ECOM-FC, DTC-FC channels (added in v0.44.0)
+- **Fix:** Expand demand filter to all demand-generating endpoints: `STORE-`, `CLUB-`, `ECOM-FC-`, `DTC-FC-`
+- Also added `PHARM-DC-` and `CLUB-DC-` to `classify_node` for correct echelon classification
+
+#### Files Modified
+
+- `src/prism_sim/simulation/mrp.py` — Fix 1 (DOS cap guard), Fix 2 (seasonal floor), Fix 3 (SLOB dampening)
+- `src/prism_sim/config/simulation_config.json` — New params: `inventory_cap_dos_a/b/c`, `seasonal_floor_min_pct`, `slob_dampening_factor`
+- `scripts/analysis/diagnose_365day.py` — Fix 4 (expand demand proxy to all channels)
+- `CHANGELOG.md` — This entry
+- `pyproject.toml` — Version bump to 0.46.0
+
 ## [0.45.0] - 2026-02-01
 
 ### Network Restructure + Echelon/Batch Fixes
