@@ -5,6 +5,47 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.45.0] - 2026-02-01
+
+### Network Restructure + Echelon/Batch Fixes
+
+Three work streams in one release: network restructure (6 RDCs, pharmacy DCs, club depots, plant-direct links), echelon inventory position bug fix, and format-scaled store batch sizing.
+
+#### Network Restructure
+
+- **6 RDCs (from 4):** Added RDC-SE (Jacksonville, FL) and RDC-SW (Phoenix, AZ) to fill Southeast and Southwest geographic gaps
+- **Pharmacy DCs (4 new):** 375 pharmacy stores now route through 4 regional pharmacy DCs (PHARM-DC-001 through PHARM-DC-004) instead of directly to RDCs
+- **Club Depot DCs (3 new):** 47 club stores now route through 3 regional club depots (CLUB-DC-001 through CLUB-DC-003) instead of directly to RDCs
+- **Plant-direct links:** Mass retail DCs (15) and club depot DCs (3) now source from nearest plant instead of RDCs, matching real-world high-volume account logistics
+- **RDC-routed channels:** Grocery, pharmacy, distributor, ecommerce, DTC continue routing through RDCs
+
+| Echelon | v0.44.0 | v0.45.0 |
+|---------|---------|---------|
+| RDCs | 4 | 6 (+2) |
+| Club DCs | 0 | 3 (new) |
+| Pharmacy DCs | 0 | 4 (new) |
+| Mass Retail DCs | →RDC | →Plant (direct) |
+| Club DCs | — | →Plant (direct) |
+
+#### Echelon IP Bug Fix
+
+- **Root cause:** `_apply_echelon_logic` used DC-local inventory position instead of true echelon IP (DC + downstream stores + in-transit). With 100 stores per DC, local IP ~1,000 vs echelon ROP ~4,000 → DCs always ordered → +290-360% inventory buildup.
+- **Fix:** Replace `local_ip` with `echelon_matrix @ (actual_inventory + in_transit)` for correct echelon-wide inventory visibility.
+
+#### Format-Scaled Store Batch Size
+
+- **Root cause:** Flat `store_batch_size=20` for all stores. Convenience stores (0.5x scale, ~1.6 cases/day) get 20-case batches → 12.5 days supply per order.
+- **Fix:** Scale batch and min_qty by `format_scale_factor` (capped at 1.0, floor of 5 cases). Pharmacy→16, convenience→10, others unchanged.
+
+#### Files Modified
+
+- `src/prism_sim/generators/network.py` — Pharmacy DC gen (replaced sec D), Club DC gen (replaced sec C), plant-direct link routing, removed RDC→direct-store links
+- `src/prism_sim/config/world_definition.json` — Added 2 RDCs to fixed_nodes, added `pharmacy_dcs: 4`, `club_dcs: 3`, updated `rdcs: 6`
+- `src/prism_sim/agents/replenishment.py` — Loaded format_scale_factors, scaled store batch/min, fixed echelon IP calculation
+- `docs/llm_context.md` — Updated network topology and channel routing docs
+- `CHANGELOG.md` — This entry
+- `pyproject.toml` — 0.44.0 → 0.45.0
+
 ## [0.44.0] - 2026-02-01
 
 ### Channel Restructure — 7-Channel Model + B2M Rename

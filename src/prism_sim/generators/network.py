@@ -220,37 +220,91 @@ class NetworkGenerator:
                 stores.append(store_node)
                 dc_to_stores[dc_id].append(store_node)
 
-        # C. CLUB (Direct to RDC)
+        # C. CLUB (Club Depot DCs + their stores)
+        n_club_dcs = target_counts.get("club_dcs", 3)
         n_club_stores = target_counts.get("club_stores", 47)
-        club_cities = self.pool.sample_cities(n_club_stores)
+        stores_per_club_dc = n_club_stores // max(n_club_dcs, 1)
 
-        for i, city in enumerate(club_cities):
-            stores.append(Node(
-                id=f"STORE-CLUB-{i+1:04d}",
-                name=f"Club Store {i+1}",
-                type=NodeType.STORE,
-                location=f"{city['city']}, {city['state']}",
-                lat=city["lat"],
-                lon=city["lon"],
+        club_dc_cities = self.pool.sample_cities(n_club_dcs)
+
+        for i in range(n_club_dcs):
+            city_data = club_dc_cities[i]
+            dc_id = f"CLUB-DC-{i+1:03d}"
+
+            dc_node = Node(
+                id=dc_id,
+                name=f"Club Depot DC {i+1}",
+                type=NodeType.DC,
+                location=f"{city_data['city']}, {city_data['state']}",
+                lat=city_data["lat"],
+                lon=city_data["lon"],
                 channel=CustomerChannel.CLUB,
-                store_format=StoreFormat.CLUB
-            ))
+                store_format=StoreFormat.RETAILER_DC,
+                parent_account_id=f"ACCT-CLUB-{i+1:03d}"
+            )
+            customer_dcs.append(dc_node)
+            dc_to_stores[dc_id] = []
 
-        # D. PHARMACY (Direct to nearest RDC, like CLUB)
+            for j in range(stores_per_club_dc):
+                lat, lon = self._get_jittered_coords(
+                    city_data["lat"], city_data["lon"], jitter
+                )
+                store_node = Node(
+                    id=f"STORE-CLUB-{i+1:03d}-{j+1:04d}",
+                    name=f"Club Store {i+1}-{j+1}",
+                    type=NodeType.STORE,
+                    location=dc_node.location,
+                    lat=lat,
+                    lon=lon,
+                    channel=CustomerChannel.CLUB,
+                    store_format=StoreFormat.CLUB,
+                    parent_account_id=dc_id
+                )
+                stores.append(store_node)
+                dc_to_stores[dc_id].append(store_node)
+
+        # D. PHARMACY (Pharmacy DCs + their stores)
+        n_pharmacy_dcs = target_counts.get("pharmacy_dcs", 4)
         n_pharmacy_stores = target_counts.get("pharmacy_stores", 375)
-        pharmacy_cities = self.pool.sample_cities(n_pharmacy_stores)
+        stores_per_pharmacy_dc = n_pharmacy_stores // max(n_pharmacy_dcs, 1)
 
-        for i, city in enumerate(pharmacy_cities):
-            stores.append(Node(
-                id=f"STORE-PHARM-{i+1:04d}",
-                name=f"Pharmacy Store {i+1}",
-                type=NodeType.STORE,
-                location=f"{city['city']}, {city['state']}",
-                lat=city["lat"],
-                lon=city["lon"],
+        pharmacy_dc_cities = self.pool.sample_cities(n_pharmacy_dcs)
+
+        for i in range(n_pharmacy_dcs):
+            city_data = pharmacy_dc_cities[i]
+            dc_id = f"PHARM-DC-{i+1:03d}"
+
+            dc_node = Node(
+                id=dc_id,
+                name=f"Pharmacy DC {i+1}",
+                type=NodeType.DC,
+                location=f"{city_data['city']}, {city_data['state']}",
+                lat=city_data["lat"],
+                lon=city_data["lon"],
                 channel=CustomerChannel.PHARMACY,
-                store_format=StoreFormat.PHARMACY
-            ))
+                store_format=StoreFormat.RETAILER_DC,
+                parent_account_id=f"ACCT-PHARM-{i+1:03d}"
+            )
+            customer_dcs.append(dc_node)
+            dc_to_stores[dc_id] = []
+
+            for j in range(stores_per_pharmacy_dc):
+                lat, lon = self._get_jittered_coords(
+                    city_data["lat"], city_data["lon"], jitter
+                )
+                store_node = Node(
+                    id=f"STORE-PHARM-{i+1:03d}-{j+1:04d}",
+                    name=f"Pharmacy Store {i+1}-{j+1}",
+                    type=NodeType.STORE,
+                    location=dc_node.location,
+                    lat=lat,
+                    lon=lon,
+                    channel=CustomerChannel.PHARMACY,
+                    store_format=StoreFormat.PHARMACY,
+                    parent_account_id=dc_id
+                )
+                stores.append(store_node)
+                dc_to_stores[dc_id].append(store_node)
 
         # E. DISTRIBUTOR (Distributor DCs + small retailers)
         n_distributor_dcs = target_counts.get("distributor_dcs", 3)
@@ -352,41 +406,33 @@ class NetworkGenerator:
             for rdc in rdcs:
                 add_geo_link(plant, rdc)
 
-        # RDCs -> Customer DCs (Nearest RDC)
-        # This replaces preferential attachment with geography
+        # Customer DCs -> Upstream (Plant-direct or Nearest RDC)
+        # High-volume channels (MASS_RETAIL, CLUB) get plant-direct links.
+        # All other channels route through nearest RDC.
+        plant_direct_channels = {CustomerChannel.MASS_RETAIL, CustomerChannel.CLUB}
         for dc in customer_dcs:
-            dists = [(self._haversine(dc.lat, dc.lon, r.lat, r.lon), r) for r in rdcs]
-            dists.sort(key=lambda x: x[0])
-            closest_rdc = dists[0][1]
-            add_geo_link(closest_rdc, dc)
+            if dc.channel in plant_direct_channels:
+                # Plant-direct: nearest plant
+                dists = [
+                    (self._haversine(dc.lat, dc.lon, p.lat, p.lon), p)
+                    for p in plants
+                ]
+                dists.sort(key=lambda x: x[0])
+                add_geo_link(dists[0][1], dc)
+            else:
+                # RDC-routed: nearest RDC
+                dists = [
+                    (self._haversine(dc.lat, dc.lon, r.lat, r.lon), r)
+                    for r in rdcs
+                ]
+                dists.sort(key=lambda x: x[0])
+                add_geo_link(dists[0][1], dc)
 
         # Customer DCs -> Stores (Hierarchical)
         for dc_id, dc_stores in dc_to_stores.items():
             dc_node = next(n for n in customer_dcs if n.id == dc_id)
             for store in dc_stores:
                 add_geo_link(dc_node, store)
-
-        # RDCs -> Club Stores (Nearest RDC)
-        club_stores = [s for s in stores if s.store_format == StoreFormat.CLUB]
-        for store in club_stores:
-            dists = [
-                (self._haversine(store.lat, store.lon, r.lat, r.lon), r)
-                for r in rdcs
-            ]
-            dists.sort(key=lambda x: x[0])
-            closest_rdc = dists[0][1]
-            add_geo_link(closest_rdc, store)
-
-        # RDCs -> Pharmacy Stores (Nearest RDC, like Club)
-        pharmacy_stores = [s for s in stores if s.store_format == StoreFormat.PHARMACY]
-        for store in pharmacy_stores:
-            dists = [
-                (self._haversine(store.lat, store.lon, r.lat, r.lon), r)
-                for r in rdcs
-            ]
-            dists.sort(key=lambda x: x[0])
-            closest_rdc = dists[0][1]
-            add_geo_link(closest_rdc, store)
 
         return nodes, links
 

@@ -11,7 +11,9 @@
       "small_retailers": 900,
       "ecom_fcs": 18,
       "dtc_fc": 3,
-      "rdcs": 4,
+      "pharmacy_dcs": 4,
+      "club_dcs": 3,
+      "rdcs": 6,
       "plants": 4,
       "suppliers": 50,
       "skus": 500
@@ -21,7 +23,9 @@
         {"id": "RDC-NE", "name": "Northeast DC", "city": "Allentown, PA", "lat": 40.6084, "lon": -75.4902},
         {"id": "RDC-MW", "name": "Midwest DC", "city": "Chicago, IL", "lat": 41.8781, "lon": -87.6298},
         {"id": "RDC-SO", "name": "South DC", "city": "Memphis, TN", "lat": 35.1495, "lon": -90.0490},
-        {"id": "RDC-WE", "name": "West DC", "city": "Reno, NV", "lat": 39.5296, "lon": -119.8138}
+        {"id": "RDC-WE", "name": "West DC", "city": "Reno, NV", "lat": 39.5296, "lon": -119.8138},
+        {"id": "RDC-SE", "name": "Southeast DC", "city": "Jacksonville, FL", "lat": 30.3322, "lon": -81.6557},
+        {"id": "RDC-SW", "name": "Southwest DC", "city": "Phoenix, AZ", "lat": 33.4484, "lon": -112.0740}
       ],
       "plants": [
         {"id": "PLANT-OH", "name": "Ohio Plant", "city": "Columbus, OH", "lat": 39.9612, "lon": -82.9988},

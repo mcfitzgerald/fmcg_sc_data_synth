@@ -347,18 +347,33 @@ The `--derive-lines` calibration uses physics-based efficiency decomposition:
 ## 12. Customer Channels & Store Formats
 
 ### Customer Channels (`CustomerChannel` enum)
-| Channel | Description | Logistics Mode |
-|---------|-------------|----------------|
-| `MASS_RETAIL` | Big retailers (Walmart DC, Target DC) | FTL |
-| `GROCERY` | Traditional grocery (Kroger, Albertsons) | FTL |
-| `CLUB` | Club stores (Costco, Sam's Club) | FTL |
-| `PHARMACY` | Pharmacy chains (CVS, Walgreens) | FTL |
-| `DISTRIBUTOR` | 3P Distributors | FTL |
-| `ECOMMERCE` | Amazon, pure-play digital | FTL |
-| `DTC` | Direct to consumer | Parcel |
+| Channel | Description | Logistics Mode | Upstream Routing |
+|---------|-------------|----------------|------------------|
+| `MASS_RETAIL` | Big retailers (Walmart DC, Target DC) | FTL | **Plant-direct** |
+| `GROCERY` | Traditional grocery (Kroger, Albertsons) | FTL | RDC |
+| `CLUB` | Club stores (Costco, Sam's Club) | FTL | **Plant-direct** |
+| `PHARMACY` | Pharmacy chains (CVS, Walgreens) | FTL | RDC |
+| `DISTRIBUTOR` | 3P Distributors | FTL | RDC |
+| `ECOMMERCE` | Amazon, pure-play digital | FTL | RDC |
+| `DTC` | Direct to consumer | Parcel | RDC |
 
 ### Store Formats (`StoreFormat` enum)
 `RETAILER_DC`, `HYPERMARKET`, `SUPERMARKET`, `CLUB`, `CONVENIENCE`, `PHARMACY`, `DISTRIBUTOR_DC`, `ECOM_FC`, `DTC_FC`
+
+### Network Topology (v0.45.0)
+| Echelon | Count | Routing |
+|---------|-------|---------|
+| Plants | 4 | — |
+| RDCs | 6 | Plant→RDC (full mesh) |
+| Mass Retail DCs | 15 | Plant→DC (direct) |
+| Grocery DCs | 10 | RDC→DC |
+| Club Depot DCs | 3 | Plant→DC (direct) |
+| Pharmacy DCs | 4 | RDC→DC |
+| Distributor DCs | 3 | RDC→DC |
+| Ecom FCs | 18 | RDC→FC |
+| DTC FCs | 3 | RDC→FC |
+| Stores | ~3,822 | DC→Store (hierarchical) |
+| **Total** | **~4,238** | |
 
 ---
 

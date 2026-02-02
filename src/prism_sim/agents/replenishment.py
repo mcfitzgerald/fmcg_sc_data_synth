@@ -151,6 +151,12 @@ class MinMaxReplenisher:
         self.store_batch_size = float(params.get("store_batch_size_cases", 20.0))
         self.rush_threshold_days = float(params.get("rush_threshold_days", 2.0))
 
+        # v0.45.0: Load format scale factors for store batch sizing
+        demand_config = config.get("simulation_parameters", {}).get("demand", {})
+        self.format_scale_factors: dict[str, float] = demand_config.get(
+            "format_scale_factors", {}
+        )
+
         # Optimization: Cache Store->Supplier map
         self.store_supplier_map = self._build_supplier_map()
 
@@ -420,10 +426,18 @@ class MinMaxReplenisher:
             self.alpha_vec[idx] = p["smoothing_factor"]
 
             # OVERRIDE: Stores order cases, not pallets
+            # v0.45.0: Scale batch/min by format_scale_factor (capped at 1.0)
             if node.type == NodeType.STORE:
-                # Config-driven override (default 20.0)
-                self.batch_vec[idx] = self.store_batch_size
-                self.min_qty_vec[idx] = self.default_min_qty
+                scale = 1.0
+                if node.store_format:
+                    scale = min(
+                        self.format_scale_factors.get(
+                            node.store_format.name, 1.0
+                        ),
+                        1.0,
+                    )
+                self.batch_vec[idx] = max(self.store_batch_size * scale, 5.0)
+                self.min_qty_vec[idx] = max(self.default_min_qty * scale, 5.0)
 
     def _build_lookup_caches(self) -> None:
         """
@@ -1089,8 +1103,12 @@ class MinMaxReplenisher:
         echelon_demand_all = self.echelon_matrix @ self.smoothed_demand
         current_e_demand = echelon_demand_all[row_indices]
 
-        # Local IP (already passed in as inventory_position[dc_indices])
-        local_ip = inventory_position[dc_indices]
+        # True Echelon IP = DC + all downstream inventory + in-transit
+        # BUG FIX (v0.45.0): Was using DC-only local_ip, causing DCs to
+        # always see a huge gap vs echelon targets → +290-360% DC buildup.
+        full_ip = self.state.actual_inventory + self.state.get_in_transit_by_target()
+        echelon_ip_all = self.echelon_matrix @ full_ip  # [n_dcs, n_products]
+        echelon_ip = echelon_ip_all[row_indices]
 
         # Targets
         dc_target_days = self.target_days_vec[target_idx_arr[dc_indices]]
@@ -1106,8 +1124,8 @@ class MinMaxReplenisher:
         echelon_target = current_e_demand * dc_target_days * echelon_safety_multiplier
         echelon_rop = current_e_demand * dc_rop_days * echelon_safety_multiplier
 
-        echelon_qty = echelon_target - local_ip
-        needs_echelon_order = local_ip < echelon_rop
+        echelon_qty = echelon_target - echelon_ip
+        needs_echelon_order = echelon_ip < echelon_rop
 
         raw_qty[dc_indices] = echelon_qty
         needs_order[dc_indices] = needs_echelon_order
