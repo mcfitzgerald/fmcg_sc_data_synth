@@ -89,9 +89,15 @@ The simulation enforces these constraints - violations indicate bugs:
 | `scripts/generate_warm_start.py` | Generate warm-start snapshot manually |
 | `scripts/export_erp_format.py` | **ETL:** Transform sim output to normalized ERP tables (SQL-ready) |
 
+### Validation & Planning Documents
+| Document | Purpose |
+|----------|---------|
+| `V046_VALIDATION_STATE.md` | v0.46.0 365-day validation results, open questions (DC drift, KPI targets, A-fill inversion, SLOB clearance), recommended next steps |
+
 ### Diagnostic Analysis Scripts (Parquet-based, `data/output` default)
 | Script | Purpose | Key technique |
 |--------|---------|---------------|
+| `scripts/analysis/diagnose_365day.py` | 365-day drift diagnostic: prod/demand ratio, echelon inventory, cumulative excess, MRP signal, seasonal correlation, ABC breakdown | PyArrow row-group streaming for inventory.parquet |
 | `scripts/analysis/diagnose_a_item_fill.py` | 4-layer A-item fill rate root cause analysis (measurement, stockout location, root cause, ranking) | PyArrow row-group streaming for inventory.parquet |
 | `scripts/analysis/diagnose_service_level.py` | Service level trend, echelon breakdown, worst performers, degradation phases | PyArrow row-group streaming for inventory.parquet |
 | `scripts/analysis/diagnose_slob.py` | SLOB inventory: echelon distribution, DOS, velocity, imbalance, production vs demand | PyArrow row-group streaming for inventory.parquet |
@@ -228,15 +234,36 @@ Every `tick()` (1 day) in `Orchestrator._run_day()`:
 
 The simulation has multiple safeguards to prevent feedback loops that collapse production:
 
-### Demand Signal Floor (v0.39.3)
-MRP uses expected demand as floor to prevent death spiral from low service:
+### Demand Signal Floor (v0.39.3, updated v0.46.0)
+MRP uses a seasonal-aware demand floor to prevent death spiral while allowing seasonal adjustment:
 ```python
-# v0.39.3: Weighted blend with expected as floor
+# v0.46.0: Seasonal-aware floor replaces static annual average
+seasonal_factor = self._get_seasonal_factor(current_day)  # e.g., 0.88 for trough
+seasonal_floor = expected * max(seasonal_factor, seasonal_floor_min_pct)  # 0.85 minimum
 blended = actual * (1 - demand_floor_weight) + expected * demand_floor_weight
-demand_for_dos = max(expected, blended)  # Never go below expected
+demand_for_dos = max(seasonal_floor, blended)  # Floor tracks seasonality
 ```
-- **Config:** `demand_floor_weight` (default 0.65 = 65% expected, 35% actual)
-- **Rationale:** Reduced from 0.8 in v0.42.0 to improve promo/peak responsiveness while retaining floor
+- **Config:** `demand_floor_weight` (0.65), `seasonal_floor_min_pct` (0.85)
+- **v0.46.0 change:** Floor now tracks seasonal curve instead of always using annual average. Prevents ~12% systematic overproduction during 6-month troughs while retaining death spiral protection (floor never drops below 85% of expected).
+
+### DOS Cap Guard (v0.46.0)
+Skip production when a product already has sufficient inventory:
+```python
+# Skip production if DOS exceeds ABC-class cap
+if dos_position > cap_dos:  # A=25d, B=35d, C=45d
+    continue
+```
+- **Config:** `inventory_cap_dos_a=25`, `inventory_cap_dos_b=35`, `inventory_cap_dos_c=45`
+- **Effect:** Self-regulating negative feedback — production stops when inventory is sufficient, resumes when consumed
+
+### SLOB Production Dampening (v0.46.0)
+Reduce batch size when product inventory age exceeds SLOB threshold:
+```python
+# Reduce batch by 50% for SLOB-aged products
+if product_age > slob_thresh:  # A=60d, B=90d, C=120d
+    batch_qty *= slob_dampening_factor  # 0.5
+```
+- **Config:** `slob_dampening_factor=0.5`, uses `slob_abc_thresholds` (A=60d, B=90d, C=120d)
 
 ### ABC Production Buffers (v0.39.3, updated v0.42.0)
 - **A-Items:** `a_production_buffer` = 1.22x (raised from 1.15 in v0.42.0 — safe with ABC-aware Phase 4 clipping)
@@ -288,7 +315,7 @@ $SS = z \sqrt{\bar{L}\sigma_D^2 + \bar{D}^2\sigma_L^2}$
 Products are dynamically classified every 7 days based on cumulative sales volume:
 - **A-Items (Top 80%):** High service level target ($z=2.33$)
 - **B-Items (Next 15%):** Medium service level target ($z=1.65$)
-- **C-Items (Bottom 5%):** Lower service level target ($z=1.28$)
+- **C-Items (Bottom 5%):** Medium service level target ($z=1.65$, raised from 1.28 in v0.39.5)
 
 ---
 
@@ -485,6 +512,9 @@ poetry run python run_simulation.py --days 50 --no-logging
 
 ### Post-Run Diagnostics
 ```bash
+# 365-day drift analysis (prod/demand, echelon inventory, cumulative excess)
+poetry run python scripts/analysis/diagnose_365day.py --data-dir data/output --window 30
+
 # A-item fill rate root cause (4-layer analysis)
 poetry run python scripts/analysis/diagnose_a_item_fill.py
 
@@ -548,6 +578,14 @@ When simulation behaves unexpectedly:
    - **SLOB drift:** C-items accumulating (slow movers don't sell)
    - **Service drift:** SLOB throttling reducing production
    - **Key diagnostic:** Compare ABC class inventory at day 30 vs day 365
+   - Run `diagnose_365day.py` for comprehensive drift analysis
+
+8. **Inventory turns low but production/demand ratio near 1.0?**
+   - This is a **distribution-level problem**, not a production problem
+   - Check echelon-level inventory growth: Customer DCs and Club DCs may be accumulating
+   - v0.46.0 fixed production-side drift but DC-level ordering can still cause buildup
+   - **Key diagnostic:** `diagnose_slob.py` echelon breakdown, `diagnose_365day.py` Analysis 2
+   - See `V046_VALIDATION_STATE.md` for full analysis and recommended fixes
 
 ---
 

@@ -36,11 +36,28 @@ Four fixes to break the production-SLOB oscillation by adding negative feedback 
 - **Fix:** Expand demand filter to all demand-generating endpoints: `STORE-`, `CLUB-`, `ECOM-FC-`, `DTC-FC-`
 - Also added `PHARM-DC-` and `CLUB-DC-` to `classify_node` for correct echelon classification
 
+#### 365-Day Validation Results
+
+| Metric | v0.45.0 | v0.46.0 | Target | Status |
+|--------|---------|---------|--------|--------|
+| A-fill | 84.1% | 85.1% | >=85% | PASS |
+| B-fill | — | 95.7% | >=90% | PASS |
+| C-fill | — | 91.5% | >=85% | PASS |
+| Turns | 4.3x | 4.29x | 6-14x | FAIL |
+| SLOB | 38.6% | 31.2% | <30% | MARGINAL |
+| OEE | — | 62.3% | 55-85% | PASS |
+
+- **Production/demand ratio:** 1.02-1.08x (was 1.27-1.47x) — production-side drift resolved
+- **Cumulative excess monotonicity:** 67% (was 100%) — self-correcting
+- **Remaining issue:** Customer DC (+357%) and Club DC (+341%) inventory growth — distribution-level problem, not production
+- Full analysis: `V046_VALIDATION_STATE.md`
+
 #### Files Modified
 
 - `src/prism_sim/simulation/mrp.py` — Fix 1 (DOS cap guard), Fix 2 (seasonal floor), Fix 3 (SLOB dampening)
 - `src/prism_sim/config/simulation_config.json` — New params: `inventory_cap_dos_a/b/c`, `seasonal_floor_min_pct`, `slob_dampening_factor`
 - `scripts/analysis/diagnose_365day.py` — Fix 4 (expand demand proxy to all channels)
+- `V046_VALIDATION_STATE.md` — Validation results, open questions, next steps
 - `CHANGELOG.md` — This entry
 - `pyproject.toml` — Version bump to 0.46.0
 
