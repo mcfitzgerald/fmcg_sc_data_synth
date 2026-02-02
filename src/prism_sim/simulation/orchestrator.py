@@ -1,5 +1,4 @@
 import gzip
-import hashlib
 import json
 import logging
 from collections.abc import Callable
@@ -176,6 +175,16 @@ class Orchestrator:
             warm_start_demand=warm_start_demand,
             base_demand_matrix=base_demand_matrix,
         )
+
+        # 7. Manufacturing State (initialized early for synthetic priming)
+        self.active_production_orders: list[ProductionOrder] = []
+        self.completed_batches: list[Batch] = []
+
+        # v0.49.0: Synthetic steady-state priming (after replenisher init)
+        # Eliminates 80+ days of burn-in by injecting realistic initial conditions
+        if not self._warm_start_snapshot:
+            self._prime_synthetic_steady_state()
+
         self.allocator = AllocationAgent(self.state, self.config)
 
         # v0.19.3: Set product velocity for ABC prioritization (Phase 1)
@@ -260,10 +269,6 @@ class Orchestrator:
             parquet_batch_size=writer_config.get("parquet_batch_size", 10000),
             inventory_sample_rate=inv_sample,
         )
-
-        # 7. Manufacturing State
-        self.active_production_orders: list[ProductionOrder] = []
-        self.completed_batches: list[Batch] = []
 
         # 8. Finished Goods Mask for Metrics (excludes ingredients from inventory turns)
         self._fg_product_mask = self._build_finished_goods_mask()
@@ -357,10 +362,9 @@ class Orchestrator:
 
     def _compute_config_hash(self) -> str:
         """Compute hash of current config for snapshot validation."""
-        config_str = json.dumps(self.config, sort_keys=True)
-        manifest_str = json.dumps(self._manifest, sort_keys=True)
-        combined = config_str + manifest_str
-        return hashlib.sha256(combined.encode()).hexdigest()[:16]
+        from prism_sim.simulation.snapshot import compute_config_hash
+
+        return compute_config_hash(self.config, self._manifest)
 
     def _load_warm_start_snapshot(
         self, path: str, skip_hash_check: bool = False
@@ -607,6 +611,312 @@ class Orchestrator:
 
     # =========================================================================
     # End Warm-Start Methods
+    # =========================================================================
+
+    # =========================================================================
+    # Synthetic Steady-State Initialization (v0.49.0)
+    # =========================================================================
+
+    def _prime_synthetic_steady_state(self) -> None:
+        """
+        Inject synthetic steady-state conditions at day 0.
+
+        Eliminates 80+ days of burn-in by pre-filling pipeline shipments,
+        production WIP, history buffers, and inventory ages. Config-gated
+        via calibration.warm_start.synthetic_steady_state flag.
+
+        Must be called AFTER replenisher init (needs replenisher attributes)
+        and AFTER _initialize_inventory() (needs on-hand inventory).
+        """
+        sim_params = self.config.get("simulation_parameters", {})
+        cal_config = sim_params.get("calibration", {})
+        ws_config = cal_config.get("warm_start", {})
+
+        if not ws_config.get("synthetic_steady_state", False):
+            return
+
+        print("Priming synthetic steady-state...")
+
+        # Build network topology maps (reused by multiple sub-methods)
+        self._upstream_map: dict[str, str] = {}
+        self._downstream_map: dict[str, list[str]] = {}
+        for link in self.world.links.values():
+            self._upstream_map[link.target_id] = link.source_id
+            self._downstream_map.setdefault(link.source_id, []).append(
+                link.target_id
+            )
+
+        self._prime_history_buffers()
+        self._prime_pipeline()
+        self._prime_production_wip()
+        self._prime_inventory_age()
+
+        # Clean up temporary maps
+        del self._upstream_map
+        del self._downstream_map
+
+        print("Synthetic steady-state priming complete.")
+
+    def _get_day1_seasonal_factor(self) -> float:
+        """Return the seasonal multiplier for day 1."""
+        sim_params = self.config.get("simulation_parameters", {})
+        demand_config = sim_params.get("demand", {})
+        season_config = demand_config.get("seasonality", {})
+        amplitude = season_config.get("amplitude", 0.12)
+        phase_shift = season_config.get("phase_shift_days", 150)
+        cycle_days = season_config.get("cycle_days", 365)
+        return float(
+            1.0 + amplitude * np.sin(2 * np.pi * (1 - phase_shift) / cycle_days)
+        )
+
+    def _aggregate_downstream_demand(
+        self, node_id: str, base_demand: np.ndarray
+    ) -> np.ndarray:
+        """
+        Recursively aggregate store-level base demand downstream of a node.
+
+        Returns shape [n_products] with total daily demand from all
+        downstream stores.
+        """
+        result = np.zeros(self.state.n_products)
+        visited: set[str] = set()
+        stack = [node_id]
+
+        while stack:
+            current = stack.pop()
+            if current in visited:
+                continue
+            visited.add(current)
+            for child_id in self._downstream_map.get(current, []):
+                child_node = self.world.nodes.get(child_id)
+                if child_node:
+                    if child_node.type == NodeType.STORE:
+                        idx = self.state.node_id_to_idx.get(child_id)
+                        if idx is not None:
+                            result += base_demand[idx, :]
+                    else:
+                        stack.append(child_id)
+        return result
+
+    def _estimate_link_flow(
+        self, link: Link, base_demand: np.ndarray
+    ) -> np.ndarray:
+        """
+        Estimate daily product flow on a network link.
+
+        Routes demand appropriately per echelon:
+        - DC→Store: flow = store's base demand
+        - RDC→DC: flow = aggregate demand of DC's downstream stores
+        - Plant→RDC/DC: flow = downstream demand * deployment share
+
+        Returns shape [n_products].
+        """
+        tgt = self.world.nodes.get(link.target_id)
+        if not tgt:
+            return np.zeros(self.state.n_products)
+
+        if tgt.type == NodeType.STORE:
+            # DC→Store: flow is the store's own demand
+            tgt_idx = self.state.node_id_to_idx.get(link.target_id)
+            if tgt_idx is not None:
+                return base_demand[tgt_idx, :].copy()
+            return np.zeros(self.state.n_products)
+
+        if tgt.type == NodeType.DC:
+            # Plant→DC or RDC→DC: flow is aggregate downstream demand
+            return self._aggregate_downstream_demand(link.target_id, base_demand)
+
+        return np.zeros(self.state.n_products)
+
+    def _prime_pipeline(self) -> None:
+        """
+        Create synthetic in-transit shipments on every link.
+
+        For each link, creates one shipment per day of lead time, sized
+        to match expected daily flow. This ensures the replenisher sees
+        realistic Inventory Position (on-hand + in-transit) from day 1.
+        """
+        base_demand = self.pos_engine.get_base_demand_matrix()
+        seasonal = self._get_day1_seasonal_factor()
+        counter = 0
+
+        for link in self.world.links.values():
+            src = self.world.nodes.get(link.source_id)
+            tgt = self.world.nodes.get(link.target_id)
+            if not src or not tgt:
+                continue
+
+            tgt_idx = self.state.node_id_to_idx.get(link.target_id)
+            if tgt_idx is None:
+                continue
+
+            # Calculate expected daily flow on this link
+            daily_flow = self._estimate_link_flow(link, base_demand)
+            if np.sum(daily_flow) < 1.0:
+                continue
+
+            lead_time = max(1, int(np.ceil(link.lead_time_days)))
+            for day_offset in range(1, lead_time + 1):
+                lines: list[OrderLine] = []
+                for p_idx in range(self.state.n_products):
+                    qty = float(daily_flow[p_idx] * seasonal)
+                    if qty >= 1.0:
+                        lines.append(
+                            OrderLine(
+                                self.state.product_idx_to_id[p_idx], qty
+                            )
+                        )
+                if lines:
+                    counter += 1
+                    shipment = Shipment(
+                        id=f"PRIME-{counter:06d}",
+                        source_id=link.source_id,
+                        target_id=link.target_id,
+                        creation_day=0,
+                        arrival_day=day_offset,
+                        lines=lines,
+                        status=ShipmentStatus.IN_TRANSIT,
+                    )
+                    self.state.add_shipment(shipment)
+
+        print(f"  Pipeline primed: {counter} synthetic shipments")
+
+    def _prime_production_wip(self) -> None:
+        """
+        Create synthetic production orders already mid-completion at plants.
+
+        Seeds both in-progress POs (completing day 1-2) and finished goods
+        buffer at plants (2 days of expected shipments). Eliminates the
+        3-day production gap that occurs in cold start.
+        """
+        expected_demand = self.mrp_engine.expected_daily_demand
+        lead_time = self.mrp_engine.production_lead_time
+        po_count = 0
+
+        for product_id in self.mrp_engine._finished_product_ids:
+            p_idx = self.state.product_id_to_idx.get(product_id)
+            if p_idx is None:
+                continue
+            daily_rate = float(expected_demand[p_idx])
+            if daily_rate < 1.0:
+                continue
+
+            plant_id = self.mrp_engine._select_plant(product_id)
+            batch_qty = daily_rate * lead_time  # lead_time days' worth
+
+            po = ProductionOrder(
+                id=f"PRIME-PO-{product_id}",
+                plant_id=plant_id,
+                product_id=product_id,
+                quantity_cases=batch_qty,
+                creation_day=-lead_time,
+                due_day=1,
+                status=ProductionOrderStatus.IN_PROGRESS,
+                planned_start_day=-lead_time + 1,
+                actual_start_day=-lead_time + 1,
+                produced_quantity=batch_qty * 0.67,
+            )
+            self.active_production_orders.append(po)
+            po_count += 1
+
+        # Seed finished goods at plants (2 days of expected shipments)
+        fg_count = 0
+        for plant_id in self.mrp_engine._plant_ids:
+            plant_idx = self.state.node_id_to_idx.get(plant_id)
+            if plant_idx is None:
+                continue
+            fg_buffer = expected_demand * 2.0
+            self.state.actual_inventory[plant_idx, :] += fg_buffer
+            self.state.perceived_inventory[plant_idx, :] += fg_buffer
+            fg_count += 1
+
+        print(
+            f"  WIP primed: {po_count} production orders, "
+            f"{fg_count} plants with FG buffer"
+        )
+
+    def _prime_history_buffers(self) -> None:
+        """
+        Pre-fill replenisher demand and lead-time history buffers.
+
+        Populates:
+        - demand_history_buffer (28 days of synthetic noisy demand)
+        - smoothed_demand (clean baseline)
+        - _lt_history (lead time samples for every link)
+        - _lt_mu_cache_sparse / _lt_sigma_cache_sparse
+        - history_idx (marked full)
+
+        Must be called AFTER replenisher init.
+        """
+        from collections import deque
+
+        base_demand = self.pos_engine.get_base_demand_matrix()
+        seasonal = self._get_day1_seasonal_factor()
+        rng = np.random.default_rng(42)
+
+        # 1. Demand history buffer: variance_lookback days of noisy demand
+        for day_slot in range(self.replenisher.variance_lookback):
+            noise = rng.normal(
+                1.0, 0.1, size=base_demand.shape
+            ).clip(0.5, 2.0)
+            self.replenisher.demand_history_buffer[day_slot] = (
+                base_demand * seasonal * noise
+            )
+        # Mark buffer as full so variance calculations activate
+        self.replenisher.history_idx = self.replenisher.variance_lookback
+
+        # 2. Smoothed demand: clean baseline (no noise)
+        self.replenisher.smoothed_demand = (
+            base_demand * seasonal
+        ).astype(np.float32)
+
+        # 3. Lead time history: fill for every link
+        lt_len = self.replenisher.lt_history_len
+        lt_count = 0
+        for link in self.world.links.values():
+            t_idx = self.state.node_id_to_idx.get(link.target_id)
+            s_idx = self.state.node_id_to_idx.get(link.source_id)
+            if t_idx is None or s_idx is None:
+                continue
+            key = (t_idx, s_idx)
+            lt_noise = rng.normal(1.0, 0.08, size=lt_len).clip(0.7, 1.4)
+            history: deque[float] = deque(
+                (float(link.lead_time_days * n) for n in lt_noise),
+                maxlen=lt_len,
+            )
+            self.replenisher._lt_history[key] = history
+            self.replenisher._lt_mu_cache_sparse[key] = link.lead_time_days
+            self.replenisher._lt_sigma_cache_sparse[key] = (
+                link.lead_time_days * 0.08
+            )
+            lt_count += 1
+
+        print(
+            f"  History buffers primed: "
+            f"{self.replenisher.variance_lookback} demand days, "
+            f"{lt_count} link lead-time histories"
+        )
+
+    def _prime_inventory_age(self) -> None:
+        """
+        Set realistic FIFO ages on initial inventory based on ABC class.
+
+        Steady-state average age approximates half the target days supply.
+        Prevents SLOB discontinuity at day 60 when thresholds first apply.
+        """
+        abc = self.mrp_engine.abc_class
+        # Steady-state avg age ≈ half the target days supply
+        age_map = {0: 3.0, 1: 7.0, 2: 15.0}  # A, B, C
+
+        for p_idx in range(self.state.n_products):
+            target_age = age_map.get(int(abc[p_idx]), 7.0)
+            mask = self.state.actual_inventory[:, p_idx] > 0
+            self.state.inventory_age[mask, p_idx] = target_age
+
+        print("  Inventory age seeded by ABC class")
+
+    # =========================================================================
+    # End Synthetic Steady-State Methods
     # =========================================================================
 
     def _initialize_inventory(self) -> None:

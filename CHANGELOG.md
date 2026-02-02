@@ -5,6 +5,64 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.49.0] - 2026-02-02
+
+### Synthetic Steady-State Initialization — Eliminate 90-Day Burn-In
+
+Instead of simulating 90 days to reach steady state, reverse-engineers what steady state looks like and injects it at day 0. Four synthetic injections make day 1 look like day 91, reducing burn-in from 90 to 10 days.
+
+#### Hack 1: Pipeline Priming (structural)
+
+- **New method:** `orchestrator._prime_pipeline()`
+- Creates synthetic in-transit `Shipment` objects on every link, sized to match expected daily flow
+- For each link, one shipment per day of lead time arrives on days 1 through `ceil(lead_time)`
+- Flow estimation respects echelon topology: store demand for DC→Store, aggregated demand for RDC→DC, deployment shares for Plant→RDC
+- **Effect:** Replenisher sees realistic Inventory Position (on-hand + in-transit) from day 1
+
+#### Hack 2: WIP Priming (structural)
+
+- **New method:** `orchestrator._prime_production_wip()`
+- Creates synthetic `ProductionOrder` objects at 67% completion, due day 1
+- Seeds 2 days of finished goods buffer at all plants
+- **Effect:** TransformEngine finds WIP on day 1, FG available for shipment immediately
+
+#### Hack 3: History Buffer Forgery (signal quality)
+
+- **New method:** `orchestrator._prime_history_buffers()`
+- Pre-fills `demand_history_buffer` with 28 days of noisy synthetic demand
+- Sets `smoothed_demand` to clean seasonal baseline
+- Populates `_lt_history` deques for every link with realistic lead-time samples
+- Marks `history_idx` as full so variance calculations activate immediately
+- **Effect:** Safety stock non-zero from day 1, eliminates 7-14 days of soft instability
+
+#### Hack 4: Inventory Age Seeding (SLOB continuity)
+
+- **New method:** `orchestrator._prime_inventory_age()`
+- Sets realistic FIFO ages based on ABC class (A=3d, B=7d, C=15d)
+- **Effect:** Prevents SLOB discontinuity at day 60 when thresholds first apply
+
+#### Hack 5: Structural Config Hashing (checkpoint resilience)
+
+- **Modified:** `snapshot.compute_config_hash()`
+- Now hashes only physics-relevant keys: manufacturing, demand, logistics, agents, inventory, calibration
+- Includes sorted product and node IDs from manifest
+- **Effect:** Checkpoints survive changes to writer, validation, quirks, risk_events, and key reordering
+- Also updated `orchestrator._compute_config_hash()` to delegate to shared function
+
+#### Hack 6: Reduced Default Burn-In (config)
+
+- `default_burn_in_days` 90 → 10
+- New `synthetic_steady_state: true` flag gates all priming logic
+- **Effect:** ~80% reduction in cold-start simulation time
+
+#### Files Modified
+
+- `src/prism_sim/simulation/orchestrator.py` — New `_prime_synthetic_steady_state()` + 4 sub-methods + 2 helpers
+- `src/prism_sim/simulation/snapshot.py` — Structural config hashing
+- `src/prism_sim/config/simulation_config.json` — Burn-in reduction + synthetic flag
+- `CHANGELOG.md` — This entry
+- `pyproject.toml` — Version bump to 0.49.0
+
 ## [0.48.0] - 2026-02-02
 
 ### Add DRP-Lite Planning Layer for Fill Rate Improvement

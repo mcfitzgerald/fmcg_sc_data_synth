@@ -29,10 +29,11 @@ SERIALIZATION_THRESHOLD = 0.01
 
 def compute_config_hash(config: dict[str, Any], manifest: dict[str, Any]) -> str:
     """
-    Compute a hash of the configuration to detect stale snapshots.
+    Compute a hash of physics-relevant configuration to detect stale snapshots.
 
-    Includes both simulation_config.json and world_definition.json content
-    to ensure snapshot validity when either changes.
+    v0.49.0: Only hashes keys that affect simulation physics. Changes to
+    writer, validation, quirks, or risk_events no longer invalidate
+    checkpoints. Also survives key reordering via sorted serialization.
 
     Args:
         config: Simulation configuration dict
@@ -41,10 +42,20 @@ def compute_config_hash(config: dict[str, Any], manifest: dict[str, Any]) -> str
     Returns:
         16-character hex hash string
     """
-    # Serialize deterministically (sorted keys)
-    config_str = json.dumps(config, sort_keys=True)
-    manifest_str = json.dumps(manifest, sort_keys=True)
-    combined = config_str + manifest_str
+    sim = config.get("simulation_parameters", {})
+    physics_keys = [
+        "manufacturing",
+        "demand",
+        "logistics",
+        "agents",
+        "inventory",
+        "calibration",
+    ]
+    relevant: dict[str, Any] = {k: sim.get(k, {}) for k in physics_keys}
+    # Include network topology and product definitions from manifest
+    relevant["products"] = sorted(manifest.get("products", {}).keys())
+    relevant["nodes"] = sorted(manifest.get("locations", {}).keys())
+    combined = json.dumps(relevant, sort_keys=True)
     return hashlib.sha256(combined.encode()).hexdigest()[:16]
 
 
