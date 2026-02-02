@@ -260,40 +260,49 @@ class Orchestrator:
         # 8. Finished Goods Mask for Metrics (excludes ingredients from inventory turns)
         self._fg_product_mask = self._build_finished_goods_mask()
 
-        # v0.19.12: Calculate RDC Demand Shares for production routing
-        self.rdc_demand_shares = self._calculate_rdc_demand_shares()
+        # v0.45.0: Calculate deployment shares for production routing
+        # Includes both RDCs and plant-direct DCs
+        self.deployment_shares = self._calculate_deployment_shares()
 
         # 9. Finalize warm-start if active
         # (restore production orders and history buffers)
         if self._warm_start_snapshot:
             self._finalize_warm_start_restoration()
 
-    def _calculate_rdc_demand_shares(self) -> dict[str, float]:
+    def _calculate_deployment_shares(self) -> dict[str, float]:
         """
-        Calculate the share of global POS demand served by each RDC.
+        Calculate the share of global POS demand served by each deployment target.
+        Deployment targets = RDCs + plant-direct DCs (DCs sourced from plants).
         Used to route production proportional to demand (physics-based flow).
         """
-        rdc_demand = {}
-        total_network_demand = 0.0
-
-        # Get RDC IDs
-        rdc_ids = [n_id for n_id, n in self.world.nodes.items()
-                   if n.type == NodeType.DC and n_id.startswith("RDC-")]
-
-        # Build downstream map: source_id -> [target_ids]
+        # Build upstream and downstream maps
+        upstream_map: dict[str, str] = {}
         downstream_map: dict[str, list[str]] = {}
         for link in self.world.links.values():
+            upstream_map[link.target_id] = link.source_id
             downstream_map.setdefault(link.source_id, []).append(link.target_id)
+
+        # Deployment targets = RDCs + DCs sourced directly from plants
+        deployment_targets: list[str] = []
+        for n_id, n in self.world.nodes.items():
+            if n.type == NodeType.DC and n_id.startswith("RDC-"):
+                deployment_targets.append(n_id)
+            elif (
+                n.type == NodeType.DC
+                and upstream_map.get(n_id, "").startswith("PLANT-")
+            ):
+                deployment_targets.append(n_id)
+
+        target_demand: dict[str, float] = {}
+        total_network_demand = 0.0
 
         base_demand_matrix = self.pos_engine.get_base_demand_matrix()
 
-        for rdc_id in rdc_ids:
-            # Recursive demand aggregation
-            # RDC -> DCs -> Stores
-            # RDC -> Stores
-            rdc_total = 0.0
-            visited = set()
-            stack = [rdc_id]
+        for target_id in deployment_targets:
+            # Recursive demand aggregation (target -> DCs -> Stores)
+            target_total = 0.0
+            visited: set[str] = set()
+            stack = [target_id]
 
             while stack:
                 current = stack.pop()
@@ -309,23 +318,25 @@ class Orchestrator:
                             # Aggregate POS demand
                             idx = self.state.node_id_to_idx.get(child_id)
                             if idx is not None:
-                                rdc_total += np.sum(base_demand_matrix[idx, :])
+                                target_total += float(
+                                    np.sum(base_demand_matrix[idx, :])
+                                )
                         else:
                             # Keep traversing logistics layer
                             stack.append(child_id)
 
-            rdc_demand[rdc_id] = rdc_total
-            total_network_demand += rdc_total
+            target_demand[target_id] = target_total
+            total_network_demand += target_total
 
         # Convert to shares
-        shares = {}
+        shares: dict[str, float] = {}
         if total_network_demand > 0:
-            for rdc_id, demand in rdc_demand.items():
-                shares[rdc_id] = demand / total_network_demand
+            for tid, demand in target_demand.items():
+                shares[tid] = demand / total_network_demand
         else:
-            # Fallback to even split if no demand (shouldn't happen with GIS)
-            even = 1.0 / len(rdc_ids) if rdc_ids else 0.0
-            shares = {rid: even for rid in rdc_ids}
+            # Fallback to even split if no demand
+            even = 1.0 / len(deployment_targets) if deployment_targets else 0.0
+            shares = {tid: even for tid in deployment_targets}
 
         return shares
 
@@ -948,12 +959,13 @@ class Orchestrator:
         # Used by customer DCs to prevent demand signal attenuation
         self.replenisher.record_inflow(raw_orders)
 
-        # v0.15.9: Pass order demand to MRP (pre-allocation, true demand)
-        # Filter for orders TO RDCs (from customer DCs) - these drive production
-        rdc_orders = [
-            o for o in raw_orders if o.source_id.startswith("RDC-")
+        # v0.45.0: Pass order demand to MRP (pre-allocation, true demand)
+        # Include orders TO RDCs + orders sourced from plants (plant-direct DCs)
+        production_signal_orders = [
+            o for o in raw_orders
+            if o.source_id.startswith("RDC-") or o.source_id.startswith("PLANT-")
         ]
-        self.mrp_engine.record_order_demand(rdc_orders)
+        self.mrp_engine.record_order_demand(production_signal_orders)
 
         # Generate Purchase Orders for Ingredients at Plants (Milestone 5.1 extension)
         # Uses production-based signal (active orders) instead of POS demand
@@ -1632,15 +1644,7 @@ class Orchestrator:
             .get("default_lead_time_days", 3.0)
         )
 
-        # Get list of manufacturer RDC IDs only (RDC-* prefix)
-        # Excludes customer DCs (RET-DC-*, DIST-DC-*, ECOM-FC-*, DTC-FC-*)
-        rdc_ids = [
-            n_id
-            for n_id, n in self.world.nodes.items()
-            if n.type == NodeType.DC and n_id.startswith("RDC-")
-        ]
-
-        if not rdc_ids:
+        if not self.deployment_shares:
             return shipments
 
         shipment_counter = 0
@@ -1651,37 +1655,37 @@ class Orchestrator:
                 continue
 
             # Distribute batch quantity based on demand shares
-            # v0.19.12: Demand-proportional routing (physics-based flow)
-            for rdc_id, share in self.rdc_demand_shares.items():
+            # v0.45.0: Demand-proportional routing to RDCs + plant-direct DCs
+            for dc_id, share in self.deployment_shares.items():
                 if share <= 0:
                     continue
 
-                qty_for_rdc = batch.quantity_cases * share
+                qty_for_dc = batch.quantity_cases * share
 
-                # Find the link from plant to RDC
-                link = self._find_link(batch.plant_id, rdc_id)
+                # Find the link from plant to deployment target
+                link = self._find_link(batch.plant_id, dc_id)
                 lead_time = link.lead_time_days if link else default_lead_time
 
                 shipment_counter += 1
                 shipment = Shipment(
                     id=f"SHIP-PLANT-{current_day:03d}-{shipment_counter:06d}",
                     source_id=batch.plant_id,
-                    target_id=rdc_id,
+                    target_id=dc_id,
                     creation_day=current_day,
                     arrival_day=current_day + int(lead_time),
-                    lines=[OrderLine(batch.product_id, qty_for_rdc)],
+                    lines=[OrderLine(batch.product_id, qty_for_dc)],
                     status=ShipmentStatus.IN_TRANSIT,
                 )
 
                 # Calculate shipment weight/volume from product attributes
                 product = self.world.products.get(batch.product_id)
                 if product:
-                    shipment.total_weight_kg = product.weight_kg * qty_for_rdc
-                    shipment.total_volume_m3 = product.volume_m3 * qty_for_rdc
+                    shipment.total_weight_kg = product.weight_kg * qty_for_dc
+                    shipment.total_volume_m3 = product.volume_m3 * qty_for_dc
 
                 # Deduct from plant inventory
                 self.state.update_inventory(
-                    batch.plant_id, batch.product_id, -qty_for_rdc
+                    batch.plant_id, batch.product_id, -qty_for_dc
                 )
 
                 shipments.append(shipment)

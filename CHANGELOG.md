@@ -32,6 +32,13 @@ Three work streams in one release: network restructure (6 RDCs, pharmacy DCs, cl
 - **Root cause:** `_apply_echelon_logic` used DC-local inventory position instead of true echelon IP (DC + downstream stores + in-transit). With 100 stores per DC, local IP ~1,000 vs echelon ROP ~4,000 → DCs always ordered → +290-360% inventory buildup.
 - **Fix:** Replace `local_ip` with `echelon_matrix @ (actual_inventory + in_transit)` for correct echelon-wide inventory visibility.
 
+#### Plant-Direct DC Deployment Fix
+
+- **Root cause:** `_create_plant_shipments` routed 100% of production to RDCs only. Plant-direct DCs (15 mass retail + 3 club = 44% of volume) never received production output. Additionally, MRP signal filtered to RDC-sourced orders only, excluding plant-direct demand.
+- **Fix A:** Renamed `rdc_demand_shares` → `deployment_shares`, expanded `_calculate_deployment_shares` to include DCs sourced from plants as deployment targets alongside RDCs. Production now flows proportionally to all deployment targets.
+- **Fix B:** Widened MRP order filter to include `PLANT-`-sourced orders, giving MRP visibility into plant-direct demand signal.
+- **Result:** Orders/demand ratio reduced, InvMean stable (not climbing), inventory turns 6.45x, A-item fill rate ~85%.
+
 #### Format-Scaled Store Batch Size
 
 - **Root cause:** Flat `store_batch_size=20` for all stores. Convenience stores (0.5x scale, ~1.6 cases/day) get 20-case batches → 12.5 days supply per order.
@@ -42,6 +49,7 @@ Three work streams in one release: network restructure (6 RDCs, pharmacy DCs, cl
 - `src/prism_sim/generators/network.py` — Pharmacy DC gen (replaced sec D), Club DC gen (replaced sec C), plant-direct link routing, removed RDC→direct-store links
 - `src/prism_sim/config/world_definition.json` — Added 2 RDCs to fixed_nodes, added `pharmacy_dcs: 4`, `club_dcs: 3`, updated `rdcs: 6`
 - `src/prism_sim/agents/replenishment.py` — Loaded format_scale_factors, scaled store batch/min, fixed echelon IP calculation
+- `src/prism_sim/simulation/orchestrator.py` — Renamed `rdc_demand_shares` → `deployment_shares`, expanded deployment target calculation to include plant-direct DCs, widened MRP signal filter
 - `docs/llm_context.md` — Updated network topology and channel routing docs
 - `CHANGELOG.md` — This entry
 - `pyproject.toml` — 0.44.0 → 0.45.0
