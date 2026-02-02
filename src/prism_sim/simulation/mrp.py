@@ -97,6 +97,11 @@ class MRPEngine:
         self.pos_engine = pos_engine
         self.base_demand_matrix = base_demand_matrix
 
+        # v0.48.0: DRP planner for forward-netting production targets
+        # Set externally by orchestrator after both MRP and DRP are initialized
+        self.drp_planner: Any = None
+        self._active_production_orders_cache: list[ProductionOrder] = []
+
         # Extract manufacturing config
         mrp_config = config.get("simulation_parameters", {}).get("manufacturing", {})
         self.target_days_supply = mrp_config.get("target_days_supply", 14.0)
@@ -763,6 +768,9 @@ class MRPEngine:
             for product_id in self._finished_product_ids:
                 total_rdc_inv += self.state.get_inventory(rdc_id, product_id)
 
+        # v0.48.0: Cache active POs for DRP planner access
+        self._active_production_orders_cache = active_production_orders
+
         # ================================================================
         # v0.19.9: RATE-BASED PRODUCTION (Option C)
         # v0.19.11: POS-driven production (physically correct approach)
@@ -968,6 +976,15 @@ class MRPEngine:
         else:
             planning_daily_rate_vec = None
 
+        # v0.48.0: Get DRP daily targets for B/C items (forward-netting)
+        drp_targets: np.ndarray | None = None
+        if self.drp_planner is not None:
+            drp_targets = self.drp_planner.plan_requirements(
+                current_day,
+                self.abc_class,
+                self._active_production_orders_cache,
+            )
+
         # v0.46.0: Pre-compute weighted inventory ages for SLOB dampening
         product_ages = self.state.get_weighted_age_by_product()
 
@@ -1127,9 +1144,47 @@ class MRPEngine:
                     (product_id, plant_id, dos_position, batch_qty, abc)
                 )
 
+            elif drp_targets is not None:
+                # --------------------------------------------------------
+                # B/C ITEMS: DRP-driven production (v0.48.0)
+                # --------------------------------------------------------
+                # Instead of binary trigger (dos < threshold → produce
+                # horizon days' worth), use DRP's forward-netted daily
+                # target. This produces smaller, more frequent batches
+                # that match actual net requirements.
+                drp_daily = float(drp_targets[p_idx])
+                if drp_daily < absolute_min * 0.1:
+                    continue  # DRP says no production needed
+
+                # Scale DRP daily target by ABC horizon to get batch qty
+                # that integrates naturally with the slot allocation system
+                batch_qty = drp_daily * abc_horizon
+
+                b_production_buffer = float(
+                    self.config.get("simulation_parameters", {})
+                    .get("manufacturing", {})
+                    .get("mrp_thresholds", {})
+                    .get("b_production_buffer", 1.1)
+                )
+
+                if abc == 1:  # B-item
+                    batch_qty *= b_production_buffer
+
+                # v0.46.0: SLOB dampening — reduce batch for aged inventory
+                if product_age > slob_thresh:
+                    batch_qty *= self.slob_dampening_factor
+
+                if batch_qty < absolute_min:
+                    continue
+
+                plant_id = self._select_plant(product_id)
+                candidates.append(
+                    (product_id, plant_id, dos_position, batch_qty, abc)
+                )
+
             elif dos_position < trigger_dos:
                 # --------------------------------------------------------
-                # B/C ITEMS: Campaign trigger logic (unchanged)
+                # B/C ITEMS: Fallback campaign trigger (no DRP planner)
                 # --------------------------------------------------------
                 batch_qty = batch_qty_base
 
@@ -1142,12 +1197,8 @@ class MRPEngine:
 
                 if abc == 1:  # B-item
                     batch_qty *= b_production_buffer
-                # C-items: NO production factor penalty
-                # Their 21-day horizon (config) already creates larger batches
 
                 # DOS throttling for B-items only (high inventory levels).
-                # C-items skip DOS throttling — longer horizon and
-                # age-based SLOB tracking handle inventory control.
                 abc_class_c = 2
                 if abc != abc_class_c:  # B-items only
                     if dos_position > 60.0:  # noqa: PLR2004

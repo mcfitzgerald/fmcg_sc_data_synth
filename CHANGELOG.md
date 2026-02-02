@@ -5,6 +5,113 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.48.0] - 2026-02-02
+
+### Add DRP-Lite Planning Layer for Fill Rate Improvement
+
+Structural fix targeting the ~85% store fill rate ceiling. The simulation faithfully modeled a purely reactive supply chain; real FMCG companies achieve 97%+ through planning-based systems (DRP, MPS, MEIO). This release adds a simplified DRP layer and rate-based ordering to coordinate production and distribution.
+
+#### Root Cause: Five Structural Issues
+
+1. **Campaign batching feast-famine** — B/C items produce only when DOS < trigger, creating 14-21 day oscillation cycles
+2. **MRP demand signal mix attenuation** — expected demand floor produces correct total volume but wrong product mix
+3. **Multi-echelon independence** — no coordination between echelons (stores, DCs, RDCs, plants)
+4. **Allocation failure ratchet** — shortage → partial fill → re-order → signal decay before supply arrives
+5. **Batch rounding amplification** — DC batch sizes (200-500) systematically over-order
+
+#### Fix 1: DRP-Lite Planner (New — structural)
+
+- **New file:** `src/prism_sim/simulation/drp.py` — Simplified Distribution Requirements Planning
+- **Mechanism:** Projects inventory forward at RDC level, nets against in-transit and in-production, generates time-phased daily production targets
+- **Integration:** B/C items use DRP daily targets instead of binary trigger-based campaigns. A-items keep net-requirement scheduling (already near-continuous).
+- **Effect:** Replaces feast-famine oscillation with level-loaded production matched to net requirements
+
+#### Fix 2: Rate-Based DC Ordering (Structural — replaces binary trigger)
+
+- **Where:** `replenishment.py:_apply_echelon_logic()`
+- **Old:** `needs_order = echelon_ip < echelon_rop` (binary trigger)
+- **New:** `daily_order = echelon_demand + (inv_error / correction_days)` with `correction_days=7`
+- **Effect:** Smooth, continuous DC ordering stream with negative feedback (order less when over-stocked, more when under-stocked)
+
+#### Fix 3: Unmet Demand Decay Matched to Lead Time
+
+- **Config:** `unmet_demand_decay` 0.85 → 0.93
+- **Old half-life:** 4.25 days (signal dies before supply chain responds in 10 days)
+- **New half-life:** 9.6 days (matches 10-day supply chain response time)
+
+#### Fix 4: Reduce Batch Amplification
+
+| Parameter | Old | New | Rationale |
+|-----------|-----|-----|-----------|
+| MASS_RETAIL `batch_size` | 500 | 50 | DCs order exact quantities from own RDCs |
+| GROCERY `batch_size` | 400 | 50 | Same rationale |
+| CLUB `batch_size` | 200 | 50 | Same rationale |
+| `store_batch_size_cases` | 20 | 10 | Reduce store-level batch amplification |
+| `trigger_dos_b` | 5 | 7 | Higher trigger = more frequent, smaller batches |
+| `trigger_dos_c` | 4 | 6 | Same rationale |
+
+#### Files Modified
+
+- `src/prism_sim/simulation/drp.py` — **NEW** DRP planner module
+- `src/prism_sim/simulation/mrp.py` — DRP integration for B/C item production
+- `src/prism_sim/agents/replenishment.py` — Rate-based DC ordering
+- `src/prism_sim/simulation/orchestrator.py` — DRP planner initialization
+- `src/prism_sim/config/simulation_config.json` — Parameter tuning
+- `CHANGELOG.md` — This entry
+- `pyproject.toml` — Version bump to 0.48.0
+
+## [0.47.0] - 2026-02-02
+
+### Fix Distribution-Level Inventory Accumulation
+
+Five fixes targeting the DC inventory buildup problem: Retailer DCs (+462%) and Club DCs (+341%) accumulated inventory because replenishment had no negative feedback loop equivalent to MRP's DOS caps. Production was already controlled (1.02-1.08x demand) from v0.46.0.
+
+#### Fix 1: DC-Level DOS Cap in Replenishment (Primary — structural)
+
+- **Root cause:** DCs order whenever echelon IP < ROP, regardless of local inventory level. No ceiling on DC inventory.
+- **Fix:** Add ABC-differentiated DOS guard to `_apply_echelon_logic()`. Suppresses ordering when DC local DOS > cap.
+- **Config:** `dc_dos_cap_a=15`, `dc_dos_cap_b=20`, `dc_dos_cap_c=25`
+- **Effect:** Prevents DCs from over-ordering when already well-stocked
+
+#### Fix 2: Dampen Unmet Demand Signal (Signal — breaks ratchet)
+
+- **Root cause:** Unmet demand weight=1.0 and decay=0.95 (5%/day) meant every 1-day shortage persisted ~60 days as elevated signal → permanent surplus
+- **Fix:** Config-driven weight (1.0→0.5) and decay (0.95→0.85, 15%/day). Shortage now persists ~15 days instead of ~60.
+- **Config:** `unmet_demand_weight=0.5`, `unmet_demand_decay=0.85`
+- **Why not 0.0?** C-items need recovery signal; 0.5 weight × 0.85 decay gives ~7 days of boost per shortage
+
+#### Fix 3: Guard RDC Push Against Over-Stocked DCs (Flow — prevents push override)
+
+- **Root cause:** Push mechanism was blind to DC inventory. RDCs pushed excess to DCs without checking if DCs already had sufficient stock, undermining DOS cap (Fix 1).
+- **Fix:** Before pushing, check target DC DOS per product. Skip push for products where DC DOS >= cap.
+- **Config:** `push_receive_dos_cap=15.0`
+
+#### Fix 4: Config Parameter Tuning (Calibration)
+
+| Parameter | Old | New | Rationale |
+|-----------|-----|-----|-----------|
+| CLUB/MASS_RETAIL `target_days` | 8.0 | 6.0 | Industry: 3-6 days for high-velocity FTL |
+| CLUB/MASS_RETAIL `reorder_point_days` | 4.0 | 3.0 | Proportional to target reduction |
+| `push_threshold_dos` | 21.0 | 30.0 | Less aggressive push; let pull system work |
+| `customer_dc_days_supply` (init) | 14.0 | 10.0 | Reduce initialization overshoot |
+| `a_rop_multiplier` | 1.5 | 1.25 | Reduce A-item demand amplification |
+| `slob_dampening_factor` | 0.5 | 0.25 | More aggressive production cut for aged product |
+
+#### Fix 5: Diagnostic Instrumentation (Observability)
+
+- Per-echelon DOS tracking by channel (MASS_RETAIL, CLUB, GROCERY, etc.)
+- `dc_order_suppression_count`: Orders suppressed by DC DOS cap (Fix 1)
+- `push_suppression_count`: Push allocations blocked by DC DOS check (Fix 3)
+- `unmet_demand_magnitude`: Daily sum of unmet demand signal to track ratchet effect
+
+#### Files Modified
+
+- `src/prism_sim/agents/replenishment.py` — Fix 1 (DC DOS cap), Fix 2 (unmet demand dampening)
+- `src/prism_sim/simulation/orchestrator.py` — Fix 3 (push guard), Fix 5 (diagnostics)
+- `src/prism_sim/config/simulation_config.json` — Fix 4 (parameter tuning), new config keys for Fixes 1-3
+- `CHANGELOG.md` — This entry
+- `pyproject.toml` — Version bump to 0.47.0
+
 ## [0.46.0] - 2026-02-02
 
 ### Fix 365-Day Inventory Drift

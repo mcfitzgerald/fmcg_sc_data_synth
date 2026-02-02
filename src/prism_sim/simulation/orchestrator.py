@@ -154,6 +154,14 @@ class Orchestrator:
             self.world, self.state, self.config, self.pos_engine, base_demand_matrix
         )
 
+        # v0.48.0: Initialize DRP planner for forward-netting B/C production
+        from prism_sim.simulation.drp import DRPPlanner
+
+        self.drp_planner = DRPPlanner(
+            self.world, self.state, self.config, self.pos_engine
+        )
+        self.mrp_engine.drp_planner = self.drp_planner
+
         # Initialize inventory: either from warm-start or cold-start priming
         if self._warm_start_snapshot:
             self._restore_inventory_from_snapshot()
@@ -259,6 +267,9 @@ class Orchestrator:
 
         # 8. Finished Goods Mask for Metrics (excludes ingredients from inventory turns)
         self._fg_product_mask = self._build_finished_goods_mask()
+
+        # v0.47.0: Diagnostic counter for push suppression (Fix 3 + Fix 5)
+        self._push_suppression_count = 0
 
         # v0.45.0: Calculate deployment shares for production routing
         # Includes both RDCs and plant-direct DCs
@@ -1322,6 +1333,48 @@ class Orchestrator:
                 c_avg_age, self.slob_threshold_c
             )
 
+            # v0.47.0: Per-echelon DOS diagnostics + suppression counters
+            # Tracks DC inventory health by channel and measures fix effectiveness
+            dc_dos_by_channel: dict[str, list[float]] = {}
+            for n_id, node in self.world.nodes.items():
+                if node.type != NodeType.DC or n_id.startswith("RDC-"):
+                    continue
+                n_idx = self.state.node_id_to_idx.get(n_id)
+                if n_idx is None:
+                    continue
+                fg_inv = self.state.actual_inventory[n_idx, self._fg_product_mask]
+                fg_demand = self._base_demand_matrix[n_idx, self._fg_product_mask]
+                fg_demand_safe = np.maximum(fg_demand, 0.1)
+                mean_dos = float(np.mean(fg_inv / fg_demand_safe))
+                ch_name = (
+                    node.channel.name if node.channel and hasattr(node.channel, "name")
+                    else "UNKNOWN"
+                )
+                dc_dos_by_channel.setdefault(ch_name, []).append(mean_dos)
+
+            channel_summaries = {
+                ch: f"{np.mean(vals):.1f}" for ch, vals in dc_dos_by_channel.items()
+            }
+
+            unmet_magnitude = float(np.sum(self.state.get_unmet_demand()))
+
+            # Pull suppression counts from replenisher (Fix 1) and push method (Fix 3)
+            dc_suppress = self.replenisher._dc_order_suppression_count
+            push_suppress = self._push_suppression_count
+
+            logger.info(
+                "v47 Diag: dc_dos=%s, order_suppress=%d, push_suppress=%d, "
+                "unmet_mag=%.0f",
+                channel_summaries,
+                dc_suppress,
+                push_suppress,
+                unmet_magnitude,
+            )
+
+            # Reset daily counters
+            self.replenisher._dc_order_suppression_count = 0
+            self._push_suppression_count = 0
+
         log_config = self.config.get("simulation_parameters", {}).get("logistics", {})
         constraints = log_config.get("constraints", {})
         max_weight = constraints.get("truck_max_weight_kg", 20000.0)
@@ -1842,10 +1895,28 @@ class Orchestrator:
 
             total_dc_demand_safe = np.maximum(total_dc_demand, 0.1)
 
+            # v0.47.0 Fix 3: DOS cap for push receive — suppress push for
+            # products where the target DC already has sufficient stock
+            push_receive_cap = float(
+                replen_params.get("push_receive_dos_cap", 15.0)
+            )
+
             for dc_id, dc_demand in dc_demands.items():
                 # Calculate this DC's share (proportional to demand)
                 share_ratio = dc_demand / total_dc_demand_safe
                 dc_push_qty = excess_inventory * share_ratio
+
+                # v0.47.0 Fix 3: Check target DC inventory before pushing
+                dc_idx = self.state.node_id_to_idx.get(dc_id)
+                if dc_idx is not None:
+                    dc_inv = self.state.actual_inventory[dc_idx, :]
+                    dc_demand_safe = np.maximum(dc_demand, 0.1)
+                    dc_dos = dc_inv / dc_demand_safe
+                    # Suppress push for products where DC already has enough
+                    dc_over_cap = dc_dos >= push_receive_cap
+                    suppressed = int(np.sum((dc_push_qty >= 10) & dc_over_cap))  # noqa: PLR2004
+                    self._push_suppression_count += suppressed
+                    dc_push_qty = np.where(dc_over_cap, 0.0, dc_push_qty)
 
                 # Create order lines for products with significant push qty
                 lines = []

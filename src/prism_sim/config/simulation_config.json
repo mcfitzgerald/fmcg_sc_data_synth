@@ -84,7 +84,7 @@
         "_comment": "v0.32.1 empirically-tuned values for validation",
         "store_days_supply": 14.0,
         "rdc_days_supply": 21.0,
-        "customer_dc_days_supply": 14.0,
+        "customer_dc_days_supply": 10.0,
         "abc_velocity_factors": {
           "A": 1.2,
           "B": 1.0,
@@ -145,7 +145,7 @@
         "enabled": true,
         "a_threshold_pct": 0.8,
         "b_threshold_pct": 0.95,
-        "a_rop_multiplier": 1.5,
+        "a_rop_multiplier": 1.25,
         "b_rop_multiplier": 1.0,
         "c_rop_multiplier": 0.5,
         "a_allocation_priority": 1,
@@ -165,7 +165,7 @@
         "min_safety_stock_days": 3.0,
         "variance_lookback_days": 28,
         "order_cycle_days": 1,
-        "store_batch_size_cases": 20.0,
+        "store_batch_size_cases": 10.0,
         "lead_time_history_len": 20,
         "min_history_days": 7,
         "emergency_dos_threshold": 3.0,
@@ -177,25 +177,34 @@
           "C": 1.65
         },
         "echelon_safety_multiplier": 1.0,
+        "dc_dos_cap_a": 15,
+        "dc_dos_cap_b": 20,
+        "dc_dos_cap_c": 25,
+        "_dc_dos_cap_note": "v0.47.0: Suppress DC ordering when local DOS exceeds ABC cap (Fix 1)",
+        "unmet_demand_weight": 0.5,
+        "unmet_demand_decay": 0.93,
+        "_unmet_demand_note": "v0.48.0: Raised from 0.85 to 0.93 — half-life 9.6d matches 10d supply chain response time",
         "push_allocation_enabled": true,
-        "push_threshold_dos": 21.0,
+        "push_threshold_dos": 30.0,
+        "push_receive_dos_cap": 15.0,
+        "_push_receive_note": "v0.47.0: Skip push to DCs already at this DOS level (Fix 3)",
         "channel_profiles": {
           "MASS_RETAIL": {
-            "target_days": 8.0,
-            "reorder_point_days": 4.0,
-            "batch_size": 500.0,
+            "target_days": 6.0,
+            "reorder_point_days": 3.0,
+            "batch_size": 50.0,
             "smoothing_factor": 0.3
           },
           "GROCERY": {
             "target_days": 8.0,
             "reorder_point_days": 4.0,
-            "batch_size": 400.0,
+            "batch_size": 50.0,
             "smoothing_factor": 0.3
           },
           "CLUB": {
-            "target_days": 8.0,
-            "reorder_point_days": 4.0,
-            "batch_size": 200.0,
+            "target_days": 6.0,
+            "reorder_point_days": 3.0,
+            "batch_size": 50.0,
             "smoothing_factor": 0.2
           },
           "PHARMACY": {
@@ -324,11 +333,11 @@
     "inventory": {
       "initial_fg_level": 5.0,
       "initialization": {
-        "_comment": "v0.44.0: Raised from 8 to 10 — more buffer for low-volume formats (pharmacy 0.8x, convenience 0.5x)",
+        "_comment": "v0.47.0: DC days reduced from 14 to 10 — less initialization overshoot",
         "store_days_supply": 10.0,
         "rdc_days_supply": 21.0,
         "rdc_store_multiplier": 80.0,
-        "customer_dc_days_supply": 14.0,
+        "customer_dc_days_supply": 10.0,
         "plant_ingredient_buffer": 200000.0,
         "abc_velocity_factors": {
           "A": 1.2,
@@ -406,8 +415,8 @@
         "_demand_floor_note": "v0.42.0: 65% expected + 35% actual — lets demand signal through faster for promo/peak responsiveness",
         "seasonal_floor_min_pct": 0.85,
         "_seasonal_floor_note": "v0.46.0: During troughs, demand floor tracks seasonality but never below 85% of expected",
-        "slob_dampening_factor": 0.5,
-        "_slob_dampening_note": "v0.46.0: Reduce batch size by 50% when product inventory age exceeds SLOB threshold",
+        "slob_dampening_factor": 0.25,
+        "_slob_dampening_note": "v0.47.0: Reduce batch size by 75% when product inventory age exceeds SLOB threshold (was 50%)",
         "campaign_batching": {
           "enabled": true,
           "production_horizon_days": 14,
@@ -415,10 +424,10 @@
           "production_horizon_days_b": 14,
           "production_horizon_days_c": 21,
           "_c_horizon_note": "v0.39.3: 3-week campaigns for C-items (less frequent, larger batches)",
-          "_trigger_note": "v0.43.0: Lowered triggers further for more frequent, smaller batches",
+          "_trigger_note": "v0.48.0: B/C triggers raised for more frequent, smaller batches (DRP supplement)",
           "trigger_dos_a": 7,
-          "trigger_dos_b": 5,
-          "trigger_dos_c": 4,
+          "trigger_dos_b": 7,
+          "trigger_dos_c": 6,
           "_sku_slot_note": "v0.43.0: Increased from 80 to 100 — with 60/25/15 ABC slot split, gives ~1.3d A-item rotation",
           "max_skus_per_plant_per_day": 100,
           "a_slot_pct": 0.60,

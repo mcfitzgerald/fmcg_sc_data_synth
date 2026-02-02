@@ -246,6 +246,9 @@ class MinMaxReplenisher:
                 if p_idx is not None:
                     self.ingredient_mask[p_idx] = True
 
+        # v0.47.0: DC order suppression counter (Fix 1 + Fix 5 diagnostics)
+        self._dc_order_suppression_count = 0
+
         # PERF: Pre-computed lookup caches for O(1) array access
         # Replaces 49M+ dict.get() calls with direct array indexing
         self._build_lookup_caches()
@@ -834,10 +837,16 @@ class MinMaxReplenisher:
         # Orders should capture the unmet demand, so we decay what was recorded.
         # v0.39.0: Slowed decay from 0.5 to 0.85 (15%/day) to preserve signal.
         # v0.39.5: Further slowed to 0.95 (5%/day) for C-item recovery.
-        # C-items have structural disadvantages (allocation priority, z-score).
-        # With 15%/day decay, unmet demand halves in ~5 days - too fast for
-        # C-items that only get produced every 2-3 weeks. 5%/day persists ~60 days.
-        self.state.decay_unmet_demand(decay_factor=0.95)
+        # v0.47.0: Config-driven decay (default 0.85, 15%/day). With 0.95 decay,
+        # a 1-day shortage persists ~60 days → permanent surplus. 0.85 gives ~15
+        # days persistence, still enough for C-item recovery with 1-day DC lead time.
+        params = (
+            self.config.get("simulation_parameters", {})
+            .get("agents", {})
+            .get("replenishment", {})
+        )
+        unmet_decay = float(params.get("unmet_demand_decay", 0.85))
+        self.state.decay_unmet_demand(decay_factor=unmet_decay)
 
         return orders
 
@@ -956,9 +965,16 @@ class MinMaxReplenisher:
 
             # v0.38.0: Add unmet demand to signal (weighted)
             # v0.39.0: Increased weight from 0.5 to 1.0 for full signal strength.
-            # With 50% weight, C-items (low priority, frequent shortages) never recover.
-            # Full weight ensures demand signal reflects true unfulfilled need.
-            unmet_signal = unmet_demand[t_idx, :] * 1.0
+            # v0.47.0: Reduced to config-driven weight (default 0.5) to break
+            # the ratchet effect where every shortage creates a permanent surplus.
+            # C-items still get recovery via 0.5 weight + 0.85 decay (~7 days boost).
+            unmet_weight = float(
+                self.config.get("simulation_parameters", {})
+                .get("agents", {})
+                .get("replenishment", {})
+                .get("unmet_demand_weight", 0.5)
+            )
+            unmet_signal = unmet_demand[t_idx, :] * unmet_weight
             base_signal = base_signal + unmet_signal
 
             # Blending logic: 50% Reactive (History) + 50% Proactive (Structure)
@@ -1112,7 +1128,6 @@ class MinMaxReplenisher:
 
         # Targets
         dc_target_days = self.target_days_vec[target_idx_arr[dc_indices]]
-        dc_rop_days = self.rop_vec[target_idx_arr[dc_indices]]
 
         params = (
             self.config.get("simulation_parameters", {})
@@ -1122,10 +1137,56 @@ class MinMaxReplenisher:
         echelon_safety_multiplier = float(params.get("echelon_safety_multiplier", 1.3))
 
         echelon_target = current_e_demand * dc_target_days * echelon_safety_multiplier
-        echelon_rop = current_e_demand * dc_rop_days * echelon_safety_multiplier
 
-        echelon_qty = echelon_target - echelon_ip
-        needs_echelon_order = echelon_ip < echelon_rop
+        # v0.48.0: Rate-based DC ordering replaces binary (s,S) trigger.
+        # Instead of "echelon_ip < echelon_rop → order up to target",
+        # calculate a smooth daily order = demand + inventory correction.
+        # This eliminates the feast-famine oscillation from binary triggers.
+        correction_days = 7.0  # Smooth correction over 7 days
+        inv_error = echelon_target - echelon_ip  # positive = need more
+        daily_correction = inv_error / correction_days
+        echelon_order_rate = current_e_demand + daily_correction
+        echelon_order_rate = np.maximum(echelon_order_rate, 0.0)
+
+        # Order when the rate-based qty is meaningful (>5% of demand)
+        rate_threshold = current_e_demand * 0.05
+        needs_echelon_order = echelon_order_rate > rate_threshold
+
+        # Use rate-based qty instead of gap-to-target
+        echelon_qty = echelon_order_rate
+
+        # v0.47.0 Fix 1: DC-Level DOS Cap — suppress ordering when local DC
+        # inventory already exceeds ABC-differentiated threshold. This prevents
+        # DCs from accumulating inventory when echelon logic sees a gap but
+        # the DC itself is already over-stocked.
+        dc_dos_cap_a = float(params.get("dc_dos_cap_a", 15.0))
+        dc_dos_cap_b = float(params.get("dc_dos_cap_b", 20.0))
+        dc_dos_cap_c = float(params.get("dc_dos_cap_c", 25.0))
+
+        # Build per-product DOS cap vector based on ABC classification
+        dc_dos_cap_vec = np.full(self.state.n_products, dc_dos_cap_c)
+        # Use z_scores_vec as ABC proxy (A=2.33, B=1.65, C varies)
+        dc_dos_cap_vec[self.z_scores_vec >= self.z_score_A] = dc_dos_cap_a
+        dc_dos_cap_vec[
+            (self.z_scores_vec >= self.z_score_B) & (self.z_scores_vec < self.z_score_A)
+        ] = dc_dos_cap_b
+
+        # Calculate LOCAL DC DOS (not echelon) per product
+        dc_actual_indices = target_idx_arr[dc_indices]
+        dc_local_inv = self.state.actual_inventory[dc_actual_indices, :]
+        # Use smoothed demand at DC level for DOS calculation
+        # smoothed_demand is set before echelon logic runs
+        assert self.smoothed_demand is not None
+        dc_local_demand = np.maximum(self.smoothed_demand[dc_actual_indices, :], 0.1)
+        dc_local_dos = dc_local_inv / dc_local_demand
+
+        # Suppress order for products where local DC DOS > cap
+        dc_over_cap = dc_local_dos > dc_dos_cap_vec[np.newaxis, :]
+        suppressed_count = int(np.sum(needs_echelon_order & dc_over_cap))
+        needs_echelon_order = needs_echelon_order & ~dc_over_cap
+
+        # Track suppression count for diagnostics (v0.47.0 Fix 5)
+        self._dc_order_suppression_count = suppressed_count
 
         raw_qty[dc_indices] = echelon_qty
         needs_order[dc_indices] = needs_echelon_order
