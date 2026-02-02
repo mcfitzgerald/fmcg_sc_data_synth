@@ -5,6 +5,54 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.50.0] - 2026-02-02
+
+### Fix Runaway Order Behavior — Break Three Feedback Loops
+
+Orders were exploding from 1M/day to 77M/day over 50 days while POS demand stayed flat at 3.3M/day. Diagnostic confirmed this is structural (not caused by synthetic priming). Three compounding feedback loops in the replenishment logic caused unbounded order amplification.
+
+#### Fix 1: Anchor Order Cap to Base Demand (breaks inflow cascade)
+
+- **Modified:** `replenishment.py` — `_finalize_quantities()`
+- Previously, order cap used `get_inflow_demand()` (endogenous, inflates with orders) as reference
+- Now uses exogenous POS `base_demand_matrix` from POSEngine as absolute cap anchor
+- For customer DCs, uses `_expected_throughput` (aggregate downstream POS demand)
+- **Config:** `order_cap_base_demand_multiplier: 3.0` (default)
+- **Effect:** Cap can no longer inflate with the signal it's supposed to limit
+
+#### Fix 2: Non-Additive Unmet Demand Signal (breaks unmet ratchet)
+
+- **Modified:** `replenishment.py` — `_calculate_average_demand()`
+- Previously: `base_signal = base_signal + unmet_signal` (additive, unbounded)
+- Now: `base_signal = np.maximum(base_signal, unmet_signal)` (capped at whichever is larger)
+- **Modified:** `state.py` — `record_unmet_demand_batch()`
+- Previously: `self._unmet_demand += unmet_matrix` (double-counts store stockouts + allocation failures)
+- Now: `np.maximum(self._unmet_demand, unmet_matrix)` (takes worst-case, no double-counting)
+- **Effect:** Signal can never exceed max(demand, weighted_unmet) instead of their sum
+
+#### Fix 3: Cap Echelon Correction (breaks unbounded correction)
+
+- **Modified:** `replenishment.py` — `_apply_echelon_logic()`
+- Previously: `daily_correction = inv_error / 7.0` with no cap — depleted echelon yields 3-10x demand
+- Now: correction clipped to ±50% of echelon demand via `np.clip()`
+- **Config:** `echelon_correction_cap_pct: 0.5` (default)
+- **Effect:** DC order rate bounded to 1.5x echelon demand regardless of inventory gap
+
+#### Fix 4: Cap DC Inflow Signal (defense-in-depth)
+
+- **Modified:** `replenishment.py` — `_calculate_average_demand()`
+- Caps inflow signal at multiple of expected throughput before using as demand reference
+- **Config:** `inflow_cap_multiplier: 2.0` (default)
+- **Effect:** Prevents bullwhip-inflated store orders from propagating as DC demand
+
+#### Results
+
+- Orders stabilize at ~30-35M/day (down from 77M unbounded growth)
+- Store fill rate: 97.9% (up from 83.5%)
+- A-item fill rate: 97.6% (up from 79.7%)
+- Inventory turns: 6.56x (healthy range)
+- Inventory mean stabilizes (no longer monotonically declining)
+
 ## [0.49.0] - 2026-02-02
 
 ### Synthetic Steady-State Initialization — Eliminate 90-Day Burn-In

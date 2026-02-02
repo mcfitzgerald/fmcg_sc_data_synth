@@ -330,13 +330,15 @@ class StateManager:
         """
         Record unfilled demand for all nodes/products at once.
 
-        More efficient than calling record_unmet_demand() repeatedly.
+        v0.50.0 Fix 2b: Uses max instead of addition. Store stockouts and
+        allocation failures measure the same shortage from different vantage
+        points — adding them double-counts.
 
         Args:
             unmet_matrix: Shape [n_nodes, n_products] - unfilled quantities
         """
         if unmet_matrix.shape == self._unmet_demand.shape:
-            self._unmet_demand += unmet_matrix
+            np.maximum(self._unmet_demand, unmet_matrix, out=self._unmet_demand)
 
     def get_unmet_demand(self) -> np.ndarray:
         """

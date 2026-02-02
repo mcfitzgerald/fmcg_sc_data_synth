@@ -184,6 +184,8 @@ class MinMaxReplenisher:
         # v0.18.0: Calculate expected throughput for customer DCs (physics-based floor)
         # This prevents cold-start under-ordering when stores haven't placed orders yet
         self._expected_throughput: dict[int, np.ndarray] = {}
+        # v0.50.0: Store base demand matrix for absolute order cap reference (Fix 1)
+        self._base_demand_matrix = base_demand_matrix
         if base_demand_matrix is not None:
             self._calculate_expected_throughput(base_demand_matrix)
 
@@ -955,11 +957,20 @@ class MinMaxReplenisher:
         n_targets = len(target_indices)
         avg_demand = np.zeros((n_targets, self.state.n_products))
 
+        # v0.50.0 Fix 4: Cap inflow to prevent bullwhip cascade at DCs
+        inflow_cap_mult = float(
+            self.config.get("simulation_parameters", {})
+            .get("agents", {})
+            .get("replenishment", {})
+            .get("inflow_cap_multiplier", 2.0)
+        )
+
         for i, t_idx in enumerate(target_indices):
             if t_idx in self._customer_dc_indices:
                 inflow_signal = inflow_demand[t_idx, :]
                 expected = self._expected_throughput.get(t_idx, inflow_signal)
-                base_signal = np.maximum(inflow_signal, expected)
+                capped_inflow = np.minimum(inflow_signal, expected * inflow_cap_mult)
+                base_signal = np.maximum(capped_inflow, expected)
             else:
                 base_signal = np.maximum(inflow_demand[t_idx, :], pos_demand[t_idx, :]) # type: ignore
 
@@ -974,8 +985,11 @@ class MinMaxReplenisher:
                 .get("replenishment", {})
                 .get("unmet_demand_weight", 0.5)
             )
+            # v0.50.0 Fix 2: Non-additive unmet signal. Previously additive (+=)
+            # which meant signal = demand + 0.5*unmet → unbounded ratchet.
+            # Now signal = max(demand, 0.5*unmet) → capped at whichever is larger.
             unmet_signal = unmet_demand[t_idx, :] * unmet_weight
-            base_signal = base_signal + unmet_signal
+            base_signal = np.maximum(base_signal, unmet_signal)
 
             # Blending logic: 50% Reactive (History) + 50% Proactive (Structure)
             if proactive_rate_matrix is not None:
@@ -1145,6 +1159,11 @@ class MinMaxReplenisher:
         correction_days = 7.0  # Smooth correction over 7 days
         inv_error = echelon_target - echelon_ip  # positive = need more
         daily_correction = inv_error / correction_days
+        # v0.50.0 Fix 3: Cap correction to percentage of demand.
+        # Without cap, depleted echelon → correction = 3-10x demand → runaway.
+        cap_pct = float(params.get("echelon_correction_cap_pct", 0.5))
+        max_correction = current_e_demand * cap_pct
+        daily_correction = np.clip(daily_correction, -max_correction, max_correction)
         echelon_order_rate = current_e_demand + daily_correction
         echelon_order_rate = np.maximum(echelon_order_rate, 0.0)
 
@@ -1204,20 +1223,34 @@ class MinMaxReplenisher:
         order_qty = np.where(needs_order, np.maximum(raw_qty, min_qty), 0.0)
         order_qty[:, self.ingredient_mask] = 0.0
 
-        # v0.35.6 FIX: Cap order quantity to prevent runaway order accumulation.
-        # When orders exceed a reasonable multiple of target stock, it indicates
-        # persistent upstream shortage. Ordering more won't help - it just creates
-        # backlog that compounds the problem. Cap at 2x target_days_supply worth.
-        #
-        # This breaks the feedback loop where:
-        # 1. Shortage → low IP → large order
-        # 2. Order not fulfilled → IP stays low
-        # 3. Next cycle: another large order
-        # 4. Orders accumulate exponentially
+        # v0.50.0 Fix 1: Anchor order cap to EXOGENOUS base demand (POS).
+        # Previously used get_inflow_demand() which is endogenous — when orders
+        # inflate during bullwhip, the cap inflates with them (useless).
+        # Base demand from POSEngine is the fixed reference point.
+        params = (
+            self.config.get("simulation_parameters", {})
+            .get("agents", {})
+            .get("replenishment", {})
+        )
         target_days = self.target_days_vec[target_idx_arr]
-        avg_demand = self.get_inflow_demand()[target_idx_arr, :]
-        max_order = avg_demand * target_days * 2.0  # Cap at 2x target stock
-        max_order = np.maximum(max_order, min_qty)  # But at least min_qty
+        if self._base_demand_matrix is not None:
+            base_ref = self._base_demand_matrix[target_idx_arr, :].copy()
+            # For customer DCs: use expected throughput (aggregate downstream)
+            for i, t_idx in enumerate(target_indices):
+                if t_idx in self._customer_dc_indices:
+                    expected = self._expected_throughput.get(t_idx)
+                    if expected is not None:
+                        base_ref[i, :] = expected
+            base_ref = np.maximum(base_ref, self.min_demand_floor)
+        else:
+            # Fallback if no base demand matrix available
+            base_ref = np.maximum(
+                self.get_inflow_demand()[target_idx_arr, :], self.min_demand_floor
+            )
+
+        cap_mult = float(params.get("order_cap_base_demand_multiplier", 3.0))
+        max_order = base_ref * target_days * cap_mult
+        max_order = np.maximum(max_order, min_qty)
         order_qty = np.minimum(order_qty, max_order)
 
         batched_qty = np.ceil(order_qty / batch_sz) * batch_sz
