@@ -5,6 +5,57 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.51.0] - 2026-02-03
+
+### Fix DC Drift, Inverse Bullwhip, and A-Item Shortfall — Anti-Windup Controls
+
+Three symptoms (DC inventory growth, inverse bullwhip 0.30x, A-item fill rate 91.8%) traced to a single root cause: four unconditional demand floors stacked at every layer preventing the system from ever reducing throughput. This is integrator windup — floors only prevent signal collapse but never suppress signal when inventory is excessive.
+
+**Fix: Make all demand floors conditional on inventory state (anti-windup).**
+
+#### Phase 1: Inventory-Conditional Demand Signal
+
+##### 1A. Replenishment floor gating (`replenishment.py`)
+- Replaced unconditional `base_signal = max(capped_inflow, expected)` with inventory-gated floor
+- Floor weight = `clip((target_dos - local_dos) / target_dos, 0, 1)` — smooth ramp
+- At DOS=0: full floor protection (prevents death spiral). At DOS=target: floor disengages (allows drawdown)
+- **Config:** `floor_gating_enabled: true`
+
+##### 1B. Tightened DC DOS caps (`simulation_config.json`)
+- `dc_dos_cap_a`: 15 → 10, `dc_dos_cap_b`: 20 → 14, `dc_dos_cap_c`: 25 → 18
+- Suppression now kicks in at ~1x target DOS (was ~1.5x)
+
+##### 1C. Reduced smoothing window (`replenishment.py`)
+- Outflow/inflow history buffer: 7 days → 5 days (config-driven via `outflow_history_days`)
+- Shorter window passes weekly demand variance, enabling bullwhip emergence
+- Buffer size now configurable instead of hardcoded
+
+#### Phase 2: Production Rebalancing
+
+##### 2A. Equalized C-item production horizon (`simulation_config.json`)
+- `production_horizon_days_c`: 21 → 14 (matches A/B items)
+- With DRP (v0.48.0) generating right-sized batches, the 21-day horizon was inflating C batches
+
+##### 2B. Inventory-conditional DRP floor (`drp.py`)
+- Replaced unconditional `daily_target = max(daily_target, demand_floor)` with:
+  `daily_target = where(projected_inv < safety_stock, max(daily_target, floor), daily_target)`
+- Floor only activates when inventory is below safety stock (death-spiral zone)
+- When inventory is adequate, DRP's net-requirement logic drives production naturally
+
+##### 2C. Reduced MRP demand floor weight (`simulation_config.json`)
+- `demand_floor_weight`: 0.65 → 0.50 (actual demand gets equal weight vs expected)
+- Previous 65% expected bias inflated B/C production where actual << expected
+
+#### 50-Day Sanity Check Results
+
+| Metric | v0.50.0 | v0.51.0 | Target |
+|--------|---------|---------|--------|
+| A-item fill rate | 91.8% | 97.1% | >90% |
+| B-item fill rate | 98.9% | 100.0% | >95% |
+| Inventory turns | 4.8x | 7.27x | 5-8x |
+| SLOB % | 20.8% | 0.0% | <20% |
+| Overall service | — | 97.66% | >95% |
+
 ## [0.50.0] - 2026-02-02
 
 ### Fix Runaway Order Behavior — Break Three Feedback Loops

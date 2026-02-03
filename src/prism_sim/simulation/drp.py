@@ -212,10 +212,17 @@ class DRPPlanner:
         spread_days = max(self.production_lead_time, 1)
         daily_target = net_req / spread_days
 
-        # 8. Floor at fraction of expected demand (death spiral prevention)
-        # Only apply floor for products with positive expected demand
+        # 8. Inventory-conditional floor (anti-windup death spiral prevention)
+        # v0.51.0: Only apply floor when projected inventory is below safety
+        # stock. When inventory is adequate, DRP's own net-requirement logic
+        # correctly computes zero/low production — the floor should not override.
+        floor_active = projected_inv < safety_stock  # boolean mask
         demand_floor = self.expected_daily_demand * self.floor_pct
-        daily_target = np.maximum(daily_target, demand_floor)
+        daily_target = np.where(
+            floor_active,
+            np.maximum(daily_target, demand_floor),
+            daily_target,  # no floor when inventory is adequate
+        )
 
         # Zero out non-finished-goods (ingredients, etc.)
         ingredient_mask = np.ones(n_products, dtype=bool)
