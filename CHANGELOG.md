@@ -5,6 +5,51 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.52.0] - 2026-02-04
+
+### Fix DC Inventory Drift (+467%) — Throughput-Based DC Ordering
+
+Customer DC inventory grew +467% over 365 days due to a structural ordering-vs-shipping asymmetry: DCs ordered based on echelon demand (DC + ~100 downstream stores), but stores manage their own inventory independently. The DC held whatever stores didn't pull, causing persistent accumulation.
+
+**Root cause fix:** Replace echelon-demand-based ordering with outflow-based (throughput) ordering. DC order rate = what it ships to stores + local buffer correction. Matches real FMCG practice (retail DCs order ≈ throughput ± buffer).
+
+#### Throughput-Based Echelon Logic (`replenishment.py`)
+
+- Replaced echelon demand/target/correction block in `_apply_echelon_logic()` with:
+  ```
+  dc_order_rate = dc_outflow + (dc_local_target - dc_local_ip) / correction_days
+  ```
+- `dc_outflow` = `get_outflow_demand()` (rolling 5-day shipment average to stores)
+- `dc_local_target` = `dc_outflow * dc_buffer_days` (local flow-based target, not echelon)
+- `dc_local_ip` = DC on-hand + DC in-transit (LOCAL, not echelon aggregate)
+- Correction capped at ±50% of outflow to prevent overshoot
+- Throughput floor at 70% of expected for demand ramp protection
+- DOS cap safety valve retained (uses outflow for consistency)
+
+#### Outflow-Based DC Demand Signal (`replenishment.py`)
+
+- Changed `_calculate_average_demand()` DC branch from inflow (orders received) to outflow (shipments sent)
+- Consistent with throughput-based ordering — both use the same signal
+- Removed `inflow_cap_multiplier` (no longer needed; replaced by `throughput_floor_pct`)
+
+#### Config Changes (`simulation_config.json`)
+
+- Added: `dc_buffer_days: 10.0` — local buffer target in days of outflow
+- Added: `dc_correction_days: 7.0` — smoothing period for inventory correction
+- Added: `dc_correction_cap_pct: 0.5` — max correction as fraction of outflow
+- Added: `throughput_floor_pct: 0.7` — outflow floor for demand ramp protection
+- Lowered: `push_receive_dos_cap`: 15 → 12 (aligns with dc_buffer_days=10)
+- Removed: `echelon_safety_multiplier`, `echelon_correction_cap_pct`, `inflow_cap_multiplier` (obsolete)
+
+#### 50-Day Sanity Check Results
+
+| Metric | v0.51.0 | v0.52.0 50d |
+|--------|---------|-------------|
+| Fill Rate | 97.2% | 97.2% |
+| A-Item Fill | 91.4% (365d) | 98.0% (50d) |
+| Inventory Turns | 5.67x | 6.11x |
+| InvMean Trend | Rising | Declining (526→250) |
+
 ## [0.51.0] - 2026-02-03
 
 ### Fix DC Drift, Inverse Bullwhip, and A-Item Shortfall — Anti-Windup Controls

@@ -942,6 +942,9 @@ class MinMaxReplenisher:
 
     def _calculate_average_demand(self, target_indices: list[int]) -> np.ndarray:
         inflow_demand = self.get_inflow_demand()
+        # v0.52.0: Use outflow demand for DCs (consistent with throughput-based
+        # echelon logic). Outflow = what DC actually ships to stores.
+        outflow_demand = self.get_outflow_demand()
         pos_demand = self.smoothed_demand
 
         # v0.38.0: Get unmet demand to boost signal where allocation failed
@@ -963,14 +966,6 @@ class MinMaxReplenisher:
         n_targets = len(target_indices)
         avg_demand = np.zeros((n_targets, self.state.n_products))
 
-        # v0.50.0 Fix 4: Cap inflow to prevent bullwhip cascade at DCs
-        inflow_cap_mult = float(
-            self.config.get("simulation_parameters", {})
-            .get("agents", {})
-            .get("replenishment", {})
-            .get("inflow_cap_multiplier", 2.0)
-        )
-
         # v0.51.0: Anti-windup floor gating — demand floor scales with
         # inventory deficit. At low DOS, full floor protects against death
         # spirals. At target DOS, floor disengages so system can self-correct.
@@ -981,11 +976,26 @@ class MinMaxReplenisher:
             .get("floor_gating_enabled", True)
         )
 
+        # v0.52.0: Throughput floor for DCs (same as echelon logic)
+        throughput_floor_pct = float(
+            self.config.get("simulation_parameters", {})
+            .get("agents", {})
+            .get("replenishment", {})
+            .get("throughput_floor_pct", 0.7)
+        )
+
         for i, t_idx in enumerate(target_indices):
             if t_idx in self._customer_dc_indices:
-                inflow_signal = inflow_demand[t_idx, :]
-                expected = self._expected_throughput.get(t_idx, inflow_signal)
-                capped_inflow = np.minimum(inflow_signal, expected * inflow_cap_mult)
+                # v0.52.0: Use outflow (shipments to stores) as DC demand signal.
+                # Previously used inflow (orders received), which is the echelon
+                # demand signal and caused ordering-vs-shipping asymmetry.
+                outflow_signal = outflow_demand[t_idx, :]
+                expected = self._expected_throughput.get(t_idx, outflow_signal)
+
+                # Floor at percentage of expected throughput for ramp protection
+                base_signal = np.maximum(
+                    outflow_signal, expected * throughput_floor_pct
+                )
 
                 if floor_gating_enabled:
                     # Anti-windup: floor engages proportionally to inventory deficit
@@ -1006,9 +1016,7 @@ class MinMaxReplenisher:
                         1.0,
                     )
                     floor_signal = expected * floor_weight
-                    base_signal = np.maximum(capped_inflow, floor_signal)
-                else:
-                    base_signal = np.maximum(capped_inflow, expected)
+                    base_signal = np.maximum(base_signal, floor_signal)
             else:
                 base_signal = np.maximum(inflow_demand[t_idx, :], pos_demand[t_idx, :]) # type: ignore
 
@@ -1153,69 +1161,73 @@ class MinMaxReplenisher:
             return
 
         dc_target_indices = []
-        echelon_rows = []
 
         for i, t_idx in enumerate(target_indices):
             if t_idx in self.dc_idx_to_echelon_row:
                 dc_target_indices.append(i)
-                echelon_rows.append(self.dc_idx_to_echelon_row[t_idx])
 
         if not dc_target_indices:
             return
 
         dc_indices = np.array(dc_target_indices)
-        row_indices = np.array(echelon_rows)
         target_idx_arr = np.array(target_indices)
-
-        # Echelon Demand
-        echelon_demand_all = self.echelon_matrix @ self.smoothed_demand
-        current_e_demand = echelon_demand_all[row_indices]
-
-        # True Echelon IP = DC + all downstream inventory + in-transit
-        # BUG FIX (v0.45.0): Was using DC-only local_ip, causing DCs to
-        # always see a huge gap vs echelon targets → +290-360% DC buildup.
-        full_ip = self.state.actual_inventory + self.state.get_in_transit_by_target()
-        echelon_ip_all = self.echelon_matrix @ full_ip  # [n_dcs, n_products]
-        echelon_ip = echelon_ip_all[row_indices]
-
-        # Targets
-        dc_target_days = self.target_days_vec[target_idx_arr[dc_indices]]
 
         params = (
             self.config.get("simulation_parameters", {})
             .get("agents", {})
             .get("replenishment", {})
         )
-        echelon_safety_multiplier = float(params.get("echelon_safety_multiplier", 1.3))
 
-        echelon_target = current_e_demand * dc_target_days * echelon_safety_multiplier
+        # v0.52.0: Throughput-based DC ordering replaces echelon-demand ordering.
+        # Root cause of +467% DC drift: DCs ordered based on echelon demand
+        # (DC + 100 stores), but stores manage their own inventory independently.
+        # DC ends up holding whatever stores don't pull → persistent accumulation.
+        #
+        # Fix: DC orders = outflow (what it ships to stores) + local buffer correction.
+        # Matches real FMCG practice (Walmart DC orders ≈ throughput ± buffer).
+        dc_actual_indices = target_idx_arr[dc_indices]
 
-        # v0.48.0: Rate-based DC ordering replaces binary (s,S) trigger.
-        # Instead of "echelon_ip < echelon_rop → order up to target",
-        # calculate a smooth daily order = demand + inventory correction.
-        # This eliminates the feast-famine oscillation from binary triggers.
-        correction_days = 7.0  # Smooth correction over 7 days
-        inv_error = echelon_target - echelon_ip  # positive = need more
-        daily_correction = inv_error / correction_days
-        # v0.50.0 Fix 3: Cap correction to percentage of demand.
-        # Without cap, depleted echelon → correction = 3-10x demand → runaway.
-        cap_pct = float(params.get("echelon_correction_cap_pct", 0.5))
-        max_correction = current_e_demand * cap_pct
-        daily_correction = np.clip(daily_correction, -max_correction, max_correction)
-        echelon_order_rate = current_e_demand + daily_correction
-        echelon_order_rate = np.maximum(echelon_order_rate, 0.0)
+        # 1. Get outflow-based demand signal (rolling 5-day shipment average)
+        dc_outflow = self.get_outflow_demand()[dc_actual_indices, :]
 
-        # Order when the rate-based qty is meaningful (>5% of demand)
-        rate_threshold = current_e_demand * 0.05
-        needs_echelon_order = echelon_order_rate > rate_threshold
+        # Floor at expected throughput for demand ramp protection
+        throughput_floor_pct = float(params.get("throughput_floor_pct", 0.7))
+        for i, dc_idx in enumerate(dc_actual_indices):
+            expected = self._expected_throughput.get(int(dc_idx))
+            if expected is not None:
+                dc_outflow[i, :] = np.maximum(
+                    dc_outflow[i, :], expected * throughput_floor_pct
+                )
+
+        # 2. Local buffer target based on outflow (not echelon demand)
+        dc_buffer_days = float(params.get("dc_buffer_days", 10.0))
+        dc_local_target = dc_outflow * dc_buffer_days
+
+        # 3. Local inventory position (DC only, NOT echelon)
+        dc_local_inv = self.state.actual_inventory[dc_actual_indices, :]
+        dc_in_transit = self.state.get_in_transit_by_target()[dc_actual_indices, :]
+        dc_local_ip = dc_local_inv + dc_in_transit
+
+        # 4. Smooth correction toward local target
+        dc_correction_days = float(params.get("dc_correction_days", 7.0))
+        dc_correction_cap_pct = float(params.get("dc_correction_cap_pct", 0.5))
+        local_correction = (dc_local_target - dc_local_ip) / dc_correction_days
+        max_correction = dc_outflow * dc_correction_cap_pct
+        local_correction = np.clip(local_correction, -max_correction, max_correction)
+
+        # 5. DC order rate = outflow + correction
+        dc_order_rate = np.maximum(dc_outflow + local_correction, 0.0)
+
+        # Order when the rate-based qty is meaningful (>5% of outflow)
+        rate_threshold = dc_outflow * 0.05
+        needs_echelon_order = dc_order_rate > rate_threshold
 
         # Use rate-based qty instead of gap-to-target
-        echelon_qty = echelon_order_rate
+        echelon_qty = dc_order_rate
 
         # v0.47.0 Fix 1: DC-Level DOS Cap — suppress ordering when local DC
         # inventory already exceeds ABC-differentiated threshold. This prevents
-        # DCs from accumulating inventory when echelon logic sees a gap but
-        # the DC itself is already over-stocked.
+        # DCs from accumulating inventory beyond safety valve.
         dc_dos_cap_a = float(params.get("dc_dos_cap_a", 15.0))
         dc_dos_cap_b = float(params.get("dc_dos_cap_b", 20.0))
         dc_dos_cap_c = float(params.get("dc_dos_cap_c", 25.0))
@@ -1228,13 +1240,10 @@ class MinMaxReplenisher:
             (self.z_scores_vec >= self.z_score_B) & (self.z_scores_vec < self.z_score_A)
         ] = dc_dos_cap_b
 
-        # Calculate LOCAL DC DOS (not echelon) per product
-        dc_actual_indices = target_idx_arr[dc_indices]
-        dc_local_inv = self.state.actual_inventory[dc_actual_indices, :]
-        # Use smoothed demand at DC level for DOS calculation
-        # smoothed_demand is set before echelon logic runs
-        assert self.smoothed_demand is not None
-        dc_local_demand = np.maximum(self.smoothed_demand[dc_actual_indices, :], 0.1)
+        # Calculate LOCAL DC DOS using outflow demand (consistent with
+        # throughput-based ordering). dc_local_inv and dc_actual_indices
+        # already computed above.
+        dc_local_demand = np.maximum(dc_outflow, 0.1)
         dc_local_dos = dc_local_inv / dc_local_demand
 
         # Suppress order for products where local DC DOS > cap
