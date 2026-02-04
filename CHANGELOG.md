@@ -32,23 +32,45 @@ Customer DC inventory grew +467% over 365 days due to a structural ordering-vs-s
 - Consistent with throughput-based ordering — both use the same signal
 - Removed `inflow_cap_multiplier` (no longer needed; replaced by `throughput_floor_pct`)
 
+#### Plant Push Gating with RDC Redirect (`orchestrator.py`)
+
+**Second root cause:** `_create_plant_shipments()` distributed ALL production output to deployment targets (RDCs + plant-direct DCs) unconditionally. Plant-direct DCs received 573M via push vs only 12M via replenishment orders, completely bypassing ordering/DOS cap systems.
+
+**Fix:** Soft taper for plant-direct DC push based on Days of Supply (DOS):
+- Full push below `plant_push_floor_dos` (default 20)
+- Linear taper to zero at `plant_push_cap_dos` (default 60)
+- **Critical: Gated excess redirected to RDCs** (not left at plants)
+  - Without redirect: plant inventory backs up → MRP cuts production → system starves
+  - With redirect: plants ship everything, RDCs absorb excess, distribute via `_push_excess_rdc_inventory()` with DOS caps
+
+New helper: `_precompute_plant_direct_dc_demand()` identifies plant-direct DCs and computes per-product demand for DOS calculation.
+
 #### Config Changes (`simulation_config.json`)
 
-- Added: `dc_buffer_days: 10.0` — local buffer target in days of outflow
+- Added: `dc_buffer_days: 7.0` — local buffer target in days of outflow (tuned from 10 to 7)
 - Added: `dc_correction_days: 7.0` — smoothing period for inventory correction
 - Added: `dc_correction_cap_pct: 0.5` — max correction as fraction of outflow
 - Added: `throughput_floor_pct: 0.7` — outflow floor for demand ramp protection
-- Lowered: `push_receive_dos_cap`: 15 → 12 (aligns with dc_buffer_days=10)
+- Added: `plant_push_floor_dos: 20.0` — below this DOS, plant pushes full qty to plant-direct DCs
+- Added: `plant_push_cap_dos: 60.0` — above this DOS, plant push fully gated (redirected to RDCs)
+- Lowered: `push_receive_dos_cap`: 15 → 12 (aligns with dc_buffer_days + margin)
 - Removed: `echelon_safety_multiplier`, `echelon_correction_cap_pct`, `inflow_cap_multiplier` (obsolete)
 
-#### 50-Day Sanity Check Results
+#### 365-Day Validation Results (pre-tuning, warm-start checkpoint)
 
-| Metric | v0.51.0 | v0.52.0 50d |
-|--------|---------|-------------|
-| Fill Rate | 97.2% | 97.2% |
-| A-Item Fill | 91.4% (365d) | 98.0% (50d) |
-| Inventory Turns | 5.67x | 6.11x |
-| InvMean Trend | Rising | Declining (526→250) |
+| Metric | v0.51.0 | v0.52.0 | Target | Status |
+|--------|---------|---------|--------|--------|
+| Fill Rate | 91.4% | 97.37% | >90% | PASS |
+| A-Item Fill | 91.4% | 97.3% | >90% | PASS |
+| SLOB | 18.6% | 4.7% | <20% | PASS |
+| Turns | 5.67x | 5.62x | 6-8x | CLOSE |
+| Bullwhip | 1.55x | 1.11x | 1.0-2.5x | PASS |
+| Total System Growth | — | +37.5% | <+50% | PASS |
+| RETAILER_DC Growth | +876% | +90.4% | <+50% | IMPROVED |
+| CLUB_DC Growth | +368% | +37.4% | <+50% | PASS |
+| MFG_RDC Growth | -33% | +137.4% | Stable | DRIFT |
+
+**Note:** Tuned parameters (`dc_buffer_days` 10→7, `plant_push_floor_dos` 40→20, `plant_push_cap_dos` 120→60) applied to reduce RETAILER_DC and RDC drift. Re-run needed to validate tuned values.
 
 ## [0.51.0] - 2026-02-03
 

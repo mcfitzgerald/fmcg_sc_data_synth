@@ -197,7 +197,6 @@ class MinMaxReplenisher:
         self.echelon_matrix: np.ndarray | None = None
         self.dc_idx_to_echelon_row: dict[int, int] = {}
         self._build_echelon_matrix()
-
         # Vectorized Policy Parameters (N_Nodes, 1)
         self._init_policy_vectors()
 
@@ -976,26 +975,16 @@ class MinMaxReplenisher:
             .get("floor_gating_enabled", True)
         )
 
-        # v0.52.0: Throughput floor for DCs (same as echelon logic)
-        throughput_floor_pct = float(
-            self.config.get("simulation_parameters", {})
-            .get("agents", {})
-            .get("replenishment", {})
-            .get("throughput_floor_pct", 0.7)
-        )
-
         for i, t_idx in enumerate(target_indices):
             if t_idx in self._customer_dc_indices:
                 # v0.52.0: Use outflow (shipments to stores) as DC demand signal.
                 # Previously used inflow (orders received), which is the echelon
                 # demand signal and caused ordering-vs-shipping asymmetry.
+                # No hard throughput floor here — echelon logic handles ordering.
+                # Anti-windup gating provides conditional protection only.
                 outflow_signal = outflow_demand[t_idx, :]
                 expected = self._expected_throughput.get(t_idx, outflow_signal)
-
-                # Floor at percentage of expected throughput for ramp protection
-                base_signal = np.maximum(
-                    outflow_signal, expected * throughput_floor_pct
-                )
+                base_signal = outflow_signal.copy()
 
                 if floor_gating_enabled:
                     # Anti-windup: floor engages proportionally to inventory deficit
@@ -1188,23 +1177,56 @@ class MinMaxReplenisher:
         dc_actual_indices = target_idx_arr[dc_indices]
 
         # 1. Get outflow-based demand signal (rolling 5-day shipment average)
-        dc_outflow = self.get_outflow_demand()[dc_actual_indices, :]
+        dc_actual_outflow = self.get_outflow_demand()[dc_actual_indices, :].copy()
 
-        # Floor at expected throughput for demand ramp protection
+        # Apply inventory-gated throughput floor (anti-windup pattern).
+        # Floor engages when DC inventory is LOW (cold start / death spiral).
+        # Floor disengages when inventory >= target (allows drawdown).
+        # Without gating, the floor causes persistent over-ordering during
+        # seasonal troughs when actual outflow < expected.
         throughput_floor_pct = float(params.get("throughput_floor_pct", 0.7))
+        dc_buffer_days = float(params.get("dc_buffer_days", 7.0))
+        dc_local_inv = self.state.actual_inventory[dc_actual_indices, :]
+
+        dc_outflow = dc_actual_outflow.copy()
         for i, dc_idx in enumerate(dc_actual_indices):
             expected = self._expected_throughput.get(int(dc_idx))
             if expected is not None:
-                dc_outflow[i, :] = np.maximum(
-                    dc_outflow[i, :], expected * throughput_floor_pct
+                # Gating: floor_weight = clip(
+                #   (target_dos - local_dos) / target_dos, 0, 1)
+                # DOS=0 → weight=1.0; DOS=target → weight=0.0
+                local_demand = np.maximum(expected, 0.1)
+                local_dos = dc_local_inv[i, :] / local_demand
+                floor_weight = np.clip(
+                    (dc_buffer_days - local_dos) / np.maximum(dc_buffer_days, 1.0),
+                    0.0,
+                    1.0,
+                )
+                floor = expected * throughput_floor_pct * floor_weight
+                dc_outflow[i, :] = np.maximum(dc_actual_outflow[i, :], floor)
+
+        # 2. Local buffer target based on ACTUAL outflow
+        dc_local_target = dc_actual_outflow * dc_buffer_days
+
+        # Floor target at gated throughput level for cold-start protection
+        for i, dc_idx in enumerate(dc_actual_indices):
+            expected = self._expected_throughput.get(int(dc_idx))
+            if expected is not None:
+                local_demand = np.maximum(expected, 0.1)
+                local_dos = dc_local_inv[i, :] / local_demand
+                floor_weight = np.clip(
+                    (dc_buffer_days - local_dos) / np.maximum(dc_buffer_days, 1.0),
+                    0.0,
+                    1.0,
+                )
+                min_target = (
+                    expected * throughput_floor_pct * floor_weight * dc_buffer_days
+                )
+                dc_local_target[i, :] = np.maximum(
+                    dc_local_target[i, :], min_target
                 )
 
-        # 2. Local buffer target based on outflow (not echelon demand)
-        dc_buffer_days = float(params.get("dc_buffer_days", 10.0))
-        dc_local_target = dc_outflow * dc_buffer_days
-
         # 3. Local inventory position (DC only, NOT echelon)
-        dc_local_inv = self.state.actual_inventory[dc_actual_indices, :]
         dc_in_transit = self.state.get_in_transit_by_target()[dc_actual_indices, :]
         dc_local_ip = dc_local_inv + dc_in_transit
 
@@ -1240,10 +1262,10 @@ class MinMaxReplenisher:
             (self.z_scores_vec >= self.z_score_B) & (self.z_scores_vec < self.z_score_A)
         ] = dc_dos_cap_b
 
-        # Calculate LOCAL DC DOS using outflow demand (consistent with
-        # throughput-based ordering). dc_local_inv and dc_actual_indices
-        # already computed above.
-        dc_local_demand = np.maximum(dc_outflow, 0.1)
+        # Calculate LOCAL DC DOS using ACTUAL outflow (NOT floored).
+        # Using floored outflow deflates DOS, preventing the cap from firing
+        # when actual outflow << expected throughput.
+        dc_local_demand = np.maximum(dc_actual_outflow, 0.1)
         dc_local_dos = dc_local_inv / dc_local_demand
 
         # Suppress order for products where local DC DOS > cap

@@ -280,6 +280,12 @@ class Orchestrator:
         # Includes both RDCs and plant-direct DCs
         self.deployment_shares = self._calculate_deployment_shares()
 
+        # v0.52.0: Identify plant-direct DCs and pre-compute their demand
+        # for inventory-gated push in _create_plant_shipments
+        self._plant_direct_dc_ids: set[str] = set()
+        self._plant_direct_dc_demand: dict[str, np.ndarray] = {}
+        self._precompute_plant_direct_dc_demand()
+
         # 9. Finalize warm-start if active
         # (restore production orders and history buffers)
         if self._warm_start_snapshot:
@@ -355,6 +361,46 @@ class Orchestrator:
             shares = {tid: even for tid in deployment_targets}
 
         return shares
+
+    def _precompute_plant_direct_dc_demand(self) -> None:
+        """Pre-compute per-product daily demand for plant-direct DCs.
+
+        v0.52.0: Used by _create_plant_shipments to gate push allocation
+        based on DC inventory position (DOS cap). Sums POS base demand
+        from all downstream stores for each plant-direct DC.
+        """
+        # Build upstream map to identify plant-direct DCs
+        upstream_map: dict[str, str] = {}
+        downstream_map: dict[str, list[str]] = {}
+        for link in self.world.links.values():
+            upstream_map[link.target_id] = link.source_id
+            downstream_map.setdefault(link.source_id, []).append(
+                link.target_id
+            )
+
+        for n_id, n in self.world.nodes.items():
+            if (
+                n.type == NodeType.DC
+                and not n_id.startswith("RDC-")
+                and upstream_map.get(n_id, "").startswith("PLANT-")
+            ):
+                self._plant_direct_dc_ids.add(n_id)
+
+        if not self._plant_direct_dc_ids:
+            return
+
+        base_demand = self.pos_engine.get_base_demand_matrix()
+
+        for dc_id in self._plant_direct_dc_ids:
+            dc_demand = np.zeros(self.state.n_products)
+            # Sum POS demand from all downstream stores
+            for child_id in downstream_map.get(dc_id, []):
+                child_node = self.world.nodes.get(child_id)
+                if child_node and child_node.type == NodeType.STORE:
+                    store_idx = self.state.node_id_to_idx.get(child_id)
+                    if store_idx is not None:
+                        dc_demand += base_demand[store_idx, :]
+            self._plant_direct_dc_demand[dc_id] = dc_demand
 
     # =========================================================================
     # Warm-Start Snapshot Methods (v0.33.0)
@@ -1993,10 +2039,12 @@ class Orchestrator:
     def _create_plant_shipments(
         self, batches: list[Batch], current_day: int
     ) -> list[Shipment]:
-        """
-        Create shipments from Plants to RDCs for completed production batches.
+        """Create shipments from Plants to deployment targets.
 
-        Distributes produced goods evenly across RDCs (simplified logic).
+        Distributes produced goods to RDCs (unconditionally) and plant-direct
+        DCs (inventory-gated). v0.52.0: Plant-direct DCs only receive push
+        up to a DOS-based soft taper. Gated excess is redirected to RDCs
+        (not left at plants) to preserve production throughput.
         """
         shipments: list[Shipment] = []
 
@@ -2010,20 +2058,74 @@ class Orchestrator:
         if not self.deployment_shares:
             return shipments
 
+        # v0.52.0: Soft taper for plant-direct DC push
+        sim_params = self.config.get("simulation_parameters", {})
+        replen_params = sim_params.get("agents", {}).get("replenishment", {})
+        push_floor_dos = float(
+            replen_params.get("plant_push_floor_dos", 20.0)
+        )
+        push_cap_dos = float(
+            replen_params.get("plant_push_cap_dos", 60.0)
+        )
+        taper_range = max(push_cap_dos - push_floor_dos, 1.0)
+
+        # Cache in-transit tensor
+        in_transit = self.state.get_in_transit_by_target()
+
+        # Pre-compute RDC targets for excess redistribution
+        rdc_shares = {
+            k: v
+            for k, v in self.deployment_shares.items()
+            if k.startswith("RDC-")
+        }
+        total_rdc_share = sum(rdc_shares.values())
+
         shipment_counter = 0
 
         for batch in batches:
             if batch.status.value in {"hold", "rejected"}:
-                # Don't ship held/rejected batches
                 continue
 
-            # Distribute batch quantity based on demand shares
-            # v0.45.0: Demand-proportional routing to RDCs + plant-direct DCs
+            prod_idx = self.state.product_id_to_idx.get(batch.product_id)
+
+            # Track gated excess per batch for RDC redistribution
+            excess_for_rdcs = 0.0
+
             for dc_id, share in self.deployment_shares.items():
                 if share <= 0:
                     continue
 
                 qty_for_dc = batch.quantity_cases * share
+
+                # v0.52.0: Soft taper push for plant-direct DCs
+                # Full push below floor_dos, linear taper to zero at cap_dos
+                # Gated excess redirected to RDCs (not left at plant)
+                if (
+                    dc_id in self._plant_direct_dc_ids
+                    and prod_idx is not None
+                ):
+                    dc_demand = self._plant_direct_dc_demand.get(dc_id)
+                    dc_idx = self.state.node_id_to_idx.get(dc_id)
+                    if dc_demand is not None and dc_idx is not None:
+                        daily_d = max(float(dc_demand[prod_idx]), 0.01)
+                        on_hand = self.state.actual_inventory[
+                            dc_idx, prod_idx
+                        ]
+                        in_transit_qty = float(in_transit[dc_idx, prod_idx])
+                        current_ip = on_hand + in_transit_qty
+                        dos = current_ip / daily_d
+
+                        if dos >= push_cap_dos:
+                            excess_for_rdcs += qty_for_dc
+                            qty_for_dc = 0.0
+                        elif dos > push_floor_dos:
+                            fraction = (push_cap_dos - dos) / taper_range
+                            original = qty_for_dc
+                            qty_for_dc = original * fraction
+                            excess_for_rdcs += original - qty_for_dc
+
+                if qty_for_dc < 0.01:
+                    continue
 
                 # Find the link from plant to deployment target
                 link = self._find_link(batch.plant_id, dc_id)
@@ -2031,7 +2133,10 @@ class Orchestrator:
 
                 shipment_counter += 1
                 shipment = Shipment(
-                    id=f"SHIP-PLANT-{current_day:03d}-{shipment_counter:06d}",
+                    id=(
+                        f"SHIP-PLANT-{current_day:03d}"
+                        f"-{shipment_counter:06d}"
+                    ),
                     source_id=batch.plant_id,
                     target_id=dc_id,
                     creation_day=current_day,
@@ -2040,7 +2145,6 @@ class Orchestrator:
                     status=ShipmentStatus.IN_TRANSIT,
                 )
 
-                # Calculate shipment weight/volume from product attributes
                 product = self.world.products.get(batch.product_id)
                 if product:
                     shipment.total_weight_kg = product.weight_kg * qty_for_dc
@@ -2052,6 +2156,48 @@ class Orchestrator:
                 )
 
                 shipments.append(shipment)
+
+            # Redirect gated excess to RDCs proportionally
+            if excess_for_rdcs > 0.01 and total_rdc_share > 0:
+                for rdc_id, rdc_share in rdc_shares.items():
+                    rdc_qty = excess_for_rdcs * (rdc_share / total_rdc_share)
+                    if rdc_qty < 0.01:
+                        continue
+
+                    link = self._find_link(batch.plant_id, rdc_id)
+                    lead_time = (
+                        link.lead_time_days if link else default_lead_time
+                    )
+
+                    shipment_counter += 1
+                    shipment = Shipment(
+                        id=(
+                            f"SHIP-PLANT-{current_day:03d}"
+                            f"-{shipment_counter:06d}"
+                        ),
+                        source_id=batch.plant_id,
+                        target_id=rdc_id,
+                        creation_day=current_day,
+                        arrival_day=current_day + int(lead_time),
+                        lines=[
+                            OrderLine(batch.product_id, rdc_qty)
+                        ],
+                        status=ShipmentStatus.IN_TRANSIT,
+                    )
+
+                    product = self.world.products.get(batch.product_id)
+                    if product:
+                        shipment.total_weight_kg = (
+                            product.weight_kg * rdc_qty
+                        )
+                        shipment.total_volume_m3 = (
+                            product.volume_m3 * rdc_qty
+                        )
+
+                    self.state.update_inventory(
+                        batch.plant_id, batch.product_id, -rdc_qty
+                    )
+                    shipments.append(shipment)
 
         return shipments
 
