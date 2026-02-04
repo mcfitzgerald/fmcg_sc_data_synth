@@ -56,21 +56,21 @@ New helper: `_precompute_plant_direct_dc_demand()` identifies plant-direct DCs a
 - Lowered: `push_receive_dos_cap`: 15 → 12 (aligns with dc_buffer_days + margin)
 - Removed: `echelon_safety_multiplier`, `echelon_correction_cap_pct`, `inflow_cap_multiplier` (obsolete)
 
-#### 365-Day Validation Results (pre-tuning, warm-start checkpoint)
+#### 365-Day Validation Results
 
 | Metric | v0.51.0 | v0.52.0 | Target | Status |
 |--------|---------|---------|--------|--------|
-| Fill Rate | 91.4% | 97.37% | >90% | PASS |
-| A-Item Fill | 91.4% | 97.3% | >90% | PASS |
-| SLOB | 18.6% | 4.7% | <20% | PASS |
-| Turns | 5.67x | 5.62x | 6-8x | CLOSE |
-| Bullwhip | 1.55x | 1.11x | 1.0-2.5x | PASS |
-| Total System Growth | — | +37.5% | <+50% | PASS |
-| RETAILER_DC Growth | +876% | +90.4% | <+50% | IMPROVED |
-| CLUB_DC Growth | +368% | +37.4% | <+50% | PASS |
-| MFG_RDC Growth | -33% | +137.4% | Stable | DRIFT |
+| Fill Rate | 91.4% | 97.61% | >90% | PASS |
+| A-Item Fill | 91.4% | 97.5% | >90% | PASS |
+| SLOB | 18.6% | 4.2% | <20% | PASS |
+| Turns | 5.67x | 6.25x | 6-8x | PASS |
+| Bullwhip | 1.55x | 1.12x | 1.0-2.5x | PASS |
+| Total System Growth | — | +10.0% | <+50% | PASS |
+| RETAILER_DC Growth | +876% | +0.7% | <+50% | PASS |
+| CLUB_DC Growth | +368% | -19.4% | <+50% | PASS |
+| MFG_RDC Growth | -33% | +92.4% | Stable | DRIFT |
 
-**Note:** Tuned parameters (`dc_buffer_days` 10→7, `plant_push_floor_dos` 40→20, `plant_push_cap_dos` 120→60) applied to reduce RETAILER_DC and RDC drift. Re-run needed to validate tuned values.
+**Known issue:** MFG_RDC growth (+92.4%) reflects system-wide overproduction accumulating at the buffer echelon. RDCs absorb redirected excess from plant push gating by design. Root cause is MRP-level production planning (out of scope for v0.52.0).
 
 ## [0.51.0] - 2026-02-03
 
