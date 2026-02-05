@@ -774,6 +774,22 @@ class Orchestrator:
 
         return np.zeros(self.state.n_products)
 
+    def _get_avg_upstream_lead_time(self, node_id: str) -> float:
+        """Return average lead time of all inbound links to a node.
+
+        v0.53.0: Used to adjust priming so on-hand + pipeline doesn't
+        double-stock RDCs on day 1.
+        """
+        total_lt = 0.0
+        count = 0
+        for link in self.world.links.values():
+            if link.target_id == node_id:
+                total_lt += link.lead_time_days
+                count += 1
+        if count == 0:
+            return 0.0
+        return total_lt / count
+
     def _prime_pipeline(self) -> None:
         """
         Create synthetic in-transit shipments on every link.
@@ -1098,10 +1114,18 @@ class Orchestrator:
                             )
                             for p_idx in range(self.state.n_products)
                         ])
+                        # v0.53.0: Subtract expected pipeline fill from on-hand
+                        # to prevent double-stocking (on-hand + in-transit).
+                        avg_upstream_lt = self._get_avg_upstream_lead_time(
+                            node_id
+                        )
+                        pipeline_adjusted_days = np.maximum(
+                            rdc_days_vec - avg_upstream_lt, 2.0
+                        )
                         # v0.28.0: Apply seasonal adjustment
                         rdc_sku_levels = (
                             rdc_downstream_demand
-                            * rdc_days_vec
+                            * pipeline_adjusted_days
                             * day_1_seasonal
                         )
                         self.state.perceived_inventory[node_idx, :] = rdc_sku_levels

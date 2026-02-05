@@ -77,6 +77,11 @@ class DRPPlanner:
             mrp_thresholds.get("production_floor_pct", 0.5)
         )
 
+        # v0.53.0: Configurable replenish target multiplier (was hardcoded 2.0)
+        self.replenish_multiplier = float(
+            mrp_thresholds.get("drp_replenish_multiplier", 2.0)
+        )
+
         # Collect node indices
         self._rdc_ids: list[str] = []
         self._plant_ids: list[str] = []
@@ -203,9 +208,9 @@ class DRPPlanner:
             daily_forecast * self.planning_horizon
         )
 
-        # 6. Net requirement: bring projected inventory up to 2x safety stock
-        # (safety stock acts as both buffer and replenishment target)
-        replenish_target = safety_stock * 2.0
+        # 6. Net requirement: bring projected inventory up to target
+        # v0.53.0: Configurable multiplier (was hardcoded 2.0)
+        replenish_target = safety_stock * self.replenish_multiplier
         net_req = np.maximum(0.0, replenish_target - projected_inv)
 
         # 7. Spread production over lead time (level-load)

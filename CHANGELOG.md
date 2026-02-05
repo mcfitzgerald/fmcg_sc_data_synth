@@ -5,6 +5,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.53.0] - 2026-02-05
+
+### Fix MFG_RDC Drift (+92.4%) — Inventory-Conditional MRP Floor
+
+Production exceeded demand by 8.8% systemically over 365 days, causing MFG_RDC inventory to grow +92.4%. The production/demand ratio was 1.13 in Q1, converging only to 1.01 in Q4 — a structural overproduction problem, not just a priming artifact.
+
+**Root cause:** MRP's seasonal demand floor at 85% of expected (`seasonal_floor_min_pct: 0.85`) was unconditional — it fired every day, every product, regardless of inventory state. This prevented production from suppressing when the system was overstocked.
+
+#### Inventory-Conditional MRP Demand Floor (`mrp.py`)
+
+- Gated the seasonal floor on inventory position relative to target (anti-windup pattern)
+- `floor_weight = clip(1.0 - IP/target, 0, 1)` — linear ramp, not binary
+- IP=0 → full floor (death spiral protection); IP=target → no floor (production can suppress)
+- New config: `mrp_floor_gating_enabled: true`
+
+#### Tightened MRP DOS Caps (`simulation_config.json`)
+
+- A: 25 → 18 (1.3× campaign horizon)
+- B: 35 → 20 (1.4× horizon)
+- C: 45 → 20 (1.4× horizon, was 3.2×)
+
+#### Configurable DRP Replenish Multiplier (`drp.py`)
+
+- `replenish_target = safety_stock * drp_replenish_multiplier` (was hardcoded `* 2.0`)
+- New config: `drp_replenish_multiplier: 1.5` — reduces persistent positive production signal
+
+#### Pipeline-Adjusted RDC Priming (`orchestrator.py`)
+
+- Subtract average upstream lead time from RDC on-hand seed to prevent double-stocking
+- `pipeline_adjusted_days = max(rdc_days_vec - avg_upstream_lt, 2.0)`
+- Reduced `rdc_days_supply` from 21 → 14 (with pipeline priming, 21 was excessive)
+- New helper: `_get_avg_upstream_lead_time(node_id)`
+
 ## [0.52.0] - 2026-02-04
 
 ### Fix DC Inventory Drift (+467%) — Throughput-Based DC Ordering

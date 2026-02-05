@@ -151,6 +151,13 @@ class MRPEngine:
             "seasonal_floor_min_pct", 0.85
         )
 
+        # v0.53.0: MRP floor gating — gate seasonal floor on inventory position.
+        # When inventory is at or above target, the floor disengages so production
+        # can suppress. Prevents unconditional 85% floor from causing +92% drift.
+        self._mrp_floor_gating_enabled = mrp_thresholds.get(
+            "mrp_floor_gating_enabled", False
+        )
+
         # Diagnostics storage
         self._diagnostics: MRPDiagnostics | None = None
         self._diagnostics_enabled = mrp_thresholds.get("diagnostics_enabled", True)
@@ -917,7 +924,7 @@ class MRPEngine:
 
         return production_orders
 
-    def _generate_rate_based_orders(
+    def _generate_rate_based_orders(  # noqa: PLR0915
         self,
         current_day: int,
         avg_daily_demand_vec: np.ndarray,
@@ -1037,6 +1044,12 @@ class MRPEngine:
             # Get expected demand (Zipf-adjusted, stable baseline)
             expected = float(self.expected_daily_demand[p_idx])
 
+            # v0.53.0: Move inventory_position UP (before demand_for_dos)
+            # so floor gating can use it to decide whether floor is needed.
+            inventory_position = self._calculate_inventory_position(
+                product_id, in_transit_qty, in_production_qty
+            )
+
             if pos_demand_vec is not None:
                 actual = float(pos_demand_vec[p_idx])
                 # Weighted blend: mostly expected, with actual for upward sensing
@@ -1044,13 +1057,40 @@ class MRPEngine:
                     actual * (1 - demand_floor_weight)
                     + expected * demand_floor_weight
                 )
-                # v0.46.0: Seasonal-aware floor — tracks trough downward but
-                # never below min_pct of expected (death spiral prevention).
-                # Previously: max(expected, blended) — always clipped to annual avg.
-                seasonal_floor = expected * max(
-                    seasonal_factor, self._seasonal_floor_min_pct
-                )
-                demand_for_dos = max(seasonal_floor, blended)
+
+                # v0.53.0: Inventory-conditional floor gating.
+                # The seasonal floor at 85% of expected was unconditional,
+                # preventing production from suppressing when overstocked.
+                # Now: disengage proportionally as IP approaches target.
+                if self._mrp_floor_gating_enabled:
+                    # Reference target: expected * horizon (no buffer)
+                    target_ip = expected * abc_horizon
+                    ip_ratio = inventory_position / max(target_ip, 1.0)
+                    # ip=0 → weight=1.0 (full floor)
+                    # ip=target → weight=0.0 (no floor)
+                    floor_weight = float(np.clip(1.0 - ip_ratio, 0.0, 1.0))
+
+                    if floor_weight < 1.0:
+                        # Inventory adequate — gate the floor proportionally
+                        gated_floor = (
+                            expected
+                            * max(seasonal_factor, self._seasonal_floor_min_pct)
+                            * floor_weight
+                        )
+                        demand_for_dos = max(blended, gated_floor)
+                    else:
+                        # Cold start or death spiral — full floor protection
+                        seasonal_floor = expected * max(
+                            seasonal_factor, self._seasonal_floor_min_pct
+                        )
+                        demand_for_dos = max(seasonal_floor, blended)
+                else:
+                    # v0.46.0: Seasonal-aware floor (original unconditional)
+                    seasonal_floor = expected * max(
+                        seasonal_factor, self._seasonal_floor_min_pct
+                    )
+                    demand_for_dos = max(seasonal_floor, blended)
+
                 # v0.39.4: Diagnostic logging to verify
                 # demand floor is active
                 diag_sample_size = 5
@@ -1074,11 +1114,6 @@ class MRPEngine:
             # v0.39.2 FIX: Decouple batch sizing from forecast totals
             # Simple formula: rate x horizon (no recycling of 14-day totals)
             batch_qty_base = demand_for_dos * abc_horizon
-
-            # Calculate inventory position
-            inventory_position = self._calculate_inventory_position(
-                product_id, in_transit_qty, in_production_qty
-            )
 
             # Calculate DOS
             dos_position = inventory_position / max(demand_for_dos, 0.1)
