@@ -87,9 +87,21 @@ class DRPPlanner:
         self._plant_ids: list[str] = []
         self._finished_product_ids: list[str] = []
 
+        # v0.55.0: Identify plant-direct DCs for pipeline IP expansion
+        upstream_map: dict[str, str] = {}
+        for link in world.links.values():
+            upstream_map[link.target_id] = link.source_id
+
+        self._plant_direct_dc_ids: set[str] = set()
+
         for node_id, node in world.nodes.items():
             if node.type == NodeType.DC and node_id.startswith("RDC-"):
                 self._rdc_ids.append(node_id)
+            elif (
+                node.type == NodeType.DC
+                and upstream_map.get(node_id, "").startswith("PLANT-")
+            ):
+                self._plant_direct_dc_ids.add(node_id)
             elif node.type == NodeType.PLANT:
                 self._plant_ids.append(node_id)
 
@@ -152,28 +164,25 @@ class DRPPlanner:
         else:
             daily_forecast = self.expected_daily_demand.copy()
 
-        # 2. Current inventory position (RDC + Plant on-hand)
+        # 2. Current inventory: plant FG (deployment buffer)
+        # v0.55.0: Plant FG provides MRP backpressure — products with
+        # excess FG suppress production, freeing capacity for starved items.
         current_inv = np.zeros(n_products, dtype=np.float64)
-        for rdc_id in self._rdc_ids:
-            rdc_idx = self.state.node_id_to_idx.get(rdc_id)
-            if rdc_idx is not None:
-                current_inv += np.maximum(
-                    0, self.state.actual_inventory[rdc_idx, :]
-                )
         for plant_id in self._plant_ids:
-            plant_idx = self.state.node_id_to_idx.get(plant_id)
-            if plant_idx is not None:
+            pi = self.state.node_id_to_idx.get(plant_id)
+            if pi is not None:
                 current_inv += np.maximum(
-                    0, self.state.actual_inventory[plant_idx, :]
+                    0.0, self.state.actual_inventory[pi, :]
                 )
 
-        # 3. Scheduled arrivals: in-transit to RDCs/Plants + in-production
+        # 3. Scheduled arrivals: in-transit (plant-sourced) + in-production
+        # v0.55.0: Include all plant-sourced in-transit (to RDCs and DCs).
+        # Deployment sends to both; DRP needs the full pipeline picture.
         scheduled = np.zeros(n_products, dtype=np.float64)
 
-        # In-transit to RDCs
-        rdc_id_set = set(self._rdc_ids)
+        plant_id_set = set(self._plant_ids)
         for shipment in self.state.active_shipments:
-            if shipment.target_id in rdc_id_set:
+            if shipment.source_id in plant_id_set:
                 for line in shipment.lines:
                     p_idx = self.state.product_id_to_idx.get(line.product_id)
                     if p_idx is not None:

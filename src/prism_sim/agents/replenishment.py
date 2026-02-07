@@ -1247,12 +1247,12 @@ class MinMaxReplenisher:
         # Use rate-based qty instead of gap-to-target
         echelon_qty = dc_order_rate
 
-        # v0.47.0 Fix 1: DC-Level DOS Cap — suppress ordering when local DC
-        # inventory already exceeds ABC-differentiated threshold. This prevents
-        # DCs from accumulating inventory beyond safety valve.
-        dc_dos_cap_a = float(params.get("dc_dos_cap_a", 15.0))
-        dc_dos_cap_b = float(params.get("dc_dos_cap_b", 20.0))
-        dc_dos_cap_c = float(params.get("dc_dos_cap_c", 25.0))
+        # v0.54.1: Physics-derived DC DOS caps from dc_buffer_days x ABC multiplier.
+        # With buffer=7: A~10.5, B=14, C=17.5. Self-adjusting if buffer changes.
+        dc_dos_cap_base = dc_buffer_days
+        dc_dos_cap_a = dc_dos_cap_base * float(params.get("dc_dos_cap_mult_a", 1.5))
+        dc_dos_cap_b = dc_dos_cap_base * float(params.get("dc_dos_cap_mult_b", 2.0))
+        dc_dos_cap_c = dc_dos_cap_base * float(params.get("dc_dos_cap_mult_c", 2.5))
 
         # Build per-product DOS cap vector based on ABC classification
         dc_dos_cap_vec = np.full(self.state.n_products, dc_dos_cap_c)

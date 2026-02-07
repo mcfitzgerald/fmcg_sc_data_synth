@@ -586,17 +586,29 @@ class MRPEngine:
         return float(total_capacity * rate_multiplier)
 
     def _cache_node_info(self) -> None:
-        """Cache RDC and Plant node IDs for efficient lookups.
+        """Cache RDC, Plant, and plant-direct DC node IDs.
 
         Note: Only manufacturer-controlled RDCs (RDC-*) are included,
         not customer DCs (RET-DC-*, DIST-DC-*, ECOM-*, etc.) which
         represent customer inventory, not manufacturer inventory position.
+
+        v0.55.0: Also identifies plant-direct DCs for pipeline IP expansion.
         """
+        # Build upstream map for plant-direct DC identification
+        upstream_map: dict[str, str] = {}
+        for link in self.world.links.values():
+            upstream_map[link.target_id] = link.source_id
+
+        self._plant_direct_dc_ids: set[str] = set()
+
         for node_id, node in self.world.nodes.items():
             if node.type == NodeType.DC:
                 # Only include manufacturer RDCs, not customer DCs
                 if node_id.startswith("RDC-"):
                     self._rdc_ids.append(node_id)
+                elif upstream_map.get(node_id, "").startswith("PLANT-"):
+                    # Plant-direct DC: upstream link from a plant
+                    self._plant_direct_dc_ids.add(node_id)
             elif node.type == NodeType.PLANT:
                 self._plant_ids.append(node_id)
 
@@ -611,16 +623,27 @@ class MRPEngine:
         in_transit_qty: dict[str, float],
         in_production_qty: dict[str, float],
     ) -> float:
-        """Calculate total Inventory Position for a product."""
-        on_hand_inventory = 0.0
-        for rdc_id in self._rdc_ids:
-            on_hand_inventory += self.state.get_inventory(rdc_id, product_id)
+        """Calculate pipeline Inventory Position for a product.
 
-        for plant_id in self._plant_ids:
-            on_hand_inventory += self.state.get_inventory(plant_id, product_id)
+        v0.55.0: Plant FG + transit + in-production. Plant FG provides
+        natural MRP backpressure: products with excess FG get suppressed,
+        freeing capacity for products that need it.
+
+        IP = plant_fg + in-transit + in-production.
+        """
+        # Sum FG across all plants for this product
+        plant_fg = 0.0
+        p_idx = self.state.product_id_to_idx.get(product_id)
+        if p_idx is not None:
+            for plant_id in self._plant_ids:
+                pi = self.state.node_id_to_idx.get(plant_id)
+                if pi is not None:
+                    plant_fg += max(
+                        0.0, float(self.state.actual_inventory[pi, p_idx])
+                    )
 
         return (
-            on_hand_inventory
+            plant_fg
             + in_transit_qty.get(product_id, 0.0)
             + in_production_qty.get(product_id, 0.0)
         )
@@ -759,9 +782,13 @@ class MRPEngine:
                     )
 
         # Calculate In-Transit qty per product (to RDCs)
+        # v0.55.0: Include all plant-sourced in-transit (RDCs + DCs).
+        # Deployment sends to both; MRP needs the full pipeline picture.
+        # Combined with plant FG in IP, this gives accurate backpressure.
         in_transit_qty: dict[str, float] = {}
+        plant_id_set = set(self._plant_ids)
         for shipment in self.state.active_shipments:
-            if shipment.target_id in self._rdc_ids:
+            if shipment.source_id in plant_id_set:
                 for line in shipment.lines:
                     in_transit_qty[line.product_id] = (
                         in_transit_qty.get(line.product_id, 0.0) + line.quantity
@@ -924,7 +951,7 @@ class MRPEngine:
 
         return production_orders
 
-    def _generate_rate_based_orders(  # noqa: PLR0915
+    def _generate_rate_based_orders(
         self,
         current_day: int,
         avg_daily_demand_vec: np.ndarray,
@@ -963,11 +990,6 @@ class MRPEngine:
         )
         absolute_min = float(mfg_config.get("rate_based_min_batch", 100.0))
 
-        # v0.28.0: Get seasonal factor for current day
-        # This adjusts production decisions to track actual seasonal demand,
-        # preventing overproduction during troughs that causes SLOB accumulation.
-        seasonal_factor = self._get_seasonal_factor(current_day)
-
         # v0.36.0 Demand Sensing: Cache future deterministic
         # forecast for the planning horizon.
         # This includes deterministic seasonality and promos.
@@ -1005,9 +1027,6 @@ class MRPEngine:
             if expected_demand <= 0:
                 continue
 
-            # Use sustainable demand (capacity-aware) for batch calculation
-            sustainable_demand = float(self.sustainable_daily_demand[p_idx])
-
             # v0.39.1: Get ABC class early for horizon selection
             abc = int(self.abc_class[p_idx])
             if abc == 0:  # A-item
@@ -1017,99 +1036,24 @@ class MRPEngine:
             else:  # C-item
                 abc_horizon = self.production_horizon_days_c
 
-            # v0.39.3 FIX: Use expected demand as FLOOR to prevent death spiral
-            #
-            # v0.39.2 BUG: Using today's actual POS demand
-            # directly caused a death spiral:
-            # 1. Day 1: Service = 89% → only 89% of demand is met
-            # 2. pos_demand_vec reflects what was SOLD, not what was DEMANDED
-            # 3. MRP sees lower "demand" → produces less
-            # 4. Day 2: Even lower inventory → even lower sales → spiral continues
-            #
-            # INDUSTRY REALITY (P&G, Colgate, Unilever):
-            # - Use expected demand (forecast) as floor for production planning
-            # - Actual sales only trigger UPWARD adjustments (demand sensing)
-            # - Never let actual sales pull production below expected baseline
-            #
-            # FIX: demand_for_dos = max(expected, weighted blend of actual + expected)
-            # The demand_floor_weight config controls the blend
-            # (default 0.8 expected)
-            demand_floor_weight = float(
-                self.config.get("simulation_parameters", {})
-                .get("manufacturing", {})
-                .get("mrp_thresholds", {})
-                .get("demand_floor_weight", 0.8)
-            )
-
-            # Get expected demand (Zipf-adjusted, stable baseline)
+            # v0.54.0: Use unconstrained POS demand directly.
+            # Orchestrator passes daily_demand (unconstrained POS intent),
+            # NOT actual_sales (constrained by inventory). The v0.39.3
+            # death spiral concern was about constrained sales — this is safe.
+            # Seasonal troughs produce less, peaks produce more — correct.
+            # Daily noise smoothed by 14-day campaign horizon.
             expected = float(self.expected_daily_demand[p_idx])
 
-            # v0.53.0: Move inventory_position UP (before demand_for_dos)
-            # so floor gating can use it to decide whether floor is needed.
             inventory_position = self._calculate_inventory_position(
                 product_id, in_transit_qty, in_production_qty
             )
 
             if pos_demand_vec is not None:
-                actual = float(pos_demand_vec[p_idx])
-                # Weighted blend: mostly expected, with actual for upward sensing
-                blended = (
-                    actual * (1 - demand_floor_weight)
-                    + expected * demand_floor_weight
-                )
-
-                # v0.53.0: Inventory-conditional floor gating.
-                # The seasonal floor at 85% of expected was unconditional,
-                # preventing production from suppressing when overstocked.
-                # Now: disengage proportionally as IP approaches target.
-                if self._mrp_floor_gating_enabled:
-                    # Reference target: expected * horizon (no buffer)
-                    target_ip = expected * abc_horizon
-                    ip_ratio = inventory_position / max(target_ip, 1.0)
-                    # ip=0 → weight=1.0 (full floor)
-                    # ip=target → weight=0.0 (no floor)
-                    floor_weight = float(np.clip(1.0 - ip_ratio, 0.0, 1.0))
-
-                    if floor_weight < 1.0:
-                        # Inventory adequate — gate the floor proportionally
-                        gated_floor = (
-                            expected
-                            * max(seasonal_factor, self._seasonal_floor_min_pct)
-                            * floor_weight
-                        )
-                        demand_for_dos = max(blended, gated_floor)
-                    else:
-                        # Cold start or death spiral — full floor protection
-                        seasonal_floor = expected * max(
-                            seasonal_factor, self._seasonal_floor_min_pct
-                        )
-                        demand_for_dos = max(seasonal_floor, blended)
-                else:
-                    # v0.46.0: Seasonal-aware floor (original unconditional)
-                    seasonal_floor = expected * max(
-                        seasonal_factor, self._seasonal_floor_min_pct
-                    )
-                    demand_for_dos = max(seasonal_floor, blended)
-
-                # v0.39.4: Diagnostic logging to verify
-                # demand floor is active
-                diag_sample_size = 5
-                if p_idx < diag_sample_size:
-                    mrp_logger.debug(
-                        f"Demand floor: SKU={product_id} "
-                        f"expected={expected:.0f} "
-                        f"actual={actual:.0f} "
-                        f"blended={blended:.0f} -> "
-                        f"demand_for_dos={demand_for_dos:.0f}"
-                    )
+                demand_for_dos = max(float(pos_demand_vec[p_idx]), 1.0)
             elif planning_daily_rate_vec is not None:
-                # Use planning rate but floor at expected
                 demand_for_dos = max(expected, float(planning_daily_rate_vec[p_idx]))
             else:
-                # Fallback to v0.28.0 seasonal logic
-                seasonal_expected = expected_demand * seasonal_factor
-                seasonal_sustainable = sustainable_demand * seasonal_factor
-                demand_for_dos = max(seasonal_expected, seasonal_sustainable, 1.0)
+                demand_for_dos = max(expected, 1.0)
 
             # v0.39.2 FIX: Decouple batch sizing from forecast totals
             # Simple formula: rate x horizon (no recycling of 14-day totals)

@@ -5,6 +5,174 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.55.0] - 2026-02-07
+
+### Need-Based Deployment — Replace Push with Physics
+
+v0.54.3 decoupled MRP from deployed inventory (pipeline-only IP) and added RDC receive DOS cap for backpressure. Results: Fill 96.8%, Turns 6.88x, but Prod/Demand ratio still declined to 0.807, SLOB 38.6%. Plant FG grew +156% because the receive cap blocked RDC shipments, FG piled up at plant, pipeline IP approached the MRP DOS cap, and MRP throttled production.
+
+**Root cause:** `_create_plant_shipments()` pushed ALL production to targets by fixed demand shares, then artificial caps tried to prevent overflow. The caps created bottlenecks that chain-reacted into production suppression.
+
+**Fix:** Replace fixed-share push with need-based deployment. Each target receives what it needs to reach target DOS. Unneeded FG stays at plant as a natural buffer. Plant FG in MRP pipeline IP provides natural backpressure — over-stocked products get production suppressed, freeing capacity for under-stocked products.
+
+#### 365-Day Validation Results
+
+| Metric | v0.54.3 | v0.55.0 | Target | Status |
+|--------|---------|---------|--------|--------|
+| Fill Rate | 96.8% | 99.68% | >=97% | PASS |
+| A-Items | - | 99.9% | - | PASS |
+| B-Items | - | 99.7% | - | PASS |
+| C-Items | - | 96.4% | - | PASS |
+| Turns | 6.88x | 6.97x | >=6x | PASS |
+| SLOB | 38.6% | 39.1% | <15% | FAIL (pre-existing) |
+| OEE | - | 58.1% | 55-70% | PASS |
+
+#### Changes
+
+- **Need-based deployment** (`orchestrator.py`): Rewrote `_create_plant_shipments()`. New algorithm:
+  1. `_compute_deployment_needs()`: Per-target, per-product need = max(0, target_dos x demand - current_position), where position = on_hand + in_transit
+  2. ABC-differentiated DC target DOS: dc_buffer_days x 1.5/2.0/2.5 for A/B/C (matching v0.54.1 physics-derived caps)
+  3. Fair-share allocation when total need > available FG
+  4. Deployment share ceiling (share x headroom 1.5x) prevents monopolization
+  5. `_select_sourcing_plant_for_product()`: Dynamic plant selection — picks plant with most FG for each product (all targets, not just RDCs)
+- **Removed from `_create_plant_shipments()`**: Fixed-share per-batch iteration, DC DOS cap gating, RDC receive DOS cap, DC-to-RDC redirect logic, per-batch `_make_shipment` closure
+- **Init precomputation** (`orchestrator.py`): `_precompute_deployment_targets()` builds per-target expected demand, source plant mapping, plant-direct DC IDs
+- **Pipeline IP with plant FG** (`mrp.py`): `_calculate_inventory_position()` includes plant FG + in-transit (all plant-sourced) + in-production. Plant FG provides natural MRP backpressure: over-stocked products suppress production, freeing capacity for starved items.
+- **DRP with plant FG** (`drp.py`): `plan_requirements()` current_inv includes plant FG. Scheduled arrivals include all plant-sourced in-transit (not just RDC-bound). Gives DRP accurate pipeline picture.
+- **New diagnostic counters**: `_deployment_total_need`, `_deployment_total_deployed`, `_deployment_retained_at_plant` replace redirect/skip counters
+- **Config** (`simulation_config.json`):
+  - Added: `rdc_target_dos` (15.0), `share_ceiling_headroom` (1.5)
+  - Removed: `dc_deploy_target_dos` (replaced by physics-derived ABC values), `rdc_receive_dos_cap`, `rdc_push_floor_dos`, `rdc_push_cap_dos`, `plant_push_floor_dos`, `plant_push_cap_dos`
+  - Kept: `push_allocation_enabled`, `push_threshold_dos` (40.0), `push_receive_dos_cap` (12.0) — RDC->DC overflow safety valve unchanged
+
+#### Key Design Decisions
+
+1. **Dynamic plant sourcing**: All targets source from whichever plant has FG for each product (not hard-mapped to linked plant). Plant-direct DC network links determine lead time, not sourcing exclusivity. This prevents 114 products from being unavailable at DCs whose linked plant doesn't manufacture them.
+2. **Plant FG in MRP IP**: Plant FG is the deployment buffer. Including it in IP creates a natural feedback loop: when targets don't need inventory, FG accumulates -> MRP suppresses production -> capacity reallocated to starved products. Excluding plant FG caused bimodal distribution: some products had 50+ DOS at plant (wasted capacity) while 114 products had zero FG at all locations.
+3. **ABC-differentiated DC deployment targets**: DC target DOS matches the physics-derived caps from v0.54.1 (dc_buffer_days x multiplier). B/C items get higher buffers (14/17.5d) than A-items (10.5d) to account for their burstier replenishment patterns.
+
+## [0.54.3] - 2026-02-06
+
+### Pipeline-Only IP — Decouple MRP from Deployed Inventory
+
+v0.54.2 redirected over-cap DC production to RDCs → RDC inventory grew +106% (28M → 58M). This inflated MRP's Inventory Position, causing the DOS cap guard and A-item net requirement to suppress production. Production/demand ratio declined from 0.92 to 0.83 over the year; plant FG hit 0 by day 252.
+
+**Root cause:** MRP included RDC on-hand in IP. RDC inventory is *deployed buffer* — already committed to the distribution system and being consumed by downstream DC/store orders. Including it in IP is like a factory manager throttling production because a distant warehouse has stock.
+
+#### Changes
+
+- **Pipeline-only MRP IP** (`mrp.py`): `_calculate_inventory_position()` now returns Plant FG + in-transit + in-production only. RDC on-hand removed. Steady-state IP drops from ~25-35d to ~9-18d — MRP DOS caps (30/35/25) transform from daily regulators to genuine emergency brakes.
+- **Pipeline-only DRP IP** (`drp.py`): `plan_requirements()` current_inv now sums only Plant FG on-hand. Same rationale — RDC is deployed buffer, not production pipeline.
+- **RDC receive DOS cap** (`orchestrator.py`): `_create_plant_shipments()` gates RDC shipments at `rdc_receive_dos_cap` (25d). When RDC is over cap, FG stays at plant → pipeline IP rises → MRP throttles. Natural backpressure path replaces IP-based coupling.
+  - Value chain: init target=15d, receive cap=25d, push threshold=40d (15d gap prevents oscillation)
+  - Diagnostic counters: `_rdc_skip_count`, `_rdc_skip_qty`
+- **Config** (`simulation_config.json`): Added `rdc_receive_dos_cap: 25`. MRP caps unchanged (30/35/25).
+
+## [0.54.2] - 2026-02-06
+
+### Fix Plant-Direct DC Push — Root Cause of +583% DC Drift
+
+v0.54.1's physics-derived DOS caps only controlled DC **orders** (pull). But 55% of plant production was **pushed** directly to plant-direct DCs (RET-DC, CLUB-DC) via `_create_plant_shipments()` with no DOS gating. Result: plant-direct DCs grew +977%/+500% while RDC-sourced DCs were stable (-2% to -34%).
+
+#### Changes
+
+- **DOS gating for plant-direct DC shipments** (`orchestrator.py`): `_create_plant_shipments()` now checks target DC DOS before shipping. DCs over their ABC-classified cap (10.5/14/17.5) have their share redirected to RDCs instead.
+  - RDCs receive freely (distribution hubs, designed to buffer)
+  - Redirected inventory not lost — redistributed to RDCs for normal pull flow
+  - Same physics-derived caps as replenishment system (dc_buffer_days x ABC mult)
+- **Diagnostic counters** added: `_plant_dc_redirect_count`, `_plant_dc_redirect_qty`
+
+## [0.54.1] - 2026-02-05
+
+### Derive DC Caps from Physics — Fix Customer DC +633% Drift
+
+v0.54.0 fixed production/demand ratio (~1.0) and eliminated plant inventory trapping, but Customer DC inventory grew +633% (40M → 293M), accounting for 75.3% of system inventory. Root cause: DC DOS caps (25/30/35) were 3-5× the steady-state target (~4-7d), turning safety valves into de facto accumulation targets.
+
+#### Physics Derivation
+
+Little's Law: DC on-hand ≈ outflow × (dc_buffer_days − lead_time) ≈ 4d. Max after batch spike ≈ 7d (= dc_buffer_days). DOS cap = dc_buffer_days × ABC multiplier.
+
+#### Changes
+
+- **Physics-derived DC DOS caps** (`replenishment.py`): Replace hardcoded `dc_dos_cap_a/b/c` with `dc_buffer_days × multiplier`. With buffer=7: A≈10.5, B=14, C=17.5. Self-adjusts if buffer changes.
+- **Config: multipliers replace absolutes** (`simulation_config.json`): `dc_dos_cap_mult_a/b/c` = 1.5/2.0/2.5 replace `dc_dos_cap_a/b/c` = 25/30/35
+- **Reverted over-widened parameters:**
+  - `dc_correction_cap_pct`: 0.75 → 0.5 (v0.52.0 original)
+  - `order_cap_base_demand_multiplier`: 5.0 → 3.0 (v0.50.0 original)
+  - `push_receive_dos_cap`: 25 → 12 (≈ dc_buffer_days × 1.7)
+
+## [0.54.0] - 2026-02-05
+
+### Natural Flow Restoration — Strip Bandaids, Trust Physics
+
+v0.53.1 showed production/demand ratio ~0.85 (underproducing), yet plant FG grew +121% and RDCs drained -58%. Root cause: push gating trapped inventory at plants, making plant FG and RDC inventory non-fungible while MRP treated them as fungible. 27+ accumulated control mechanisms (floors, caps, gates, tapers, blends, dampeners) created feedback loop confusion.
+
+**Design philosophy:** Remove artificial flow barriers. Let production match demand. Let inventory flow freely. Use DOS caps only as emergency safety valves.
+
+#### Part A: Remove Flow Barriers (`orchestrator.py`)
+
+- **Stripped `_create_plant_shipments()` push gating** (~90 lines removed)
+  - Removed RDC push gating (v0.53.1 soft taper, DOS checks)
+  - Removed plant-direct DC push gating (v0.52.0 soft taper)
+  - Removed excess redirect to RDCs block
+  - Method now ~40 lines: iterate batches, distribute by share, create shipments
+- **Removed helper methods:** `_precompute_rdc_downstream_demand()`, `_precompute_plant_direct_dc_demand()`
+- **Removed init attributes:** `_plant_direct_dc_ids`, `_plant_direct_dc_demand`, `_rdc_downstream_demand`
+- **Raised `_push_excess_rdc_inventory()` thresholds:** `push_threshold_dos` 30→40, `push_receive_dos_cap` 12→25
+
+#### Part B: Fix Demand Signal (`mrp.py`)
+
+- **Replaced demand signal blend+floor (~60 lines) with direct POS demand (~3 lines)**
+  - MRP receives unconstrained POS demand (not constrained sales), so death spiral concern is invalid
+  - Seasonal troughs: produce less (correct). Peaks: produce more (correct)
+  - Daily noise smoothed by 14-day campaign horizon
+- **Disabled floor gating:** `mrp_floor_gating_enabled` → false, `demand_floor_weight` → 0.0
+
+#### Part C: Widen Safety Valves (`simulation_config.json`)
+
+- **MRP DOS caps (emergency brakes, not daily regulators):**
+  - A: 22→30 (~2× horizon), B: 25→35 (~2.5× horizon), C: 20→25 (~1.8× horizon)
+- **DC ordering caps (allow free pull from RDCs):**
+  - A: 10→25, B: 14→30, C: 18→35
+- **Other caps:** `dc_correction_cap_pct` 0.5→0.75, `order_cap_base_demand_multiplier` 3.0→5.0
+
+## [0.53.1] - 2026-02-05
+
+### Fix v0.53.0 Overcorrection — Holistic Tuning (6 Layers)
+
+v0.53.0 overcorrected — production dropped to ~0.90 of demand (was 1.088), causing MFG_RDC growth of +143% (worse than v0.52.0's +92%), RETAILER_DC growth of +79%, and plant inventory drain of -51%. Fill rate held at 97.24%.
+
+#### Layer 1: Widen DOS Caps (`simulation_config.json`)
+- A: 18 → 22 (4.9d headroom over 17.08d target, one batch cycle)
+- B: 20 → 25 (10d buffer for DRP cycles)
+- C: 20 → 20 (kept — SLOB risk)
+
+#### Layer 2: Fix Floor Gating Reference Target (`mrp.py`)
+- A-item floor gating now uses buffered target: `expected * horizon * a_production_buffer` (×1.22)
+- Was using `expected * horizon` (14d) — floor disengaged prematurely at IP=14d instead of ~17d
+- B/C items unchanged (no buffer applied)
+
+#### Layer 3: Plant→RDC Push Gating with Soft Taper (`orchestrator.py`)
+- **Highest-impact change** — closes the structural missing feedback loop
+- New: DOS-based soft taper for plant→RDC push (mirrors plant-direct DC taper)
+  - Below `rdc_push_floor_dos` (15): Full push
+  - Between 15-35: Linear taper
+  - Above `rdc_push_cap_dos` (35): Zero push — excess stays at plant FG
+- **Key: Excess stays at plant** (not redirected). MRP sees high plant IP → suppresses production
+- New helper: `_precompute_rdc_downstream_demand()` caches per-RDC downstream POS demand
+- Also gates redirected plant-direct DC excess through same RDC DOS taper
+- New config: `rdc_push_floor_dos: 15.0`, `rdc_push_cap_dos: 35.0`
+
+#### Layer 4: DRP Replenish Multiplier 1.5 → 1.75 (`simulation_config.json`)
+- Midpoint between aggressive 1.5 and original 2.0
+- Restores B/C production signal without overshoot
+
+#### Layer 5: Priming 14 → 15 (`simulation_config.json`)
+- `rdc_days_supply`: 14 → 15 (1d buffer for service level during first week)
+
+#### Layer 6: Keep demand_floor_weight at 0.50 (no change)
+- Analysis confirmed 50/50 blend is correct (blended ≈ 0.93×expected in steady state)
+
 ## [0.53.0] - 2026-02-05
 
 ### Fix MFG_RDC Drift (+92.4%) — Inventory-Conditional MRP Floor
