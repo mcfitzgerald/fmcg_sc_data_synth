@@ -152,7 +152,7 @@ def analyze_service_levels(data: DataBundle, window: int = 30) -> dict[str, Any]
     if "status" in orders.columns and len(orders) > 0:
         fg_orders = orders[orders["product_id"].apply(is_finished_good)]
         total_by_product = fg_orders.groupby("product_id")["quantity"].sum()
-        fulfilled = fg_orders[fg_orders["status"] == "FULFILLED"]
+        fulfilled = fg_orders[fg_orders["status"] == "CLOSED"]
         fulfilled_by_product = fulfilled.groupby("product_id")["quantity"].sum()
 
         for pid in total_by_product.index:

@@ -15,7 +15,9 @@ import pandas as pd
 import pyarrow.parquet as pq
 
 # All demand-generating endpoint node prefixes (7-channel model)
-DEMAND_PREFIXES = ("STORE-", "CLUB-", "ECOM-FC-", "DTC-FC-")
+# Note: "CLUB-" excluded — CLUB-DC-* are intermediate warehouses, not demand
+# endpoints. Actual club stores are STORE-CLUB-* (matched by "STORE-").
+DEMAND_PREFIXES = ("STORE-", "ECOM-FC-", "DTC-FC-")
 
 # Echelon order for display
 ECHELON_ORDER = ["Plant", "RDC", "Customer DC", "Store", "Club"]

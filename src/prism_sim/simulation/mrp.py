@@ -1047,12 +1047,6 @@ class MRPEngine:
             else:  # C-item
                 abc_horizon = self.production_horizon_days_c
 
-            # v0.54.0: Use unconstrained POS demand directly.
-            # Orchestrator passes daily_demand (unconstrained POS intent),
-            # NOT actual_sales (constrained by inventory). The v0.39.3
-            # death spiral concern was about constrained sales — this is safe.
-            # Seasonal troughs produce less, peaks produce more — correct.
-            # Daily noise smoothed by 14-day campaign horizon.
             expected = float(self.expected_daily_demand[p_idx])
 
             inventory_position = self._calculate_inventory_position(
@@ -1060,10 +1054,10 @@ class MRPEngine:
             )
 
             if pos_demand_vec is not None:
-                # v0.56.0: Blend smoothed expected + raw POS to reduce noise
+                # v0.56.0: Blend expected demand + raw POS to reduce noise
+                # while retaining responsiveness to genuine demand shifts.
                 # Single-day POS spikes/drops cause false DOS cap hits and
-                # volatile batch sizing. 70/30 blend dampens noise while
-                # retaining responsiveness to genuine demand shifts.
+                # volatile batch sizing.
                 pos_today = max(float(pos_demand_vec[p_idx]), 1.0)
                 demand_for_dos = max(
                     self.demand_smoothing_weight * expected

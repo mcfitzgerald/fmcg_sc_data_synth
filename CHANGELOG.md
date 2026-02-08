@@ -5,6 +5,38 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.56.1] - 2026-02-08
+
+### Fix Diagnostic Double-Counting & Disable SLOB Dampening
+
+The v0.56.0 diagnostic showing prod/demand ratio = 0.89 was a **measurement error**, not a production issue. Production actually matches demand at ratio 1.01.
+
+#### Root Cause: CLUB-DC Double-Counting
+- `DEMAND_PREFIXES` included `"CLUB-"` which matched CLUB-DC warehouse nodes
+- CLUB-DC nodes are intermediate DCs — they receive from RDCs (~179M/yr) and ship to STORE-CLUB stores (~181M/yr)
+- The same inventory was counted as demand TWICE: once at CLUB-DC inbound, once at STORE-CLUB inbound
+- Actual club stores are `STORE-CLUB-*` (already matched by `"STORE-"` prefix)
+- **Fix**: Remove `"CLUB-"` from `DEMAND_PREFIXES` in `loader.py`
+
+#### Other Fixes
+- **Diagnostic order status**: Changed `"FULFILLED"` → `"CLOSED"` in fill rate calculation — orders use OPEN→IN_TRANSIT→CLOSED lifecycle (no "FULFILLED" status exists)
+- **SLOB dampening disabled**: Set `slob_dampening_floor = 1.0` — production should follow demand, not inventory age. Real FMCG handles aged stock via disposition, not production throttling
+
+#### Validated Results (365-day)
+| Metric | v0.56.0 (broken diagnostic) | v0.56.1 (corrected) |
+|---|---|---|
+| Prod/Demand Ratio | 0.89 (RED) | **1.01 (GREEN)** |
+| Fill Rate | 99.7% | 99.7% |
+| Turns | 6.93x | 6.93x |
+| OEE | 58.5% | 58.5% |
+| SLOB | 38.3% | 38.3% |
+| Bullwhip | 0.50x | 0.50x |
+
+#### Files Modified
+- `scripts/analysis/diagnostics/loader.py` — Remove "CLUB-" from DEMAND_PREFIXES
+- `scripts/analysis/diagnostics/operational.py` — Fix order status check
+- `src/prism_sim/config/simulation_config.json` — Disable SLOB dampening (floor=1.0)
+
 ## [0.56.0] - 2026-02-07
 
 ### Fix Production-Demand Divergence
