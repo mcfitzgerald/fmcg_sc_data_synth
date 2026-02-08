@@ -5,6 +5,44 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.56.0] - 2026-02-07
+
+### Fix Production-Demand Divergence
+
+The v0.55.1 diagnostic suite revealed the system was **diverging**: production/demand ratio = 0.88 (declining 0.91→0.84 over 365 days) while ALL echelons accumulated inventory. Root cause: four compounding MRP throttles (SLOB dampening, DOS caps, demand noise, min batch filter) created a death spiral where aged products were silently dropped from production.
+
+#### Fix 1: Graduated SLOB Dampening (highest impact)
+- **Replaced** binary 0.25× cut with linear ramp from 1.0 → 0.50 floor
+- Products just crossing the age threshold now get ~95% production (was 25%)
+- Only products at 2× threshold age hit the 50% floor
+- **Breaks the dropout cascade**: floor at 0.50 keeps batches above `absolute_min`, preventing silent production drops
+- New `_apply_slob_dampening()` helper replaces 3 identical inline blocks
+
+#### Fix 2: Smoothed Demand Signal for DOS Calculation
+- **Replaced** raw single-day POS demand with 70/30 blend (expected + POS)
+- Single-day demand spikes/drops no longer cause false DOS cap hits
+- Batch sizing is more stable (less volatile → fewer min-batch dropouts)
+
+#### Fix 3: Raised C-item DOS Cap (25 → 35)
+- C-items had only 1.8× headroom above 14-day production horizon
+- A single campaign batch could push DOS to 20+, leaving only 5 DOS before binary cutoff
+- Now matches B-items at 2.5× horizon, giving adequate buffer for campaign cycling
+
+#### Config Changes
+| Parameter | Old | New |
+|---|---|---|
+| `slob_dampening_factor` | 0.25 (binary) | **Removed** |
+| `slob_dampening_floor` | — | 0.50 |
+| `slob_dampening_ramp_multiplier` | — | 1.0 |
+| `demand_smoothing_weight` | — | 0.7 |
+| `inventory_cap_dos_c` | 25 | 35 |
+
+#### Files Modified
+| File | Changes |
+|---|---|
+| `src/prism_sim/simulation/mrp.py` | Added `_apply_slob_dampening()` method; replaced 3 inline dampening blocks; smoothed `demand_for_dos`; loaded new config params |
+| `src/prism_sim/config/simulation_config.json` | Removed `slob_dampening_factor`; added graduated dampening + smoothing params; raised C-item DOS cap |
+
 ## [0.55.1] - 2026-02-07
 
 ### Comprehensive Supply Chain Diagnostic Suite

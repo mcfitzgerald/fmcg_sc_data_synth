@@ -255,8 +255,19 @@ class MRPEngine:
         self.slob_threshold_a = float(slob_abc.get("A", 60.0))
         self.slob_threshold_b = float(slob_abc.get("B", 90.0))
         self.slob_threshold_c = float(slob_abc.get("C", 120.0))
-        self.slob_dampening_factor = mrp_thresholds.get(
-            "slob_dampening_factor", 0.5
+        # v0.56.0: Graduated SLOB dampening (replaces binary slob_dampening_factor)
+        # Floor = minimum production rate for aged products (was 0.25 binary)
+        # Ramp multiplier = ramp length as fraction of threshold
+        self.slob_dampening_floor = mrp_thresholds.get(
+            "slob_dampening_floor", 0.50
+        )
+        self.slob_ramp_multiplier = mrp_thresholds.get(
+            "slob_dampening_ramp_multiplier", 1.0
+        )
+        # v0.56.0: Demand smoothing weight for DOS calculation
+        # Blend smoothed expected demand (weight) + raw POS (1-weight)
+        self.demand_smoothing_weight = mrp_thresholds.get(
+            "demand_smoothing_weight", 0.7
         )
 
         # v0.23.0: Campaign Batching parameters
@@ -1049,7 +1060,16 @@ class MRPEngine:
             )
 
             if pos_demand_vec is not None:
-                demand_for_dos = max(float(pos_demand_vec[p_idx]), 1.0)
+                # v0.56.0: Blend smoothed expected + raw POS to reduce noise
+                # Single-day POS spikes/drops cause false DOS cap hits and
+                # volatile batch sizing. 70/30 blend dampens noise while
+                # retaining responsiveness to genuine demand shifts.
+                pos_today = max(float(pos_demand_vec[p_idx]), 1.0)
+                demand_for_dos = max(
+                    self.demand_smoothing_weight * expected
+                    + (1.0 - self.demand_smoothing_weight) * pos_today,
+                    1.0,
+                )
             elif planning_daily_rate_vec is not None:
                 demand_for_dos = max(expected, float(planning_daily_rate_vec[p_idx]))
             else:
@@ -1114,9 +1134,10 @@ class MRPEngine:
 
                 batch_qty = net_requirement
 
-                # v0.46.0: SLOB dampening — reduce batch for aged inventory
-                if product_age > slob_thresh:
-                    batch_qty *= self.slob_dampening_factor
+                # v0.56.0: Graduated SLOB dampening (replaces binary 0.25 cut)
+                batch_qty = self._apply_slob_dampening(
+                    batch_qty, product_age, slob_thresh
+                )
 
                 plant_id = self._select_plant(product_id)
                 candidates.append(
@@ -1149,9 +1170,10 @@ class MRPEngine:
                 if abc == 1:  # B-item
                     batch_qty *= b_production_buffer
 
-                # v0.46.0: SLOB dampening — reduce batch for aged inventory
-                if product_age > slob_thresh:
-                    batch_qty *= self.slob_dampening_factor
+                # v0.56.0: Graduated SLOB dampening (replaces binary 0.25 cut)
+                batch_qty = self._apply_slob_dampening(
+                    batch_qty, product_age, slob_thresh
+                )
 
                 if batch_qty < absolute_min:
                     continue
@@ -1185,9 +1207,10 @@ class MRPEngine:
                     elif dos_position > 45.0:  # noqa: PLR2004
                         batch_qty *= 0.7
 
-                # v0.46.0: SLOB dampening — reduce batch for aged inventory
-                if product_age > slob_thresh:
-                    batch_qty *= self.slob_dampening_factor
+                # v0.56.0: Graduated SLOB dampening (replaces binary 0.25 cut)
+                batch_qty = self._apply_slob_dampening(
+                    batch_qty, product_age, slob_thresh
+                )
 
                 if batch_qty < absolute_min:
                     continue
@@ -1378,6 +1401,25 @@ class MRPEngine:
                 bc_scale = remaining / bc_total
                 for po in bc_orders:
                     po.quantity_cases *= bc_scale
+
+    def _apply_slob_dampening(
+        self, batch_qty: float, product_age: float, slob_thresh: float
+    ) -> float:
+        """v0.56.0: Graduated SLOB dampening — linear ramp from 1.0 to floor.
+
+        Replaces the binary 0.25 cut that caused a death spiral:
+        products just crossing the threshold were cut 75%, falling below
+        absolute_min and being silently dropped from production.
+
+        Now: at threshold → 1.0 (no dampening), at threshold + ramp → floor.
+        The ramp length = slob_thresh * slob_ramp_multiplier.
+        """
+        if product_age <= slob_thresh:
+            return batch_qty
+        ramp_end = slob_thresh * self.slob_ramp_multiplier
+        age_ratio = min((product_age - slob_thresh) / max(ramp_end, 1.0), 1.0)
+        dampening = 1.0 - age_ratio * (1.0 - self.slob_dampening_floor)
+        return batch_qty * dampening
 
     def _update_demand_history(self, day: int, shipments: list[Shipment]) -> None:
         """Update demand history with actual shipment quantities (FIX 3.3)."""
