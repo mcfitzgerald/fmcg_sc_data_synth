@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.56.2] - 2026-02-08
+
+### Documentation Update — Sync `llm_context.md` and `CLAUDE.md` to v0.56.1
+
+Both docs were last substantively updated at v0.45.0. This brings them current with 11 versions of changes (v0.46.0–v0.56.1).
+
+#### `docs/llm_context.md`
+- **Section 3 (File Map):** Added `drp.py`, `snapshot.py`, diagnostic suite package, utility scripts (`calibrate_config.py`, `run_standard_sim.py`, `erp_schema.sql`)
+- **Section 4-5 (Setup/Checkpointing):** Updated burn-in from 90→10 days, added synthetic priming explanation
+- **Section 7 (Daily Loop):** Added steps 10 (DEPLOYMENT), 10a (PUSH EXCESS), 13 (DATA LOGGING); restructured to match actual `_step()` code
+- **Section 8 (Death Spiral):** Rewrote demand signal (direct POS), added demand smoothing, updated DOS caps (A=30/B=35/C=35), marked SLOB dampening DISABLED
+- **NEW Section 8a:** Need-based deployment (v0.55.0) — `_create_plant_shipments()`, ABC target DOS table, plant FG backpressure
+- **Section 10 (Inventory):** Added throughput-based DC ordering (v0.52.0) and anti-windup floor gating (v0.51.0)
+- **Section 11 (Production):** Updated B/C items from campaign triggers to DRP-Lite + triggers; updated trigger/horizon values
+- **Section 19 (Debugging):** Updated items 7-8 with v0.56.1 results; added item 9 (CLUB-DC double-counting trap)
+- **Section 21 (Diagrams):** Updated daily loop sequence with deployment and DRP steps
+- **Section 22 (Hardcodes):** Corrected line numbers (mrp.py ~1199, replenishment.py ~956, orchestrator.py ~1627)
+
+#### `CLAUDE.md`
+- Added `drp.py` and `snapshot.py` to directory tree
+- Updated data flow with deployment steps (7-8) and DRP note
+- Updated node count 4,500+ → ~4,200+
+- Removed stale "default 90 days" comment
+- Added Prime Directive #6: keep `docs/llm_context.md` current after code changes
+
 ## [0.56.1] - 2026-02-08
 
 ### Fix Diagnostic Double-Counting & Disable SLOB Dampening

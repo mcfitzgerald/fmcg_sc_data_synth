@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Prism Sim is a high-fidelity supply chain Digital Twin built on Discrete-Event Simulation (DES) and Supply Chain Physics. It simulates 4,500+ nodes across a North American FMCG network, enforcing mass balance, capacity constraints, and realistic behavioral quirks.
+Prism Sim is a high-fidelity supply chain Digital Twin built on Discrete-Event Simulation (DES) and Supply Chain Physics. It simulates ~4,200+ nodes across a North American FMCG network, enforcing mass balance, capacity constraints, and realistic behavioral quirks.
 
 ### Critical Documentation
 
@@ -17,6 +17,7 @@ Prism Sim is a high-fidelity supply chain Digital Twin built on Discrete-Event S
 3. **Never skip or ignore bugs** - if tests fail or something seems off, alert the user and find root cause together
 4. **Commit and push** after completing new code, bug fixes, or features
 5. **Don't reinvent the wheel** - search for robust libraries, prefer simple (but complete and correct) implementations over complex ones, don't over-engineer
+6. **Keep `docs/llm_context.md` current** - after any code change that alters behavior, config values, line numbers, daily loop steps, or architecture, update the corresponding sections in `docs/llm_context.md`
 
 ## Commands
 
@@ -24,7 +25,7 @@ Prism Sim is a high-fidelity supply chain Digital Twin built on Discrete-Event S
 # Install dependencies
 poetry install
 
-# Run simulation (default 90 days)
+# Run simulation
 poetry run python run_simulation.py
 poetry run python run_simulation.py --days 365 --output-dir data/results/custom
 poetry run python run_simulation.py --days 30 --no-logging  # Fast mode
@@ -54,7 +55,9 @@ src/prism_sim/
 │   ├── demand.py         # POSEngine - generates daily consumer sales (promo + seasonality)
 │   ├── logistics.py      # LogisticsEngine - bin-packing, shipments, transit physics
 │   ├── mrp.py            # MRPEngine - material requirements planning (vectorized)
+│   ├── drp.py            # DRPPlanner - distribution requirements planning for B/C production
 │   ├── transform.py      # TransformEngine - manufacturing physics (capacity, changeover)
+│   ├── snapshot.py       # Checkpointing - warm-start state capture and config hashing
 │   ├── quirks.py         # QuirkManager - behavioral realism (phantom inventory, bias)
 │   ├── risk_events.py    # RiskEventManager - disruption scenarios (port strikes, cyber)
 │   ├── monitor.py        # RealismMonitor, PhysicsAuditor, ResilienceTracker
@@ -69,7 +72,7 @@ src/prism_sim/
 ├── config/
 │   ├── loader.py         # Config loading utilities
 │   └── *.json            # simulation_config, world_definition, benchmark_manifest
-├── generators/           # Static world generation (4,500 nodes)
+├── generators/           # Static world generation (~4,200 nodes)
 │   ├── hierarchy.py      # ProductGenerator - SKUs, ingredients, recipes
 │   ├── network.py        # NetworkGenerator - nodes, links, topology
 │   ├── distributions.py  # Zipf, power-law distributions
@@ -80,7 +83,7 @@ src/prism_sim/
 ```
 
 **Key Data Flow (per day):**
-1. `POSEngine` generates demand → 2. `Replenisher` creates orders → 3. `AllocationAgent` allocates inventory → 4. `LogisticsEngine` builds shipments → 5. `MRPEngine` plans production → 6. `TransformEngine` executes batches → 7. `QuirkManager` injects realism
+1. `POSEngine` generates demand → 2. `Replenisher` creates orders → 3. `AllocationAgent` allocates inventory → 4. `LogisticsEngine` builds shipments → 5. `MRPEngine` plans production (+ `DRPPlanner` for B/C) → 6. `TransformEngine` executes batches → 7. `Orchestrator` deploys FG (need-based Plant→RDC/DC) → 8. `Orchestrator` pushes excess RDC→DC → 9. `QuirkManager` injects realism
 
 ## Spec-Driven Development
 
