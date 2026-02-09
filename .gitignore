@@ -54,3 +54,5 @@ seed.sql
 .specstory/
 # reference/
 data/
+data/checkpoints/
+data/snapshots/

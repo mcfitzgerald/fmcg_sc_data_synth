@@ -1,20 +1,11 @@
 """
 Prism Digital Twin Simulation Runner.
 
-Auto-Checkpoint Behavior (v0.33.0):
-    By default, the runner uses automatic checkpointing. On first run, it performs
-    a burn-in phase (default 90 days) and saves a checkpoint. Subsequent runs with
-    the same config load the checkpoint and skip burn-in.
-
-    The `--days N` flag specifies N days of steady-state data (post burn-in).
-
 Usage:
-    poetry run python run_simulation.py                    # Default 90-day data run
+    poetry run python run_simulation.py                    # Default 365-day data run
     poetry run python run_simulation.py --days 365         # Full year of data
     poetry run python run_simulation.py --streaming        # Enable streaming export
     poetry run python run_simulation.py --no-logging       # Fast mode (no export)
-    poetry run python run_simulation.py --no-checkpoint    # Force cold-start
-    poetry run python run_simulation.py --warm-start path  # Use explicit snapshot
     poetry run python run_simulation.py --profile-memory   # Enable memory profiling
 """
 
@@ -23,7 +14,6 @@ import json
 import os
 import time
 import tracemalloc
-from pathlib import Path
 from typing import Any
 
 from prism_sim.simulation.orchestrator import Orchestrator
@@ -95,7 +85,7 @@ Examples:
         "--days",
         type=int,
         default=90,
-        help="Number of simulation days (default: 90)",
+        help="Number of steady-state data days (default: 90)",
     )
     parser.add_argument(
         "--no-logging",
@@ -109,7 +99,7 @@ Examples:
         help="Directory for output artifacts",
     )
 
-    # Streaming writer parameters (Task 7.3)
+    # Streaming writer parameters
     parser.add_argument(
         "--streaming",
         action="store_true",
@@ -128,24 +118,6 @@ Examples:
         default=None,
         help="Log inventory every N days (1=daily, 7=weekly). Reduces data volume.",
     )
-
-    # Warm-start parameters (v0.33.0)
-    parser.add_argument(
-        "--warm-start",
-        type=str,
-        default=None,
-        help="Path to warm-start snapshot file (from generate_warm_start.py)",
-    )
-    parser.add_argument(
-        "--skip-hash-check",
-        action="store_true",
-        help="Skip config hash validation for warm-start (use with caution)",
-    )
-    parser.add_argument(
-        "--no-checkpoint",
-        action="store_true",
-        help="Disable automatic checkpointing (always cold-start, no checkpoint saved)",
-    )
     parser.add_argument(
         "--profile-memory",
         action="store_true",
@@ -162,14 +134,6 @@ Examples:
 
     enable_logging = not args.no_logging
 
-    # Validate warm-start file if provided
-    warm_start_path = None
-    if args.warm_start:
-        warm_start_path = Path(args.warm_start)
-        if not warm_start_path.exists():
-            print(f"ERROR: Warm-start file not found: {warm_start_path}")
-            return
-
     # Build mode description string
     mode_parts = []
     mode_parts.append(f"Days={args.days}")
@@ -178,22 +142,15 @@ Examples:
         mode_parts.append("Streaming=On")
         if args.format:
             mode_parts.append(f"Format={args.format}")
-    if warm_start_path:
-        mode_parts.append("WarmStart=On")
-    if args.no_checkpoint:
-        mode_parts.append("AutoCheckpoint=Off")
 
     print(f"Initializing Prism Digital Twin ({', '.join(mode_parts)})...")
 
     sim = Orchestrator(
         enable_logging=enable_logging,
         output_dir=args.output_dir,
-        streaming=args.streaming if args.streaming else None,  # None = use config default
+        streaming=args.streaming if args.streaming else None,
         output_format=args.format,
         inventory_sample_rate=args.inventory_sample_rate,
-        warm_start_path=str(warm_start_path) if warm_start_path else None,
-        skip_warm_start_hash_check=args.skip_hash_check,
-        auto_checkpoint=not args.no_checkpoint,
         memory_callback=log_memory if args.profile_memory else None,
     )
 

@@ -1,8 +1,5 @@
-import gzip
-import json
 import logging
 from collections.abc import Callable
-from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -53,9 +50,6 @@ class Orchestrator:
         streaming: bool | None = None,
         output_format: str | None = None,
         inventory_sample_rate: int | None = None,
-        warm_start_path: str | None = None,
-        skip_warm_start_hash_check: bool = False,
-        auto_checkpoint: bool = True,
         memory_callback: MemoryCallback = None,
     ) -> None:
         # Store memory callback for periodic snapshots
@@ -63,7 +57,6 @@ class Orchestrator:
         # 1. Initialize World
         manifest = load_manifest()
         self.config = load_simulation_config()
-        self._manifest = manifest  # Store for config hash computation
 
         # Merge static world definitions into config for Engines
         # that need them (e.g. POSEngine)
@@ -73,65 +66,13 @@ class Orchestrator:
         self.builder = WorldBuilder(manifest)
         self.world = self.builder.build()
 
-        # Load warm-start configuration
+        # Stabilization config: short warm-up period excluded from metrics
         sim_params = self.config.get("simulation_parameters", {})
         cal_config = sim_params.get("calibration", {})
-        ws_config = cal_config.get("warm_start", {})
-        default_burn_in = ws_config.get("default_burn_in_days", 0)
-
-        # Compute config hash for checkpoint naming
-        from prism_sim.simulation.snapshot import compute_config_hash
-
-        self._config_hash = compute_config_hash(self.config, manifest)
-        self._checkpoint_dir = Path("data/checkpoints")
-        self._checkpoint_path = (
-            self._checkpoint_dir / f"steady_state_{self._config_hash}.json.gz"
-        )
-
-        # Load warm-start snapshot: explicit path, auto-checkpoint, or none
-        self._warm_start_snapshot: dict[str, Any] | None = None
-        self._warm_start_path = warm_start_path
-        self._needs_burn_in = False
-
-        if warm_start_path:
-            # Explicit warm-start path provided
-            self._warm_start_snapshot = self._load_warm_start_snapshot(
-                warm_start_path, skip_warm_start_hash_check
-            )
-        elif auto_checkpoint:
-            # Auto-checkpoint: check if valid checkpoint exists
-            if self._checkpoint_path.exists():
-                try:
-                    self._warm_start_snapshot = self._load_warm_start_snapshot(
-                        str(self._checkpoint_path), skip_hash_check=False
-                    )
-                    print(f"Loaded checkpoint: {self._checkpoint_path.name}")
-                except ValueError as e:
-                    # Hash mismatch - checkpoint is stale
-                    print(f"Checkpoint stale (config changed), will regenerate: {e}")
-                    self._needs_burn_in = True
-            else:
-                # No checkpoint - need to run burn-in
-                self._needs_burn_in = True
-
-        # Set simulation start day: continues from burn-in for warm-start
-        # Also set metrics start day to exclude burn-in from Triangle Report
-        if self._warm_start_snapshot:
-            burn_in_days = self._warm_start_snapshot["metadata"]["burn_in_days"]
-            self._start_day = burn_in_days + 1
-            self._metrics_start_day = self._start_day  # No burn-in in warm-start run
-        elif self._needs_burn_in:
-            # Cold-start WITH auto-checkpoint: will run burn-in, so exclude those days
-            self._start_day = 1
-            self._metrics_start_day = default_burn_in + 1 if default_burn_in > 0 else 1
-        else:
-            # Cold-start WITHOUT auto-checkpoint (--no-checkpoint):
-            # start metrics immediately
-            self._start_day = 1
-            self._metrics_start_day = 1
-
-        # Store burn-in config for later use
-        self._default_burn_in_days = default_burn_in
+        init_config = cal_config.get("initialization", {})
+        self._stabilization_days = init_config.get("stabilization_days", 10)
+        self._start_day = 1
+        self._metrics_start_day = self._stabilization_days + 1
 
         # ... (Initializing State and Engines) ...
         # 2. Initialize State
@@ -161,11 +102,8 @@ class Orchestrator:
         )
         self.mrp_engine.drp_planner = self.drp_planner
 
-        # Initialize inventory: either from warm-start or cold-start priming
-        if self._warm_start_snapshot:
-            self._restore_inventory_from_snapshot()
-        else:
-            self._initialize_inventory()
+        # Initialize inventory with demand-proportional priming
+        self._initialize_inventory()
 
         self.replenisher = MinMaxReplenisher(
             self.world,
@@ -180,10 +118,9 @@ class Orchestrator:
         self.active_production_orders: list[ProductionOrder] = []
         self.completed_batches: list[Batch] = []
 
-        # v0.49.0: Synthetic steady-state priming (after replenisher init)
-        # Eliminates 80+ days of burn-in by injecting realistic initial conditions
-        if not self._warm_start_snapshot:
-            self._prime_synthetic_steady_state()
+        # Synthetic steady-state priming (after replenisher init)
+        # Injects realistic initial conditions: pipeline, WIP, history, age
+        self._prime_synthetic_steady_state()
 
         self.allocator = AllocationAgent(self.state, self.config)
 
@@ -287,10 +224,6 @@ class Orchestrator:
         # v0.55.0: Need-based deployment precomputation
         self._precompute_deployment_targets()
 
-        # 9. Finalize warm-start if active
-        # (restore production orders and history buffers)
-        if self._warm_start_snapshot:
-            self._finalize_warm_start_restoration()
 
     def _calculate_deployment_shares(self) -> dict[str, float]:
         """
@@ -435,284 +368,19 @@ class Orchestrator:
         }
 
     # =========================================================================
-    # Warm-Start Snapshot Methods (v0.33.0)
-    # =========================================================================
-
-    def _compute_config_hash(self) -> str:
-        """Compute hash of current config for snapshot validation."""
-        from prism_sim.simulation.snapshot import compute_config_hash
-
-        return compute_config_hash(self.config, self._manifest)
-
-    def _load_warm_start_snapshot(
-        self, path: str, skip_hash_check: bool = False
-    ) -> dict[str, Any]:
-        """
-        Load and validate a warm-start snapshot.
-
-        Args:
-            path: Path to snapshot file (JSON or gzipped JSON)
-            skip_hash_check: If True, skip config hash validation
-
-        Returns:
-            Parsed snapshot dictionary
-
-        Raises:
-            ValueError: If snapshot is invalid or config hash mismatch
-        """
-        print(f"Loading warm-start snapshot from {path}...")
-
-        # Load snapshot (handle gzip)
-        snapshot: dict[str, Any]
-        if path.endswith(".gz"):
-            with gzip.open(path, "rt", encoding="utf-8") as f:
-                snapshot = json.load(f)
-        else:
-            with open(path, encoding="utf-8") as f:
-                snapshot = json.load(f)
-
-        # Validate structure
-        if "metadata" not in snapshot or "state" not in snapshot:
-            raise ValueError("Invalid snapshot: missing metadata or state sections")
-
-        metadata = snapshot["metadata"]
-        print(f"  Snapshot from: {metadata.get('generated_at', 'unknown')}")
-        print(f"  Burn-in days: {metadata.get('burn_in_days', 'unknown')}")
-
-        # Validate config hash (unless skipped)
-        if not skip_hash_check:
-            snapshot_hash = metadata.get("config_hash", "")
-            current_hash = self._compute_config_hash()
-            if snapshot_hash != current_hash:
-                raise ValueError(
-                    f"Config hash mismatch! Snapshot: {snapshot_hash}, "
-                    f"Current: {current_hash}. "
-                    "Use --skip-hash-check to override (not recommended)."
-                )
-            print(f"  Config hash verified: {current_hash}")
-        else:
-            print("  Config hash check SKIPPED (--skip-hash-check)")
-
-        return snapshot
-
-    def _restore_inventory_from_snapshot(self) -> None:
-        """
-        Restore inventory tensors from warm-start snapshot.
-
-        This replaces _initialize_inventory() when warm-start is active.
-        """
-        if not self._warm_start_snapshot:
-            return
-
-        print("Restoring inventory from warm-start snapshot...")
-        state_data = self._warm_start_snapshot["state"]
-
-        # Restore actual inventory
-        actual_inv = state_data.get("actual_inventory", {})
-        for node_id, products in actual_inv.items():
-            node_idx = self.state.node_id_to_idx.get(node_id)
-            if node_idx is None:
-                continue
-            for prod_id, qty in products.items():
-                prod_idx = self.state.product_id_to_idx.get(prod_id)
-                if prod_idx is not None:
-                    self.state.actual_inventory[node_idx, prod_idx] = qty
-
-        # Restore perceived inventory
-        perceived_inv = state_data.get("perceived_inventory", {})
-        for node_id, products in perceived_inv.items():
-            node_idx = self.state.node_id_to_idx.get(node_id)
-            if node_idx is None:
-                continue
-            for prod_id, qty in products.items():
-                prod_idx = self.state.product_id_to_idx.get(prod_id)
-                if prod_idx is not None:
-                    self.state.perceived_inventory[node_idx, prod_idx] = qty
-
-        # Restore active shipments
-        shipments_data = state_data.get("active_shipments", [])
-        for s_data in shipments_data:
-            lines = [
-                OrderLine(line["product_id"], line["quantity"])
-                for line in s_data.get("lines", [])
-            ]
-            shipment = Shipment(
-                id=s_data["id"],
-                source_id=s_data["source_id"],
-                target_id=s_data["target_id"],
-                creation_day=s_data["creation_day"],
-                arrival_day=s_data["arrival_day"],
-                lines=lines,
-                status=ShipmentStatus(s_data.get("status", "in_transit")),
-                original_order_day=s_data.get("original_order_day"),
-                total_weight_kg=s_data.get("total_weight_kg", 0.0),
-                total_volume_m3=s_data.get("total_volume_m3", 0.0),
-            )
-            # Use batch add to update in-transit tensor correctly
-            self.state.add_shipment(shipment)
-
-        print(
-            f"  Restored {len(actual_inv)} nodes with inventory, "
-            f"{len(shipments_data)} active shipments"
-        )
-
-    def _finalize_warm_start_restoration(self) -> None:
-        """
-        Finalize warm-start by restoring production orders and history buffers.
-
-        Called after all engines are initialized.
-        """
-        if not self._warm_start_snapshot:
-            return
-
-        print("Finalizing warm-start restoration...")
-        state_data = self._warm_start_snapshot["state"]
-        derived_data = self._warm_start_snapshot.get("derived", {})
-
-        # Restore active production orders
-        po_data = state_data.get("active_production_orders", [])
-        for po in po_data:
-            production_order = ProductionOrder(
-                id=po["id"],
-                plant_id=po["plant_id"],
-                product_id=po["product_id"],
-                quantity_cases=po["quantity_cases"],
-                creation_day=po["creation_day"],
-                due_day=po.get("due_day", po["creation_day"] + 7),
-                status=ProductionOrderStatus(po.get("status", "planned")),
-                produced_quantity=po.get("produced_quantity", 0.0),
-            )
-            self.active_production_orders.append(production_order)
-
-        print(f"  Restored {len(self.active_production_orders)} production orders")
-
-        # Initialize history buffers from derived parameters
-        self._initialize_history_buffers_from_derived(derived_data)
-
-    def _initialize_history_buffers_from_derived(
-        self, derived_data: dict[str, Any]
-    ) -> None:
-        """
-        Pre-populate history buffers with derived steady-state values.
-
-        This enables safety stock calculations to work correctly from Day 1
-        without waiting for history to accumulate.
-        """
-        # Get warm-start config for noise parameters
-        sim_params = self.config.get("simulation_parameters", {})
-        cal_config = sim_params.get("calibration", {})
-        ws_config = cal_config.get("warm_start", {})
-        hist_config = ws_config.get("history_buffer_init", {})
-
-        demand_noise_cv = hist_config.get("demand_noise_cv", 0.1)
-        lt_noise_cv = hist_config.get("lead_time_noise_cv", 0.1)
-        use_derived_abc = hist_config.get("use_derived_abc", True)
-
-        # 1. Initialize replenisher demand history buffer
-        avg_demand = derived_data.get("avg_demand_by_product", {})
-        if avg_demand and hasattr(self.replenisher, "demand_history_buffer"):
-            print("  Initializing demand history buffer...")
-            # Fill buffer with average demand + small noise
-            for day_idx in range(self.replenisher.variance_lookback):
-                for prod_id, avg_val in avg_demand.items():
-                    prod_idx = self.state.product_id_to_idx.get(prod_id)
-                    if prod_idx is not None:
-                        # Add small noise to create realistic variance
-                        noise = np.random.normal(1.0, demand_noise_cv)
-                        value = avg_val * max(0.1, noise)
-                        # Distribute across nodes proportionally (simplified)
-                        for node_idx in range(self.state.n_nodes):
-                            self.replenisher.demand_history_buffer[
-                                day_idx, node_idx, prod_idx
-                            ] = value / self.state.n_nodes
-
-        # 2. Initialize replenisher lead time history (sparse storage)
-        avg_lt = derived_data.get("avg_lead_time_by_link", {})
-        if avg_lt:
-            print("  Initializing lead time history (sparse)...")
-            from collections import deque
-
-            for target_id, sources in avg_lt.items():
-                target_idx = self.state.node_id_to_idx.get(target_id)
-                if target_idx is None:
-                    continue
-                for source_id, avg_val in sources.items():
-                    source_idx = self.state.node_id_to_idx.get(source_id)
-                    if source_idx is None:
-                        continue
-                    link_key = (target_idx, source_idx)
-                    # Initialize deque with noisy samples
-                    history: deque[float] = deque(
-                        maxlen=self.replenisher.lt_history_len
-                    )
-                    for _ in range(self.replenisher.lt_history_len):
-                        noise = np.random.normal(1.0, lt_noise_cv)
-                        history.append(avg_val * max(0.5, noise))
-                    self.replenisher._lt_history[link_key] = history
-                    # Update sparse cache directly
-                    self.replenisher._lt_mu_cache_sparse[link_key] = avg_val
-                    lt_sigma = derived_data.get("lead_time_sigma_by_link", {})
-                    if target_id in lt_sigma and source_id in lt_sigma[target_id]:
-                        self.replenisher._lt_sigma_cache_sparse[link_key] = (
-                            lt_sigma[target_id][source_id]
-                        )
-                    else:
-                        self.replenisher._lt_sigma_cache_sparse[link_key] = 0.0
-
-        # 3. Initialize ABC classifications and z-scores
-        if use_derived_abc:
-            abc_classes = derived_data.get("abc_classifications", {})
-            z_scores = derived_data.get("z_scores_by_product", {})
-
-            if abc_classes:
-                print("  Initializing ABC classifications...")
-                for prod_id, abc_class in abc_classes.items():
-                    prod_idx = self.state.product_id_to_idx.get(prod_id)
-                    if prod_idx is not None:
-                        self.mrp_engine.abc_class[prod_idx] = abc_class
-
-            if z_scores:
-                for prod_id, z_val in z_scores.items():
-                    prod_idx = self.state.product_id_to_idx.get(prod_id)
-                    if prod_idx is not None:
-                        self.replenisher.z_scores_vec[prod_idx] = z_val
-
-        # 4. Initialize product volume history (for ABC updates)
-        vol_history = derived_data.get("product_volume_history", {})
-        if vol_history:
-            for prod_id, vol in vol_history.items():
-                prod_idx = self.state.product_id_to_idx.get(prod_id)
-                if prod_idx is not None:
-                    self.replenisher.product_volume_history[prod_idx] = vol
-
-        print("  History buffer initialization complete")
-
-    # =========================================================================
-    # End Warm-Start Methods
-    # =========================================================================
-
-    # =========================================================================
-    # Synthetic Steady-State Initialization (v0.49.0)
+    # Synthetic Steady-State Initialization
     # =========================================================================
 
     def _prime_synthetic_steady_state(self) -> None:
         """
         Inject synthetic steady-state conditions at day 0.
 
-        Eliminates 80+ days of burn-in by pre-filling pipeline shipments,
-        production WIP, history buffers, and inventory ages. Config-gated
-        via calibration.warm_start.synthetic_steady_state flag.
+        Pre-fills pipeline shipments, production WIP, history buffers,
+        and inventory ages. Always runs as part of the single init path.
 
         Must be called AFTER replenisher init (needs replenisher attributes)
         and AFTER _initialize_inventory() (needs on-hand inventory).
         """
-        sim_params = self.config.get("simulation_parameters", {})
-        cal_config = sim_params.get("calibration", {})
-        ws_config = cal_config.get("warm_start", {})
-
-        if not ws_config.get("synthetic_steady_state", False):
-            return
-
         print("Priming synthetic steady-state...")
 
         # Build network topology maps (reused by multiple sub-methods)
@@ -944,6 +612,14 @@ class Orchestrator:
         """
         from collections import deque
 
+        # Read noise parameters from config
+        sim_params = self.config.get("simulation_parameters", {})
+        cal_config = sim_params.get("calibration", {})
+        init_config = cal_config.get("initialization", {})
+        noise_config = init_config.get("priming_noise", {})
+        demand_cv = noise_config.get("demand_cv", 0.1)
+        lead_time_cv = noise_config.get("lead_time_cv", 0.1)
+
         base_demand = self.pos_engine.get_base_demand_matrix()
         seasonal = self._get_day1_seasonal_factor()
         rng = np.random.default_rng(42)
@@ -951,7 +627,7 @@ class Orchestrator:
         # 1. Demand history buffer: variance_lookback days of noisy demand
         for day_slot in range(self.replenisher.variance_lookback):
             noise = rng.normal(
-                1.0, 0.1, size=base_demand.shape
+                1.0, demand_cv, size=base_demand.shape
             ).clip(0.5, 2.0)
             self.replenisher.demand_history_buffer[day_slot] = (
                 base_demand * seasonal * noise
@@ -973,7 +649,7 @@ class Orchestrator:
             if t_idx is None or s_idx is None:
                 continue
             key = (t_idx, s_idx)
-            lt_noise = rng.normal(1.0, 0.08, size=lt_len).clip(0.7, 1.4)
+            lt_noise = rng.normal(1.0, lead_time_cv, size=lt_len).clip(0.7, 1.4)
             history: deque[float] = deque(
                 (float(link.lead_time_days * n) for n in lt_noise),
                 maxlen=lt_len,
@@ -981,7 +657,7 @@ class Orchestrator:
             self.replenisher._lt_history[key] = history
             self.replenisher._lt_mu_cache_sparse[key] = link.lead_time_days
             self.replenisher._lt_sigma_cache_sparse[key] = (
-                link.lead_time_days * 0.08
+                link.lead_time_days * lead_time_cv
             )
             lt_count += 1
 
@@ -1256,16 +932,17 @@ class Orchestrator:
                     mask[p_idx] = True
         return mask
 
-    def run(self, days: int = 30) -> None:
+    def run(self, days: int = 365) -> None:
         """
         Run simulation for `days` of steady-state data.
 
-        When auto_checkpoint is enabled and no checkpoint exists, automatically
-        runs burn-in phase first, saves checkpoint, then runs data collection.
+        Total simulated days = stabilization_days + days.
+        Stabilization days are excluded from metrics via _metrics_start_day.
         """
-        # v0.39.4: Warn about memory usage for long runs with buffered logging
+        total_days = self._stabilization_days + days
+
+        # Warn about memory usage for long runs with buffered logging
         buffered_logging_day_threshold = 100
-        total_days = days + (self._default_burn_in_days if self._needs_burn_in else 0)
         if (
             total_days > buffered_logging_day_threshold
             and self.writer.enable_logging
@@ -1278,55 +955,17 @@ class Orchestrator:
                 f" incrementally) or --no-logging (fastest)"
             )
 
-        if self._needs_burn_in:
-            # Phase 1: Run burn-in (no metrics recording)
-            burn_in_days = self._default_burn_in_days
-            # Removed hardcoded fallback to 90 days. Trust config.
+        print(
+            f"Starting Simulation: {self._stabilization_days}-day stabilization"
+            f" + {days}-day data collection ({total_days} total)..."
+        )
 
-            print(f"Running {burn_in_days}-day burn-in (checkpoint not found)...")
-
-            for day in range(1, burn_in_days + 1):
-                self._step(day)
-                if day % 30 == 0:
-                    print(f"  Burn-in day {day}/{burn_in_days} complete")
-
-            # Memory snapshot after burn-in
-            if self._memory_callback:
-                self._memory_callback("after_burn_in")
-
-            # Save checkpoint for future runs
-            self._save_checkpoint(burn_in_days)
-
-            # Update start day for data collection
-            self._start_day = burn_in_days + 1
-            self._metrics_start_day = self._start_day
-
-            # Mark burn-in complete
-            self._needs_burn_in = False
-
-        # Phase 2: Run data collection
-        print(f"Starting Simulation for {days} days...")
-        end_day = self._start_day + days
-
-        for day in range(self._start_day, end_day):
+        for day in range(1, total_days + 1):
             self._step(day)
-            # Memory snapshot every 10 simulation days
-            if self._memory_callback and (day - self._start_day + 1) % 10 == 0:
+            if self._memory_callback and day % 10 == 0:
                 self._memory_callback(f"day_{day}")
 
         print("Simulation Complete.")
-
-    def _save_checkpoint(self, burn_in_days: int) -> None:
-        """Save current state as checkpoint for future runs."""
-        from prism_sim.simulation.snapshot import save_snapshot
-
-        save_snapshot(
-            sim=self,
-            burn_in_days=burn_in_days,
-            config_hash=self._config_hash,
-            output_path=self._checkpoint_path,
-            auto_generated=True,
-        )
 
     def _step(self, day: int) -> None:
         # 0. Start mass balance tracking

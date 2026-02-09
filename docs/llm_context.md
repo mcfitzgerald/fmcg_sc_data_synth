@@ -65,7 +65,7 @@ The simulation enforces these constraints - violations indicate bugs:
 | **Behavioral quirks** | `simulation/quirks.py` | `QuirkManager` |
 | **Risk events** | `simulation/risk_events.py` | `RiskEventManager` |
 | **Data export** | `simulation/writer.py` | `SimulationWriter`, `ThreadedParquetWriter` |
-| **Warm-start checkpointing** | `simulation/snapshot.py` | `compute_config_hash()`, `capture_minimal_state()`, `save_snapshot()` (v0.49.0) |
+| **Initialization & priming** | `simulation/orchestrator.py` | `_initialize_inventory()`, `_prime_synthetic_steady_state()` |
 
 ### Data Models
 | Concept | File | Key Classes |
@@ -88,9 +88,8 @@ The simulation enforces these constraints - violations indicate bugs:
 | Script | Purpose |
 |--------|---------|
 | `scripts/generate_static_world.py` | Generate static world data (products, recipes, nodes, links) |
-| `scripts/generate_warm_start.py` | Generate warm-start snapshot manually |
 | `scripts/calibrate_config.py` | Physics-based config calibration (capacity, safety stock, DOS targets) |
-| `scripts/run_standard_sim.py` | Standard workflow runner (burn-in + data run) |
+| `scripts/run_standard_sim.py` | Standard workflow runner (priming + stabilization + data run) |
 | `scripts/export_erp_format.py` | **ETL:** Transform sim output to normalized ERP tables (SQL-ready) |
 | `scripts/erp_schema.sql` | ERP-style relational schema (SQL DDL) for normalized export |
 
@@ -169,37 +168,28 @@ poetry run python scripts/generate_static_world.py
 ```
 
 **Key Concepts:**
-- **Auto-Checkpointing:** The Orchestrator automatically detects config changes (hash check). If changed, it runs a 10-day burn-in with synthetic priming and saves a snapshot. If unchanged, it loads the snapshot and runs immediately.
+- **Single Init Path:** Every run follows: demand-proportional priming → synthetic steady-state → 10-day stabilization → data collection. No checkpoints or snapshots.
 - **Demand Sensing:** Agents (MRP/Replenishment) use proactive demand forecasts from `POSEngine` to build stock ahead of promotions and seasonality.
 - **P&G Scale:** The simulation is calibrated to ~4M cases/day (realistic North American FMCG volume) with ~33 production lines network-wide (15 default + 4 OH + 2 TX + 3 CA + 6 GA + 3 other).
 
 **Simulation Run Lengths:**
-- **Full diagnostic (365 days):** Required for accurate KPIs. Includes 10-day burn-in + 365 data days. Use `--streaming --format parquet` for logged runs.
+- **Full diagnostic (365 days):** Required for accurate KPIs. Includes 10-day stabilization + 365 data days. Use `--streaming --format parquet` for logged runs.
 - **Sanity checks (30-50 days with `--no-logging`):** Fast verification only.
 
 ---
 
-## 5. Automatic Checkpointing
+## 5. Initialization & Stabilization
 
-The simulation uses automatic checkpointing to eliminate cold-start artifacts:
+Every run follows a single initialization path:
 
-```bash
-poetry run python run_simulation.py --days 365
-# First run: 10-day burn-in (with synthetic priming) → saves checkpoint → 365 data days
-# Subsequent runs: loads checkpoint → 365 data days (skips burn-in)
-```
+1. **Demand-proportional priming** (`_initialize_inventory()`): Seeds on-hand inventory at every node proportional to expected demand and ABC class
+2. **Synthetic steady-state priming** (`_prime_synthetic_steady_state()`): Adds pipeline shipments, production WIP, history buffers, and inventory age
+3. **Stabilization** (default 10 days): Normal simulation steps excluded from metrics
 
-**Key Concepts:**
-- `--days N` specifies N days of **steady-state data** (post burn-in)
-- **10-day burn-in** (v0.49.0): Reduced from 90 days via synthetic steady-state priming — pipeline fill, WIP, history buffers, and inventory age are initialized analytically rather than simulated
-- Checkpoints are named by config hash: `steady_state_{hash}.json.gz`
-- Config changes invalidate old checkpoints (new burn-in runs automatically)
-- `_metrics_start_day` excludes burn-in from Triangle Report metrics
+`--days N` specifies N days of **steady-state data** (after stabilization).
+Total simulated days = stabilization_days + N.
 
-**CLI Flags:**
-- `--no-checkpoint` - Disable auto-checkpointing (always cold-start)
-- `--warm-start PATH` - Use specific snapshot file
-- `--skip-hash-check` - Load snapshot even if config changed
+Config: `simulation_parameters.calibration.initialization.stabilization_days` (default: 10)
 
 ---
 
@@ -591,12 +581,11 @@ poetry run python run_simulation.py --days 50 --no-logging
 **CLI Flags:**
 | Flag | Purpose |
 |------|---------|
-| `--days N` | N days of steady-state data (after automatic 10-day burn-in) |
+| `--days N` | N days of steady-state data (after 10-day stabilization) |
 | `--streaming` | Write data incrementally (required for 365-day logged runs) |
 | `--format parquet` | Parquet output (columnar, dictionary-encoded strings) |
 | `--inventory-sample-rate N` | Inventory snapshots every N days (1=daily, 7=weekly) |
 | `--no-logging` | Skip data export (fastest, Triangle Report metrics only) |
-| `--no-checkpoint` | Disable auto-checkpointing (always cold-start) |
 
 ### Post-Run Diagnostics
 ```bash

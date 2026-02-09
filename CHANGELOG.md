@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.58.0] - 2026-02-09
+
+### Removed
+- Checkpoint/snapshot system (`snapshot.py`, `generate_warm_start.py`)
+- CLI flags: `--warm-start`, `--no-checkpoint`, `--skip-hash-check`
+- ~90MB of stale checkpoint files
+
+### Changed
+- Single initialization path: demand-proportional priming → synthetic steady-state → stabilization
+- Config: `calibration.warm_start` → `calibration.initialization` (simplified)
+- Synthetic priming always runs (no config gate)
+
 ## [0.57.0] - 2026-02-09
 
 ### Replace intent.md + roadmap.md with spec.md

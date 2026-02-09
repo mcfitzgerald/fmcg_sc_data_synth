@@ -108,20 +108,12 @@
         "plant": 0.12,
         "pipeline": 0.08
       },
-      "warm_start": {
-        "_comment": "v0.33.0: Configuration for warm-start snapshot system",
-        "enabled": false,
-        "snapshot_path": null,
-        "default_burn_in_days": 10,
-        "_burn_in_note": "v0.49.0: Reduced from 90 to 10 — synthetic steady-state priming handles first 80 days",
-        "synthetic_steady_state": true,
-        "_synthetic_note": "v0.49.0: Pre-fills pipeline, WIP, history buffers, and inventory age at day 0",
-        "validate_config_hash": true,
-        "history_buffer_init": {
-          "_comment": "How to initialize history buffers from derived params",
-          "demand_noise_cv": 0.1,
-          "lead_time_noise_cv": 0.1,
-          "use_derived_abc": true
+      "initialization": {
+        "_comment": "v0.58.0: Single init path — priming + synthetic steady-state + stabilization",
+        "stabilization_days": 10,
+        "priming_noise": {
+          "demand_cv": 0.1,
+          "lead_time_cv": 0.1
         }
       },
       "capacity_planning": {

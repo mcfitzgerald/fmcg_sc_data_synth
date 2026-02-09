@@ -57,7 +57,6 @@ src/prism_sim/
 │   ├── mrp.py            # MRPEngine - material requirements planning (vectorized)
 │   ├── drp.py            # DRPPlanner - distribution requirements planning for B/C production
 │   ├── transform.py      # TransformEngine - manufacturing physics (capacity, changeover)
-│   ├── snapshot.py       # Checkpointing - warm-start state capture and config hashing
 │   ├── quirks.py         # QuirkManager - behavioral realism (phantom inventory, bias)
 │   ├── risk_events.py    # RiskEventManager - disruption scenarios (port strikes, cyber)
 │   ├── monitor.py        # RealismMonitor, PhysicsAuditor, ResilienceTracker
