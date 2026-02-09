@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.57.0] - 2026-02-09
+
+### Replace intent.md + roadmap.md with spec.md
+
+The original planning docs (`intent.md`, `roadmap.md`) were written at project inception (Dec 2024) to define "what should we build." The core engine is now complete through v0.56.2 — all milestones achieved. This replaces the build-phase docs with a single spec that captures where we are and what remains.
+
+#### New
+- `docs/planning/spec.md` — project status, validated scorecard (v0.56.1), iterative validation process, likely code change areas, ERP export status, document map
+
+#### Archived → `docs/planning/archive/`
+- `intent.md` — original project vision (all milestones complete)
+- `roadmap.md` — original task roadmap (all milestones complete)
+- `365_day_drift_diagnosis.md`, `regression_investigation.md`, `calibration_diagnostic_report.md` — historical investigations
+- `notes/fresh_start_comparison.md`, `notes/schema_gap_analysis.md` — historical analyses
+
+#### Updated
+- `CLAUDE.md` — Prime Directive #1 now references `spec.md`; Spec-Driven Development section updated
+- `docs/llm_context.md` — Validation & Planning Documents table updated with `spec.md`, `physics.md`, `triangle.md`, and `archive/`
+- `pyproject.toml` — version bump 0.56.2 → 0.57.0
+
 ## [0.56.2] - 2026-02-08
 
 ### Documentation Update — Sync `llm_context.md` and `CLAUDE.md` to v0.56.1

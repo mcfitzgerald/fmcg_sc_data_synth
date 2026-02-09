@@ -97,6 +97,10 @@ The simulation enforces these constraints - violations indicate bugs:
 ### Validation & Planning Documents
 | Document | Purpose |
 |----------|---------|
+| `docs/planning/spec.md` | Project status, validated metrics (v0.56.1), remaining work, document map |
+| `docs/planning/physics.md` | Supply chain physics theory (Little's Law, VUT, Mass Balance) — timeless reference |
+| `docs/planning/triangle.md` | Desmet's SC Triangle (Service/Cost/Cash) — timeless reference |
+| `docs/planning/archive/` | Historical: `intent.md`, `roadmap.md`, investigation docs (Dec 2024 – Jan 2025) |
 | `V046_VALIDATION_STATE.md` | Historical: v0.46.0 365-day validation results. Superseded by v0.56.1 diagnostic suite and CHANGELOG. |
 
 ### Diagnostic Suite (v0.55.1 — `scripts/analysis/diagnostics/`)

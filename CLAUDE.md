@@ -12,7 +12,7 @@ Prism Sim is a high-fidelity supply chain Digital Twin built on Discrete-Event S
 
 ## Prime Directives
 
-1. **Always read `docs/planning/intent.md` and `docs/planning/roadmap.md`** before starting work
+1. **Always read `docs/planning/spec.md`** before starting work
 2. **Always use `poetry run` for all Python execution** in this project
 3. **Never skip or ignore bugs** - if tests fail or something seems off, alert the user and find root cause together
 4. **Commit and push** after completing new code, bug fixes, or features
@@ -88,10 +88,11 @@ src/prism_sim/
 ## Spec-Driven Development
 
 Key reference documents in `docs/planning/`:
-- `intent.md` - Technical source of truth (physics, ontology, validation targets)
-- `roadmap.md` - Implementation sequence with Task IDs (initial build complete)
+- `spec.md` - Project status, validation state, remaining work, document map
+- `physics.md` - Supply chain physics theory (timeless reference)
+- `triangle.md` - Desmet's SC Triangle framework (timeless reference)
 
-Reference Task IDs in commits when working on roadmap items. For bug fixes and enhancements, use conventional commit format (e.g., `fix(mrp):`, `feat(allocation):`).
+Use conventional commit format (e.g., `fix(mrp):`, `feat(allocation):`, `docs:`).
 
 ## Configuration
 
