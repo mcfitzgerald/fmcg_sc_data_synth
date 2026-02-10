@@ -437,10 +437,18 @@ class POSEngine:
                 base_cat_demand = float(profile.get("base_daily_demand", 1.0))
 
                 # Segment Weight
+                demand_config = (
+                    self.config.get("simulation_parameters", {}).get("demand", {})
+                )
+                default_seg_weight = float(
+                    demand_config.get("default_segment_weight", 0.5)
+                )
                 segment_weights = self.channel_segment_weights.get(channel_name, {})
-                seg_weight = 0.5  # Default
+                seg_weight = default_seg_weight
                 if product.value_segment:
-                    seg_weight = segment_weights.get(product.value_segment, 0.0)
+                    seg_weight = segment_weights.get(
+                        product.value_segment, default_seg_weight
+                    )
 
                 # SKU Popularity Weight (Channel-specific Zipf distribution)
                 channel_weights = self.channel_sku_weights.get(

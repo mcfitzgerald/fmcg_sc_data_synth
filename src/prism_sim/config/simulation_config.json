@@ -50,14 +50,9 @@
         "production_smoothing_days": 5.0
       },
       "trigger_components": {
-        "production_lead_time_days": 3,
-        "transit_time_days": 3,
         "safety_buffer_a": 10,
         "safety_buffer_b": 6,
-        "safety_buffer_c": 3,
-        "review_period_a": 5,
-        "review_period_b": 5,
-        "review_period_c": 3
+        "safety_buffer_c": 3
       },
       "multi_echelon_lead_times": {
         "_comment": "v0.33.0: Cumulative lead times by echelon (days) - accounts for multi-tier cascade",
@@ -74,39 +69,12 @@
         "effective_lag_days": 7,
         "include_in_triggers": true
       },
-      "cold_start": {
-        "_comment": "v0.33.0: Parameters to compensate for cold-start artifacts",
-        "buffer_pct": 0.15,
-        "stabilization_days": 30,
-        "apply_to_priming": true
-      },
-      "baseline_reference": {
-        "_comment": "v0.32.1 empirically-tuned values for validation",
-        "store_days_supply": 14.0,
-        "rdc_days_supply": 21.0,
-        "customer_dc_days_supply": 10.0,
-        "abc_velocity_factors": {
-          "A": 1.2,
-          "B": 1.0,
-          "C": 0.8
-        },
-        "trigger_dos_a": 12,
-        "trigger_dos_b": 9,
-        "trigger_dos_c": 6
-      },
       "abc_production_factors": {
         "_comment": "v0.42.0: A-buffer raised to 1.22 — with Phase 4 ABC-aware clipping, higher buffer is safe",
         "a_buffer": 1.22,
         "b_buffer": 1.1,
         "c_production_factor": 1.0,
         "_c_note": "C-items no longer penalized - use longer horizon instead"
-      },
-      "echelon_proportions": {
-        "store": 0.3,
-        "customer_dc": 0.22,
-        "rdc": 0.28,
-        "plant": 0.12,
-        "pipeline": 0.08
       },
       "initialization": {
         "_comment": "v0.58.0: Single init path — priming + synthetic steady-state + stabilization",
@@ -201,8 +169,8 @@
         "_share_ceiling_note": "v0.55.0: Max deploy per target = demand_share x available x headroom.",
         "push_allocation_enabled": true,
         "push_threshold_dos": 20.0,
-        "push_receive_dos_cap": 12.0,
-        "_push_receive_note": "v0.55.0: Gates RDC→DC push receiving. ≈dc_buffer_days×1.7, slightly above A-item cap (10.5)",
+        "push_receive_headroom": 1.15,
+        "_push_receive_note": "v0.64.0: ABC-differentiated push cap = dc_buffer × ABC mult × headroom. A≈12.1, B≈16.1, C≈20.1. Replaces scalar push_receive_dos_cap.",
         "channel_profiles": {
           "MASS_RETAIL": {
             "target_days": 6.0,
@@ -258,6 +226,8 @@
     "demand": {
       "_sku_alpha_note": "v0.39.4: Aligned with benchmark_manifest (1.05) for proper Pareto 80/20 distribution",
       "sku_popularity_alpha": 1.05,
+      "default_segment_weight": 0.5,
+      "_default_segment_weight_note": "v0.64.0: Fallback weight when product has no value_segment. 0.5 = moderate demand share.",
       "seasonality": {
         "amplitude": 0.12,
         "capacity_amplitude": 0.108,
@@ -346,14 +316,10 @@
       }
     },
     "inventory": {
-      "initial_fg_level": 5.0,
       "initialization": {
         "_comment": "v0.60.0: Store priming matches channel profiles (target_days=6.0 for MASS_RETAIL/CLUB/ECOM/default). ABC factors give A=7.2, B=6.0, C=4.8",
         "store_days_supply": 6.0,
         "rdc_days_supply": 15.0,
-        "rdc_store_multiplier": 80.0,
-        "customer_dc_days_supply_DEPRECATED": 10.0,
-        "_customer_dc_days_supply_note": "v0.60.0: DEPRECATED — DC priming now uses dc_buffer_days × ABC multipliers (matching deployment targets). Kept for calibrate_config.py compat.",
         "plant_ingredient_buffer": 200000.0,
         "abc_velocity_factors": {
           "A": 1.2,
@@ -428,6 +394,9 @@
         "a_production_buffer": 1.22,
         "b_production_buffer": 1.1,
         "c_production_factor": 1.0,
+        "demand_history_lookback_days": 14,
+        "demand_based_min_days": 7.0,
+        "production_smoothing_cap_multiplier": 1.5,
         "demand_floor_weight": 0.0,
         "_demand_floor_note": "v0.54.0: Set to 0.0 — MRP uses raw POS demand directly, no blend needed",
         "seasonal_floor_min_pct": 0.85,
@@ -488,7 +457,6 @@
           "target_days_supply": 21.0
         }
       },
-      "min_production_qty": 25000.0,
       "min_batch_size_absolute": 1000.0,
       "min_ingredient_moq": 500.0,
       "production_lead_time_days": 3,

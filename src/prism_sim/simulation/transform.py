@@ -82,7 +82,7 @@ class TransformEngine:
 
         # Extract manufacturing config
         mfg_config = config.get("simulation_parameters", {}).get("manufacturing", {})
-        self.hours_per_day = mfg_config.get("production_hours_per_day", 16.0)
+        self.hours_per_day = mfg_config.get("production_hours_per_day", 24.0)
         self.backup_supplier_cost_premium = mfg_config.get(
             "backup_supplier_cost_premium", 0.25
         )

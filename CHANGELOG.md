@@ -5,6 +5,54 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.64.0] - 2026-02-10
+
+### Config Hygiene: Fix Push Cap, Migrate Hardcodes, Remove Dead Config
+
+Audit of `simulation_config.json` revealed three categories of issues: an active bug in push receive cap blocking B/C items, 6 hidden hardcodes with no config path, and 11+ dead config keys creating a misleading API surface.
+
+#### Fix: ABC-differentiated push receive cap (orchestrator.py, simulation_config.json)
+- `push_receive_dos_cap=12.0` (scalar) blocked RDC→DC push for B/C items below their deployment targets (B=14, C=17.5 DOS)
+- Replaced with `push_receive_headroom=1.15` — cap = `dc_buffer_days × ABC_mult × 1.15`
+- New caps: A≈12.1 (unchanged), B≈16.1 (was 12), C≈20.1 (was 12)
+
+#### Fix: transform.py hours_per_day fallback (transform.py)
+- Default fallback `16.0` → `24.0` to match config and MRP's assumption
+
+#### Migrated hardcodes to config (mrp.py, orchestrator.py, demand.py, simulation_config.json)
+- `demand_history_lookback_days=14` — MRP demand/production/consumption history buffer size
+- `demand_based_min_days=7.0` — MRP emergency production minimum (days of demand)
+- `production_smoothing_cap_multiplier=1.5` — caps daily production at N× recent average
+- Perfect order default lead time now reads `logistics.default_lead_time_days` from config
+- `default_segment_weight=0.5` — demand fallback when product lacks value_segment
+
+#### Removed dead config (simulation_config.json, mrp.py)
+- `calibration.baseline_reference` (v0.32.1 values, only in calibrate_config.py)
+- `calibration.echelon_proportions` (only in calibrate_config.py)
+- `calibration.cold_start` (superseded by `initialization.stabilization_days`)
+- `inventory.initial_fg_level` (zero references anywhere)
+- `inventory.initialization.rdc_store_multiplier` (only in calibrate_config.py)
+- `inventory.initialization.customer_dc_days_supply_DEPRECATED` (deprecated in v0.60.0)
+- `manufacturing.min_production_qty` (loaded but never used)
+- `calibration.trigger_components.production_lead_time_days` (never read)
+- `calibration.trigger_components.transit_time_days` (never read)
+- `calibration.trigger_components.review_period_a/b/c` (never read)
+- `agents.replenishment.push_receive_dos_cap` (replaced by `push_receive_headroom`)
+
+## [0.63.0] - 2026-02-10
+
+### Remove Dead `storage_capacity` Field from Node
+
+`Node.storage_capacity` (pallets) was defined on the dataclass, serialized to CSV, and loaded by the builder, but **never enforced at runtime**. All 4,238 nodes had `storage_capacity=inf`. Production backpressure is correctly handled by MRP DOS caps + plant FG in IP — matching how real FMCG plants work (MRP prevents overproduction at the planning level; plants don't physically block production lines due to warehouse capacity).
+
+#### Changes
+- **`network/core.py`:** Remove `storage_capacity` field from `Node` dataclass
+- **`simulation/builder.py`:** Remove 4 references (CSV loader + 3 JSON fallback paths)
+- **`archive/tests/test_core_primitives.py`:** Remove `storage_capacity` from test
+- **`data/output/static_world/locations.csv`:** Regenerated without `storage_capacity` column
+- **`docs/llm_context.md`:** Document design decision (MRP-based backpressure, not physical storage)
+- **`docs/planning/spec.md`:** Document design decision
+
 ## [0.62.0] - 2026-02-10
 
 ### Fix Plant FG Priming to Match MRP Steady State

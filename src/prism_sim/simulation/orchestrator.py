@@ -1547,7 +1547,12 @@ class Orchestrator:
             # Expected arrival = original_order_day + route_lead_time
             route = (shipment.source_id, shipment.target_id)
             link = self.logistics.route_map.get(route)
-            expected_lead_time = link.lead_time_days if link else 3.0
+            default_lt = (
+                self.config.get("simulation_parameters", {})
+                .get("logistics", {})
+                .get("default_lead_time_days", 3.0)
+            )
+            expected_lead_time = link.lead_time_days if link else default_lt
 
             if shipment.original_order_day is not None:
                 expected_arrival = (
@@ -2163,11 +2168,24 @@ class Orchestrator:
 
             total_dc_demand_safe = np.maximum(total_dc_demand, 0.1)
 
-            # v0.47.0 Fix 3: DOS cap for push receive — suppress push for
-            # products where the target DC already has sufficient stock
-            push_receive_cap = float(
-                replen_params.get("push_receive_dos_cap", 15.0)
+            # v0.64.0: ABC-differentiated push receive cap — derived from
+            # DC deployment targets (dc_buffer_days x ABC mult x headroom)
+            push_headroom = float(
+                replen_params.get("push_receive_headroom", 1.15)
             )
+            dc_buffer = float(replen_params.get("dc_buffer_days", 7.0))
+            abc_mults = np.array([
+                float(replen_params.get("dc_dos_cap_mult_a", 1.5)),
+                float(replen_params.get("dc_dos_cap_mult_b", 2.0)),
+                float(replen_params.get("dc_dos_cap_mult_c", 2.5)),
+            ])
+            # Build per-product cap vector from ABC class
+            push_receive_cap_vec = np.empty(self.state.n_products)
+            for p_idx in range(self.state.n_products):
+                abc = int(self.mrp_engine.abc_class[p_idx])
+                push_receive_cap_vec[p_idx] = (
+                    dc_buffer * abc_mults[abc] * push_headroom
+                )
 
             for dc_id, dc_demand in dc_demands.items():
                 # Calculate this DC's share (proportional to demand)
@@ -2181,7 +2199,7 @@ class Orchestrator:
                     dc_demand_safe = np.maximum(dc_demand * seasonal_factor, 0.1)
                     dc_dos = dc_inv / dc_demand_safe
                     # Suppress push for products where DC already has enough
-                    dc_over_cap = dc_dos >= push_receive_cap
+                    dc_over_cap = dc_dos >= push_receive_cap_vec
                     suppressed = int(np.sum((dc_push_qty >= 10) & dc_over_cap))  # noqa: PLR2004
                     self._push_suppression_count += suppressed
                     dc_push_qty = np.where(dc_over_cap, 0.0, dc_push_qty)

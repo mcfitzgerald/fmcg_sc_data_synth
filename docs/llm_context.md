@@ -346,10 +346,12 @@ need = max(0, target_dos × expected_demand × seasonal_factor - current_positio
 | **RDCs** | 15.0d | 15.0d | 15.0d | Flat `_rdc_target_dos` |
 
 ### `_push_excess_rdc_inventory()` — RDC→DC Overflow
-Active as secondary overflow valve: pushes excess RDC inventory to customer DCs when RDC DOS exceeds threshold (`push_threshold_dos=20.0`, ~1.3× the 15 DOS target). Activates at 20 DOS to prevent accumulation in the RDC dead zone. v0.61.0: DOS calculations use seasonally-adjusted demand (same factor as deployment).
+Active as secondary overflow valve: pushes excess RDC inventory to customer DCs when RDC DOS exceeds threshold (`push_threshold_dos=20.0`, ~1.3× the 15 DOS target). Activates at 20 DOS to prevent accumulation in the RDC dead zone. v0.61.0: DOS calculations use seasonally-adjusted demand (same factor as deployment). v0.64.0: Push receive cap is ABC-differentiated — `dc_buffer_days × ABC_mult × push_receive_headroom(1.15)` → A≈12.1, B≈16.1, C≈20.1 DOS. Replaces the scalar `push_receive_dos_cap=12.0` which blocked B/C items below their deployment targets.
 
 ### Key Design: Plant FG as Natural Backpressure
 Unneeded FG stays at the plant and enters MRP's inventory position calculation (`_calculate_inventory_position()` includes plant FG in pipeline IP). This creates a natural negative feedback loop: high plant FG → high IP → MRP reduces production → equilibrium.
+
+**Design decision (v0.63.0):** Production backpressure is handled entirely by MRP DOS caps + plant FG in IP — not by physical storage constraints. `Node.storage_capacity` was removed as dead code (all nodes had `inf`, never enforced). This matches real FMCG operations where MRP prevents overproduction at the planning level; plants don't physically block production lines due to warehouse capacity.
 
 ---
 
@@ -816,5 +818,7 @@ The following values are hardcoded but working correctly. They should be migrate
 | `simulation/mrp.py` | ~1199 | `60.0/45.0`, `0.5/0.7` | B-item DOS throttling thresholds and scale factors (fallback, only when DRP absent) |
 | `agents/replenishment.py` | ~956 | `forecast_horizon=14` | Proactive demand sensing lookahead (days) |
 | `simulation/orchestrator.py` | ~1627 | `min_fg_inventory_threshold=100.0` | Inventory turns divide-by-zero guard |
+
+**v0.64.0 migrated:** MRP history buffer (14d), demand-based min batch (7d), production smoothing cap (1.5×), perfect order default lead time (3.0d), demand segment weight (0.5), push receive DOS cap (→ABC-differentiated headroom). `changeover_time_multiplier=0.1` is intentional (SMED-optimized lines), not a hardcode.
 
 **Priority:** The `logistics.py` returns subsystem has the most values (4) with zero config coverage. The `mrp.py` B-item throttling thresholds are in a fallback code path (only active when DRP planner is absent).

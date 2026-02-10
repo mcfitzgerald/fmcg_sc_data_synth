@@ -106,7 +106,6 @@ class MRPEngine:
         mrp_config = config.get("simulation_parameters", {}).get("manufacturing", {})
         self.target_days_supply = mrp_config.get("target_days_supply", 14.0)
         self.reorder_point_days = mrp_config.get("reorder_point_days", 7.0)
-        self.min_production_qty = mrp_config.get("min_production_qty", 100.0)
         self.min_ingredient_moq = mrp_config.get("min_ingredient_moq", 100.0)
         self.production_lead_time = mrp_config.get("production_lead_time_days", 3)
 
@@ -120,6 +119,17 @@ class MRPEngine:
         )
         self.production_floor_pct = mrp_thresholds.get("production_floor_pct", 0.3)
         self.min_production_cap_pct = mrp_thresholds.get("min_production_cap_pct", 0.5)
+
+        # v0.64.0: Migrated hardcodes to config
+        self._history_days = int(
+            mrp_thresholds.get("demand_history_lookback_days", 14)
+        )
+        self._demand_based_min_days = float(
+            mrp_thresholds.get("demand_based_min_days", 7.0)
+        )
+        self._production_smoothing_cap_mult = float(
+            mrp_thresholds.get("production_smoothing_cap_multiplier", 1.5)
+        )
 
         # v0.19.9: Rate-based production parameters (Option C fix)
         # When enabled, production always runs at expected demand rate.
@@ -194,7 +204,7 @@ class MRPEngine:
         # v0.15.6: Extended from 7 to 14 days for smoother signal
         # v0.19.9: Warm start with expected demand to prevent Day 1 dip
         self.demand_history = np.tile(
-            self.expected_daily_demand, (14, 1)
+            self.expected_daily_demand, (self._history_days, 1)
         ).astype(np.float64)
         self._history_ptr = 0
 
@@ -203,7 +213,7 @@ class MRPEngine:
         # This feedback allows MRP to adjust production to match reality,
         # preventing over-production when service level < 100%.
         self._consumption_history = np.zeros(
-            (14, self.state.n_products), dtype=np.float64
+            (self._history_days, self.state.n_products), dtype=np.float64
         )
         self._consumption_ptr = 0
 
@@ -212,7 +222,7 @@ class MRPEngine:
         # v0.19.9: Warm start with total expected production
         total_expected_production = np.sum(self.expected_daily_demand)
         self.production_order_history = np.full(
-            14, total_expected_production, dtype=np.float64
+            self._history_days, total_expected_production, dtype=np.float64
         )
         self._prod_hist_ptr = 0
 
@@ -756,8 +766,9 @@ class MRPEngine:
             )
 
         # v0.15.6: Calculate demand velocity (week-over-week trend)
-        week1_avg = np.mean(self.demand_history[:7], axis=0)
-        week2_avg = np.mean(self.demand_history[7:], axis=0)
+        half = self._history_days // 2
+        week1_avg = np.mean(self.demand_history[:half], axis=0)
+        week2_avg = np.mean(self.demand_history[half:], axis=0)
         self._week1_demand_sum = float(np.sum(week1_avg))
         self._week2_demand_sum = float(np.sum(week2_avg))
 
@@ -864,7 +875,9 @@ class MRPEngine:
                     net_requirement = target_inventory - inventory_position
 
                     if net_requirement > 0:
-                        demand_based_min = avg_daily_demand * 7.0
+                        demand_based_min = (
+                            avg_daily_demand * self._demand_based_min_days
+                        )
                         mfg_config = self.config.get(
                             "simulation_parameters", {}
                         ).get("manufacturing", {})
@@ -929,16 +942,17 @@ class MRPEngine:
         smoothing_baseline = max(avg_recent, expected_production)
 
         total_orders_today = sum(po.quantity_cases for po in production_orders)
-        if smoothing_baseline > 0 and total_orders_today > smoothing_baseline * 1.5:
+        smoothing_cap = smoothing_baseline * self._production_smoothing_cap_mult
+        if smoothing_baseline > 0 and total_orders_today > smoothing_cap:
             cap_applied = True
-            scale_factor = (smoothing_baseline * 1.5) / total_orders_today
+            scale_factor = smoothing_cap / total_orders_today
             for po in production_orders:
                 po.quantity_cases = float(po.quantity_cases * scale_factor)
 
         # Update production history
         actual_total = sum(po.quantity_cases for po in production_orders)
         self.production_order_history[self._prod_hist_ptr] = actual_total
-        self._prod_hist_ptr = (self._prod_hist_ptr + 1) % 14
+        self._prod_hist_ptr = (self._prod_hist_ptr + 1) % self._history_days
 
         # Collect and log diagnostics
         if diag:
@@ -1426,7 +1440,7 @@ class MRPEngine:
 
         self.demand_history[self._history_ptr] = daily_vol
         # v0.15.6: Extended history from 7 to 14 days
-        self._history_ptr = (self._history_ptr + 1) % 14
+        self._history_ptr = (self._history_ptr + 1) % self._history_days
 
     def record_order_demand(self, orders: list[Order]) -> None:
         """
@@ -1464,7 +1478,7 @@ class MRPEngine:
         # v0.20.0: REPLACE slot directly (no blending with shipments)
         # This is now the primary signal - advance pointer after writing
         self.demand_history[self._history_ptr] = daily_vol
-        self._history_ptr = (self._history_ptr + 1) % 14
+        self._history_ptr = (self._history_ptr + 1) % self._history_days
 
     def record_consumption(self, actual_sales: np.ndarray) -> None:
         """
@@ -1483,7 +1497,7 @@ class MRPEngine:
         # Sum consumption across all nodes for each product
         daily_consumption = np.sum(actual_sales, axis=0)
         self._consumption_history[self._consumption_ptr] = daily_consumption
-        self._consumption_ptr = (self._consumption_ptr + 1) % 14
+        self._consumption_ptr = (self._consumption_ptr + 1) % self._history_days
 
     def get_actual_daily_demand(self) -> np.ndarray:
         """

@@ -66,6 +66,14 @@ The simulation is in an iterative shake-out phase. The core engine is complete; 
 
 ---
 
+## 3a. Design Decisions
+
+**Production backpressure via MRP, not storage capacity (v0.63.0):** `Node.storage_capacity` was removed — production backpressure is handled by MRP DOS caps + plant FG in inventory position, not physical warehouse limits. All nodes had `storage_capacity=inf` and it was never enforced. Real FMCG plants use MRP to prevent overproduction at the planning level.
+
+**ABC-differentiated push receive cap (v0.64.0):** `push_receive_dos_cap=12.0` (scalar) replaced with `push_receive_headroom=1.15` (multiplier on ABC deployment targets). The scalar cap blocked B/C items below their deployment targets (B=14, C=17.5 DOS vs cap=12). New caps: A≈12.1, B≈16.1, C≈20.1 DOS — derived from `dc_buffer_days × ABC_mult × headroom`.
+
+---
+
 ## 4. Likely Areas of Future Code Change
 
 As validation iterates, these areas are probable touchpoints:
