@@ -182,7 +182,7 @@ poetry run python scripts/generate_static_world.py
 
 Every run follows a single initialization path:
 
-1. **Demand-proportional priming** (`_initialize_inventory()`): Seeds on-hand inventory at every node proportional to expected demand and ABC class
+1. **Demand-proportional priming** (`_initialize_inventory()`): Seeds on-hand inventory at every node proportional to expected demand and ABC class. Priming targets match operational targets: stores use `store_days_supply=6.0` × ABC factors; DCs use `dc_buffer_days × 1.5/2.0/2.5` (A/B/C); RDCs use `rdc_days_supply × ABC factors` with pipeline adjustment. Both RDCs and Customer DCs subtract upstream lead time to prevent double-stocking with pipeline inventory.
 2. **Synthetic steady-state priming** (`_prime_synthetic_steady_state()`): Adds pipeline shipments, production WIP, history buffers, and inventory age
 3. **Stabilization** (default 10 days): Normal simulation steps excluded from metrics
 
@@ -345,7 +345,7 @@ need = max(0, target_dos × expected_demand - current_position)
 | **RDCs** | 15.0d | 15.0d | 15.0d | Flat `_rdc_target_dos` |
 
 ### `_push_excess_rdc_inventory()` — RDC→DC Overflow
-Active as secondary overflow valve: pushes excess RDC inventory to customer DCs when RDC DOS exceeds threshold.
+Active as secondary overflow valve: pushes excess RDC inventory to customer DCs when RDC DOS exceeds threshold (`push_threshold_dos=20.0`, ~1.3× the 15 DOS target). Activates at 20 DOS to prevent accumulation in the RDC dead zone.
 
 ### Key Design: Plant FG as Natural Backpressure
 Unneeded FG stays at the plant and enters MRP's inventory position calculation (`_calculate_inventory_position()` includes plant FG in pipeline IP). This creates a natural negative feedback loop: high plant FG → high IP → MRP reduces production → equilibrium.
@@ -666,6 +666,7 @@ When simulation behaves unexpectedly:
    - **Key diagnostic:** Compare ABC class inventory at day 30 vs day 365
    - Run `diagnose_365day.py` for comprehensive 3-layer diagnostic
    - **v0.59.0 validated results:** Fill 98.5%, Turns 10.31×, OEE 54.3%, SLOB 0.0%, Prod/Demand 0.98, C2C 20.6d
+   - **v0.60.0 fixes:** Priming mismatches (DC/store over-primed, RDC push dead zone) — expect more stable echelon trends
 
 8. **Inventory turns low but production/demand ratio near 1.0?**
    - This is a **distribution-level problem**, not a production problem

@@ -22,6 +22,12 @@ Prism Sim is a discrete-event supply chain Digital Twin simulating a North Ameri
 
 These are observations — not pass/fail grades against fixed targets.
 
+**v0.60.0 fixes applied** (pending 365-day validation):
+- DC priming now matches deployment targets (was using RDC targets — 71% over-prime for A-items)
+- Store priming matches channel profiles (`store_days_supply` 10→6)
+- DC priming has pipeline adjustment (prevents double-stocking)
+- RDC push threshold lowered (40→20 DOS, eliminates 25-DOS accumulation dead zone)
+
 ---
 
 ## 3. Simulation Validation
@@ -42,8 +48,8 @@ The simulation is in an iterative shake-out phase. The core engine is complete; 
 - Standalone analyzers: `diagnose_slob.py`, `diagnose_a_item_fill.py`, `analyze_bullwhip.py`
 
 **Known observations** (measured, not yet classified as issues or accepted):
-- Customer DC accumulation (+25.1% inflow vs outflow)
-- RDC inventory diverging (+26K/day)
+- Customer DC accumulation (+25.1% inflow vs outflow) — **v0.60.0: priming fix should reduce/eliminate**
+- RDC inventory diverging (+26K/day) — **v0.60.0: push threshold fix (40→20) should address**
 - A-item production -2.5% below demand
 - OEE 54.3% — slightly below target
 - Mass balance period 0 ~211% (warm-start artifact, expected)

@@ -706,9 +706,8 @@ class Orchestrator:
         init_config = inv_config.get("initialization", {})
 
         # CONFIG-DRIVEN priming (v0.26.0 fix - was previously hardcoded)
-        store_days_supply = init_config.get("store_days_supply", 4.5)
+        store_days_supply = init_config.get("store_days_supply", 6.0)
         rdc_days_supply = init_config.get("rdc_days_supply", 7.5)
-        customer_dc_days = init_config.get("customer_dc_days_supply", 7.5)
 
         # Get per-SKU demand matrix for demand-proportional priming
         base_demand_matrix = self.pos_engine.get_base_demand_matrix()
@@ -736,6 +735,19 @@ class Orchestrator:
         rdc_abc_target_dos = {
             abc_class: rdc_days_supply * factor
             for abc_class, factor in abc_velocity_factors.items()
+        }
+
+        # v0.60.0: DC-specific priming targets matching deployment
+        # (dc_buffer_days x ABC multipliers), NOT RDC targets
+        dc_buffer_days = float(
+            sim_params.get("agents", {})
+            .get("replenishment", {})
+            .get("dc_buffer_days", 7.0)
+        )
+        dc_abc_target_dos = {
+            0: dc_buffer_days * 1.5,  # A: 10.5
+            1: dc_buffer_days * 2.0,  # B: 14.0
+            2: dc_buffer_days * 2.5,  # C: 17.5
         }
 
         # v0.28.0: Calculate seasonal factor for Day 1 (cold start adjustment)
@@ -860,14 +872,22 @@ class Orchestrator:
                         if downstream_demand.sum() == 0:
                             continue
 
-                        # v0.25.0: Apply ABC-based priming to Customer DCs
-                        # to reduce replenishment cascade at startup
+                        # v0.60.0: DC priming uses dc_buffer_days x ABC mult
+                        # (matches operational deployment targets)
                         dc_days_vec = np.array([
-                            rdc_abc_target_dos.get(
-                                self.mrp_engine.abc_class[p_idx], customer_dc_days
+                            dc_abc_target_dos.get(
+                                self.mrp_engine.abc_class[p_idx],
+                                dc_buffer_days,
                             )
                             for p_idx in range(self.state.n_products)
                         ])
+                        # v0.60.0: Pipeline adjustment (same as RDCs)
+                        avg_upstream_lt = self._get_avg_upstream_lead_time(
+                            node_id
+                        )
+                        dc_days_vec = np.maximum(
+                            dc_days_vec - avg_upstream_lt, 2.0
+                        )
                         # v0.28.0: Apply seasonal adjustment
                         dc_levels = (
                             downstream_demand

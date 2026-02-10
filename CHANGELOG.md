@@ -5,6 +5,44 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.60.0] - 2026-02-09
+
+### Fix Priming Mismatches & RDC Accumulation
+
+Diagnostic investigation of v0.59.0 revealed monotonic inventory trends at every echelon — Customer DCs draining (-53K/day), Stores draining (-117K/day), RDCs growing (+26K/day). Root cause: 3 priming bugs + 1 push threshold issue.
+
+#### Bug 1: Customer DC priming used RDC targets (71% over-prime for A-items)
+- Code used `rdc_abc_target_dos` (18/15/12 DOS for A/B/C) instead of DC deployment targets (`dc_buffer_days × mult` = 10.5/14/17.5 DOS)
+- A-items were over-primed by 71% — spent the entire year draining toward steady state
+- **Fix:** Build `dc_abc_target_dos` from `dc_buffer_days × 1.5/2.0/2.5` to match operational deployment
+
+#### Bug 2: Store priming DOS didn't match channel profiles (40-100% over-prime)
+- `store_days_supply=10.0` × ABC factors gave 12/10/8 DOS, but channel profiles target 5-8 DOS (most at 6.0)
+- **Fix:** `store_days_supply` 10.0 → 6.0 (ABC factors give A=7.2, B=6.0, C=4.8)
+
+#### Bug 3: Customer DCs lacked pipeline adjustment
+- RDC priming subtracted upstream lead time to prevent double-stocking with pipeline inventory
+- Customer DCs had no such adjustment — got full on-hand + pipeline arriving
+- **Fix:** Apply same `_get_avg_upstream_lead_time()` adjustment as RDCs (floor at 2.0 days)
+
+#### Issue 4: RDC push threshold too high (dead zone)
+- `push_threshold_dos=40.0` only activated when RDC DOS exceeded 40 — 2.7× the 15 DOS target
+- Created 25-DOS dead zone where inventory accumulated with no escape
+- **Fix:** `push_threshold_dos` 40.0 → 20.0 (~1.3× target, real-world push behavior)
+
+#### Config Changes
+| Parameter | Old | New | Rationale |
+|---|---|---|---|
+| `store_days_supply` | 10.0 | 6.0 | Match channel profiles |
+| `push_threshold_dos` | 40.0 | 20.0 | ~1.3× RDC target (15 DOS) |
+| `customer_dc_days_supply` | 10.0 | DEPRECATED | Replaced by `dc_buffer_days × ABC mult` |
+
+#### Files Modified
+| File | Changes |
+|---|---|
+| `src/prism_sim/simulation/orchestrator.py` | DC priming uses `dc_abc_target_dos` (dc_buffer_days × ABC mult); DC pipeline adjustment added; dead `customer_dc_days` variable removed |
+| `src/prism_sim/config/simulation_config.json` | `store_days_supply` 10→6, `push_threshold_dos` 40→20, `customer_dc_days_supply` deprecated |
+
 ## [0.59.0] - 2026-02-09
 
 ### Remove Artificial Config Knobs & Fix Age Tracking Bugs

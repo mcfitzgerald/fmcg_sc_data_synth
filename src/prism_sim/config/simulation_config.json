@@ -198,7 +198,7 @@
         "share_ceiling_headroom": 1.5,
         "_share_ceiling_note": "v0.55.0: Max deploy per target = demand_share x available x headroom.",
         "push_allocation_enabled": true,
-        "push_threshold_dos": 40.0,
+        "push_threshold_dos": 20.0,
         "push_receive_dos_cap": 12.0,
         "_push_receive_note": "v0.55.0: Gates RDC→DC push receiving. ≈dc_buffer_days×1.7, slightly above A-item cap (10.5)",
         "channel_profiles": {
@@ -346,11 +346,12 @@
     "inventory": {
       "initial_fg_level": 5.0,
       "initialization": {
-        "_comment": "v0.53.1: RDC days raised from 14→15 — 1d buffer for service level during first week",
-        "store_days_supply": 10.0,
+        "_comment": "v0.60.0: Store priming matches channel profiles (target_days=6.0 for MASS_RETAIL/CLUB/ECOM/default). ABC factors give A=7.2, B=6.0, C=4.8",
+        "store_days_supply": 6.0,
         "rdc_days_supply": 15.0,
         "rdc_store_multiplier": 80.0,
-        "customer_dc_days_supply": 10.0,
+        "customer_dc_days_supply_DEPRECATED": 10.0,
+        "_customer_dc_days_supply_note": "v0.60.0: DEPRECATED — DC priming now uses dc_buffer_days × ABC multipliers (matching deployment targets). Kept for calibrate_config.py compat.",
         "plant_ingredient_buffer": 200000.0,
         "abc_velocity_factors": {
           "A": 1.2,

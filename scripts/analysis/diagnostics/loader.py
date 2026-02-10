@@ -3,6 +3,7 @@ Shared data loading, ABC classification, and node helpers.
 
 All diagnostic modules consume a single DataBundle produced here.
 Memory-safe: inventory.parquet is streamed via PyArrow row groups.
+Shipments and orders are streamed with FG filtering + categorical dtypes (v0.60.0).
 """
 
 from __future__ import annotations
@@ -11,7 +12,10 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
+import pyarrow as pa
+import pyarrow.compute as pc
 import pyarrow.parquet as pq
 
 # All demand-generating endpoint node prefixes (7-channel model)
@@ -61,17 +65,24 @@ def is_demand_endpoint(node_id: str) -> bool:
 # ---------------------------------------------------------------------------
 
 def classify_abc(
-    shipments: pd.DataFrame,
+    product_volumes: pd.DataFrame,
     products: pd.DataFrame,
     a_threshold: float = 0.80,
     b_threshold: float = 0.95,
 ) -> dict[str, str]:
     """Per-category Pareto ABC classification from shipment volumes.
 
+    Args:
+        product_volumes: DataFrame with columns [product_id, quantity].
+            Can be raw shipments or pre-aggregated per-product totals.
+        products: DataFrame with columns [id, name, category].
+        a_threshold: Cumulative volume fraction for A-class cutoff.
+        b_threshold: Cumulative volume fraction for B-class cutoff.
+
     Returns dict mapping product_id -> 'A'/'B'/'C'.
     """
     fg_products = set(products[products["category"] != "INGREDIENT"]["id"])
-    fg_ships = shipments[shipments["product_id"].isin(fg_products)]
+    fg_ships = product_volumes[product_volumes["product_id"].isin(fg_products)]
 
     product_volume = fg_ships.groupby("product_id")["quantity"].sum().reset_index()
     product_volume.columns = ["product_id", "total_volume"]
@@ -108,6 +119,97 @@ def classify_abc(
     a_n, b_n, c_n = counts.get("A", 0), counts.get("B", 0), counts.get("C", 0)
     print(f"  ABC: A={a_n}, B={b_n}, C={c_n} SKUs")
     return dict(zip(abc_df["product_id"], abc_df["abc_class"], strict=False))
+
+
+# ---------------------------------------------------------------------------
+# Memory-safe parquet streaming (v0.60.0)
+# ---------------------------------------------------------------------------
+
+def _decode_dict_column(col: pa.Array) -> pa.Array:
+    """Decode a dictionary-encoded Arrow column to plain string."""
+    if pa.types.is_dictionary(col.type):
+        return col.cast(pa.string())
+    return col
+
+
+def _stream_fg_parquet(
+    path: Path,
+    columns: list[str],
+) -> tuple[pd.DataFrame, dict[str, float]]:
+    """Stream a parquet file, keeping only finished-good rows.
+
+    Uses PyArrow row-group streaming with FG filtering.
+    String columns converted to pandas Categorical for ~20x memory savings.
+
+    Returns:
+        df: DataFrame with only FG rows and categorical string columns.
+        product_volumes: {product_id: total_quantity} for ABC classification.
+    """
+    pf = pq.ParquetFile(path)
+    n_rg = pf.metadata.num_row_groups
+    n_rows = pf.metadata.num_rows
+    print(f"  Streaming {path.name} ({n_rows:,} rows, {n_rg} RGs)...")
+
+    arrow_tables: list[pa.Table] = []
+    rows_kept = 0
+    product_volumes: dict[str, float] = {}
+
+    for rg_idx in range(n_rg):
+        table = pf.read_row_group(rg_idx, columns=columns)
+
+        # Filter to finished goods (product_id starts with "SKU-")
+        prod_arr = _decode_dict_column(table.column("product_id"))
+        mask = pc.starts_with(prod_arr, pattern="SKU-")
+        filtered = table.filter(mask)
+
+        if filtered.num_rows > 0:
+            arrow_tables.append(filtered)
+            rows_kept += filtered.num_rows
+
+            # Accumulate product volumes for ABC classification
+            # Use Arrow groupby for speed (avoids 60M+ Python iterations)
+            if "quantity" in columns:
+                chunk_df = filtered.select(
+                    ["product_id", "quantity"]
+                ).to_pandas()
+                for col in chunk_df.columns:
+                    if hasattr(chunk_df[col], "cat"):
+                        chunk_df[col] = chunk_df[col].astype(str)
+                grp = chunk_df.groupby("product_id")["quantity"].sum()
+                for pid, qty in grp.items():
+                    product_volumes[pid] = (
+                        product_volumes.get(pid, 0.0) + float(qty)
+                    )
+
+        if (rg_idx + 1) % 2000 == 0:
+            print(f"    ... {rg_idx + 1}/{n_rg} RGs ({rows_kept:,} rows kept)")
+
+    if not arrow_tables:
+        return pd.DataFrame(columns=columns), product_volumes
+
+    # Concatenate in Arrow (memory-efficient, keeps dictionary encoding)
+    combined = pa.concat_tables(arrow_tables)
+
+    # Convert to pandas
+    df = combined.to_pandas()
+
+    # Convert string columns to categorical (~20x memory savings)
+    for col in df.columns:
+        if df[col].dtype == object:
+            df[col] = df[col].astype("category")
+
+    # Downcast day columns to int32
+    for col in ("creation_day", "arrival_day", "day"):
+        if col in df.columns and df[col].dtype in (np.float64, np.int64):
+            df[col] = df[col].astype(np.int32)
+
+    # Downcast quantity to float32
+    if "quantity" in df.columns:
+        df["quantity"] = df["quantity"].astype(np.float32)
+
+    mem_mb = df.memory_usage(deep=True).sum() / 1e6
+    print(f"    Done: {rows_kept:,} FG rows ({mem_mb:.0f} MB)")
+    return df, product_volumes
 
 
 # ---------------------------------------------------------------------------
@@ -208,7 +310,11 @@ class DataBundle:
 
 
 def load_all_data(data_dir: Path) -> DataBundle:
-    """Load all parquet + static files into a DataBundle."""
+    """Load all parquet + static files into a DataBundle.
+
+    v0.60.0: Shipments and orders are streamed with FG filtering and
+    categorical string dtypes for ~20x memory reduction (~1.5GB vs ~30GB).
+    """
     print("Loading data...")
 
     products = pd.read_csv(
@@ -222,9 +328,16 @@ def load_all_data(data_dir: Path) -> DataBundle:
     locations = pd.read_csv(data_dir / "static_world" / "locations.csv")
     links = pd.read_csv(data_dir / "static_world" / "links.csv")
 
-    print("  Loading shipments.parquet...")
-    shipments = pd.read_parquet(data_dir / "shipments.parquet")
-    print(f"    {len(shipments):,} rows")
+    # v0.60.0: Stream shipments with FG filter + categorical dtypes
+    # Only load columns used by diagnostics (drop shipment_id, weight, volume,
+    # emissions which are never referenced)
+    ship_columns = [
+        "product_id", "source_id", "target_id",
+        "creation_day", "arrival_day", "quantity",
+    ]
+    shipments, product_volumes = _stream_fg_parquet(
+        data_dir / "shipments.parquet", ship_columns
+    )
 
     print("  Loading batches.parquet...")
     batches = pd.read_parquet(data_dir / "batches.parquet")
@@ -238,9 +351,14 @@ def load_all_data(data_dir: Path) -> DataBundle:
     forecasts = pd.read_parquet(data_dir / "forecasts.parquet")
     print(f"    {len(forecasts):,} rows")
 
-    print("  Loading orders.parquet...")
-    orders = pd.read_parquet(data_dir / "orders.parquet")
-    print(f"    {len(orders):,} rows")
+    # v0.60.0: Stream orders with FG filter + categorical dtypes
+    order_columns = [
+        "product_id", "source_id", "target_id",
+        "day", "quantity", "status",
+    ]
+    orders, _ = _stream_fg_parquet(
+        data_dir / "orders.parquet", order_columns
+    )
 
     print("  Loading returns.parquet...")
     returns = pd.read_parquet(data_dir / "returns.parquet")
@@ -249,9 +367,13 @@ def load_all_data(data_dir: Path) -> DataBundle:
     with open(data_dir / "metrics.json") as f:
         metrics = json.load(f)
 
-    # ABC classification
+    # ABC classification from product volumes accumulated during streaming
     print("\nClassifying ABC...")
-    abc_map = classify_abc(shipments, products)
+    vol_df = pd.DataFrame(
+        list(product_volumes.items()),
+        columns=["product_id", "quantity"],
+    )
+    abc_map = classify_abc(vol_df, products)
 
     # Stream inventory
     print("\nStreaming inventory by echelon...")
