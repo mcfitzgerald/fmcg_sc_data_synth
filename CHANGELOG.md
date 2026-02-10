@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.61.0] - 2026-02-10
+
+### Seasonal-Aware Deployment + Tighter MRP Caps
+
+v0.60.0 diagnostic (365-day) revealed deployment uses static `base_demand_matrix` while actual POS swings ±12% seasonally (34% peak-to-trough). During peaks, deployment under-targets causing DC drain; during troughs, deployment over-targets causing plant FG accumulation. MRP DOS caps (A=30/B=35/C=35) provided no backpressure — 13–18d of unused headroom above operating points.
+
+#### Fix 1: Seasonal-Aware Deployment (orchestrator.py)
+- Scale `expected_demand` by `MRPEngine._get_seasonal_factor(day)` in `_compute_deployment_needs()` — deployment targets now track actual POS seasonality
+- Scale demand in `_push_excess_rdc_inventory()` — RDC DOS and DC push suppression DOS use seasonal demand
+- During peaks: higher targets → more deployment → plant FG drains (seasonal buffer)
+- During troughs: lower targets → less deployment → plant FG accumulates with MRP cap ceiling
+
+#### Fix 2: Tighten MRP DOS Caps (simulation_config.json)
+- `inventory_cap_dos_a`: 30 → 22 (5d above ~17d A-item IP)
+- `inventory_cap_dos_b`: 35 → 25 (8d above ~17d post-batch IP peak)
+- `inventory_cap_dos_c`: 35 → 25 (same as B)
+- With seasonal deployment reducing FG variance, caps can be tighter
+- Caps only bite deep into troughs (~42 days of accumulation before cap triggers for A-items)
+
 ## [0.60.0] - 2026-02-09
 
 ### Fix Priming Mismatches & RDC Accumulation

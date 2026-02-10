@@ -1924,6 +1924,8 @@ class Orchestrator:
 
         v0.55.0: ABC-differentiated target DOS for DCs (physics-derived:
         dc_buffer_days x multiplier). RDCs use flat target.
+        v0.61.0: Scale expected_demand by seasonal factor so deployment
+        targets track actual POS demand patterns (±12% seasonal swing).
         """
         n_p = self.state.n_products
         in_transit = self.state.get_in_transit_by_target()
@@ -1935,14 +1937,18 @@ class Orchestrator:
         dc_target_dos_vec[abc == 0] = self._dc_deploy_dos_a
         dc_target_dos_vec[abc == 1] = self._dc_deploy_dos_b
 
+        # v0.61.0: Seasonal scaling — reuse MRP's seasonal factor
+        seasonal_factor = self.mrp_engine._get_seasonal_factor(current_day)
+
         for target_id in self.deployment_shares:
             target_idx = self.state.node_id_to_idx.get(target_id)
             if target_idx is None:
                 continue
 
-            # Expected demand for this target
-            expected_demand = self._target_expected_demand.get(
-                target_id, np.zeros(n_p)
+            # Expected demand for this target (seasonally adjusted)
+            expected_demand = (
+                self._target_expected_demand.get(target_id, np.zeros(n_p))
+                * seasonal_factor
             )
 
             # ABC-differentiated target position
@@ -2019,6 +2025,7 @@ class Orchestrator:
         v0.19.2: Implements push-based allocation to break the negative feedback
         spiral. When RDCs accumulate inventory (because Customer DCs under-order),
         this pushes excess downstream to maintain flow.
+        v0.61.0: Seasonal scaling of demand for DOS calculations.
 
         Returns:
             List of push shipments created
@@ -2064,6 +2071,9 @@ class Orchestrator:
         # This ensures push allocation doesn't under-push during the negative spiral
         base_demand_matrix = self.pos_engine.get_base_demand_matrix()
 
+        # v0.61.0: Seasonal scaling for DOS calculations
+        seasonal_factor = self.mrp_engine._get_seasonal_factor(day)
+
         shipment_counter = 0
 
         for rdc_id in rdc_ids:
@@ -2096,6 +2106,9 @@ class Orchestrator:
                                     rdc_expected_demand += base_demand_matrix[
                                         store_idx, :
                                     ]
+
+            # v0.61.0: Seasonal scaling
+            rdc_expected_demand *= seasonal_factor
 
             # Floor demand to avoid division by zero
             rdc_demand_safe = np.maximum(rdc_expected_demand, 0.1)
@@ -2157,7 +2170,7 @@ class Orchestrator:
                 dc_idx = self.state.node_id_to_idx.get(dc_id)
                 if dc_idx is not None:
                     dc_inv = self.state.actual_inventory[dc_idx, :]
-                    dc_demand_safe = np.maximum(dc_demand, 0.1)
+                    dc_demand_safe = np.maximum(dc_demand * seasonal_factor, 0.1)
                     dc_dos = dc_inv / dc_demand_safe
                     # Suppress push for products where DC already has enough
                     dc_over_cap = dc_dos >= push_receive_cap

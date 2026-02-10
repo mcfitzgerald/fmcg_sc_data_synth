@@ -282,11 +282,11 @@ demand_for_dos = demand_smoothing_weight * expected + (1.0 - demand_smoothing_we
 Skip production when a product already has sufficient inventory:
 ```python
 # Skip production if DOS exceeds ABC-class cap
-if dos_position > cap_dos:  # A=30d, B=35d, C=35d
+if dos_position > cap_dos:  # A=22d, B=25d, C=25d
     continue
 ```
-- **Config:** `inventory_cap_dos_a=30`, `inventory_cap_dos_b=35`, `inventory_cap_dos_c=35`
-- **v0.56.0 change:** A raised from 25→30 (~2× horizon headroom), C raised from 25→35 (2.5× horizon headroom, was 45 at v0.46.0)
+- **Config:** `inventory_cap_dos_a=22`, `inventory_cap_dos_b=25`, `inventory_cap_dos_c=25`
+- **v0.61.0 change:** Tightened from A=30/B=35/C=35. A:22 (5d above ~17d IP), B/C:25 (8d above ~17d post-batch IP). Seasonal deployment reduces FG variance so caps can be tighter.
 - **Effect:** Self-regulating negative feedback — production stops when inventory is sufficient, resumes when consumed
 
 ### SLOB Production Dampening — **DISABLED** (v0.56.1)
@@ -329,10 +329,11 @@ Finished goods flow from plants to downstream nodes via need-based deployment (r
 
 ### `_create_plant_shipments()` — Core Deployment
 ```python
-need = max(0, target_dos × expected_demand - current_position)
+need = max(0, target_dos × expected_demand × seasonal_factor - current_position)
 # current_position = on_hand + in_transit_to_target
+# seasonal_factor = MRPEngine._get_seasonal_factor(day)  # v0.61.0
 ```
-1. `_compute_deployment_needs()` calculates per-target, per-product need vectors
+1. `_compute_deployment_needs()` calculates per-target, per-product need vectors (seasonally adjusted since v0.61.0)
 2. Available FG per product summed across all plants
 3. Fair-share allocation when constrained: `fill_ratio = min(available / total_need, 1.0)`
 4. Share ceiling headroom: 1.5× prevents any single target from consuming all supply
@@ -345,7 +346,7 @@ need = max(0, target_dos × expected_demand - current_position)
 | **RDCs** | 15.0d | 15.0d | 15.0d | Flat `_rdc_target_dos` |
 
 ### `_push_excess_rdc_inventory()` — RDC→DC Overflow
-Active as secondary overflow valve: pushes excess RDC inventory to customer DCs when RDC DOS exceeds threshold (`push_threshold_dos=20.0`, ~1.3× the 15 DOS target). Activates at 20 DOS to prevent accumulation in the RDC dead zone.
+Active as secondary overflow valve: pushes excess RDC inventory to customer DCs when RDC DOS exceeds threshold (`push_threshold_dos=20.0`, ~1.3× the 15 DOS target). Activates at 20 DOS to prevent accumulation in the RDC dead zone. v0.61.0: DOS calculations use seasonally-adjusted demand (same factor as deployment).
 
 ### Key Design: Plant FG as Natural Backpressure
 Unneeded FG stays at the plant and enters MRP's inventory position calculation (`_calculate_inventory_position()` includes plant FG in pipeline IP). This creates a natural negative feedback loop: high plant FG → high IP → MRP reduces production → equilibrium.
