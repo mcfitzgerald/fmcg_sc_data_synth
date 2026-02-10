@@ -612,6 +612,21 @@ class TransformEngine:
         actual_available = np.maximum(0, self.state.actual_inventory[plant_idx])
         actual_consumed = np.minimum(consumed_vector, actual_available)
 
+        # FIFO age reduction on ingredient consumption
+        old_qty = np.maximum(0.0, self.state.actual_inventory[plant_idx])
+        with np.errstate(divide='ignore', invalid='ignore'):
+            frac_remaining = np.where(
+                old_qty > 0,
+                np.clip((old_qty - actual_consumed) / old_qty, 0.0, 1.0),
+                0.0,
+            )
+        consume_mask = actual_consumed > 0
+        self.state.inventory_age[plant_idx] = np.where(
+            consume_mask,
+            self.state.inventory_age[plant_idx] * frac_remaining,
+            self.state.inventory_age[plant_idx],
+        )
+
         # Update both inventories by the actually consumed amount
         self.state.perceived_inventory[plant_idx] -= actual_consumed
         self.state.actual_inventory[plant_idx] -= actual_consumed
@@ -634,8 +649,15 @@ class TransformEngine:
     def _add_to_inventory(
         self, plant_id: str, product_id: str, quantity: float
     ) -> None:
-        """Add produced goods to plant inventory."""
-        self.state.update_inventory(plant_id, product_id, quantity)
+        """Add produced goods to plant inventory with age blending.
+
+        Uses receive_inventory() so fresh production (age 0) blends with
+        existing FG, keeping plant age realistic instead of climbing
+        monotonically.
+        """
+        node_idx = self.state.get_node_idx(plant_id)
+        product_idx = self.state.get_product_idx(product_id)
+        self.state.receive_inventory(node_idx, product_idx, quantity)
 
     def _create_batch(
         self, order: ProductionOrder, current_day: int, quantity: float

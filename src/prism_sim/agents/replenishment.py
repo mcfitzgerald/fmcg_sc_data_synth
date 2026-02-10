@@ -1407,9 +1407,7 @@ class MinMaxReplenisher:
             target_node = self.world.nodes.get(target_id)
 
             o_type = OrderType.STANDARD
-            priority = OrderPriority.LOW
-            if target_node and target_node.type == NodeType.DC:
-                priority = OrderPriority.STANDARD
+            priority = OrderPriority.STANDARD
 
             if data["promo_id"]:
                 o_type = OrderType.PROMOTIONAL

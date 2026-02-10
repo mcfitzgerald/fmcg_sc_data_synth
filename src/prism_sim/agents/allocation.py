@@ -166,6 +166,18 @@ class AllocationAgent:
             # Calculate allocated quantities for all products at once
             allocated_qty_vec = demand_vector * fill_ratios
 
+            # FIFO age reduction: oldest units ship first, reducing remaining age
+            old_qty = np.maximum(0.0, self.state.actual_inventory[source_idx, :])
+            with np.errstate(divide='ignore', invalid='ignore'):
+                fraction_remaining = np.where(
+                    old_qty > 0,
+                    np.clip(
+                        (old_qty - allocated_qty_vec) / old_qty, 0.0, 1.0
+                    ),
+                    0.0,
+                )
+            self.state.inventory_age[source_idx, :] *= fraction_remaining
+
             # Update inventory tensors directly (batch operation)
             self.state.actual_inventory[source_idx, :] -= allocated_qty_vec
             self.state.perceived_inventory[source_idx, :] -= allocated_qty_vec

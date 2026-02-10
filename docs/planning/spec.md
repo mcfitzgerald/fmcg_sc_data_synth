@@ -6,18 +6,19 @@ Prism Sim is a discrete-event supply chain Digital Twin simulating a North Ameri
 
 ---
 
-## 2. Validated State (v0.56.1, 365-day)
+## 2. Validated State (v0.59.0, 365-day)
 
 | Metric | Value | Notes |
 |--------|-------|-------|
-| Fill Rate | 99.7% | A: 99.9%, B: 99.4%, C: 96.4% |
-| Inventory Turns | 6.93x | |
-| OEE | 58.5% | |
-| SLOB | 38.3% | Pre-existing from v0.54.3 |
-| Prod/Demand | 1.01 | Aligned |
-| Bullwhip | 0.50x | Dampened by throughput-based ordering |
-| Truck Fill | 95.7% | |
-| Perfect Order | 97.5% | |
+| Fill Rate | 98.5% | GREEN |
+| Inventory Turns | 10.31x | GREEN (+49% from v0.58.0) |
+| OEE | 54.3% | YELLOW |
+| SLOB | 0.0% | GREEN (fixed: age tracking bugs) |
+| Prod/Demand | 0.98 | GREEN |
+| Bullwhip | 0.46x | GREEN |
+| Perfect Order | 97.5% | GREEN |
+| Cash-to-Cash | 20.6d | GREEN (-46% from v0.58.0) |
+| Store DOS | 6.1 | On target (was 24.1) |
 
 These are observations — not pass/fail grades against fixed targets.
 
@@ -41,11 +42,10 @@ The simulation is in an iterative shake-out phase. The core engine is complete; 
 - Standalone analyzers: `diagnose_slob.py`, `diagnose_a_item_fill.py`, `analyze_bullwhip.py`
 
 **Known observations** (measured, not yet classified as issues or accepted):
-- SLOB 38.3% — store-level slow-mover accumulation
-- OEE 58.5% — high changeover frequency
-- Store inventory +79% over 365 days — monotonic growth
-- Bullwhip 0.50x — orders smoother than demand (unusual; worth understanding)
-- Plant inventory seasonal drain in back half
+- Customer DC accumulation (+25.1% inflow vs outflow)
+- RDC inventory diverging (+26K/day)
+- A-item production -2.5% below demand
+- OEE 54.3% — slightly below target
 - Mass balance period 0 ~211% (warm-start artifact, expected)
 - CLUB-DC classification trap (diagnostic lesson, documented in `llm_context.md`)
 
@@ -55,21 +55,15 @@ The simulation is in an iterative shake-out phase. The core engine is complete; 
 
 As validation iterates, these areas are probable touchpoints:
 
-**Replenishment agent** (`agents/replenishment.py`)
-- Store-level ordering policy — (s,S) parameters, C-item dampening
-- DOS caps and safety stock calibration
+**Deployment & flow balance** (`simulation/orchestrator.py`)
+- Customer DC accumulation — inflow/outflow mismatch
+- RDC inventory divergence (+26K/day growth)
+- Need-based deployment refinement
 
 **MRP scheduling** (`simulation/mrp.py`)
+- A-item underproduction (-2.5%) — may need buffer adjustment
 - Campaign batching optimization
 - Changeover frequency reduction (directly impacts OEE)
-
-**Disposition logic** (new or within existing modules)
-- Aged stock handling: markdown/donation rather than production throttling
-- SLOB resolution is a disposition problem, not a production problem
-
-**Deployment** (`simulation/orchestrator.py`)
-- Need-based deployment refinement
-- RDC overflow valve tuning (`_push_excess_rdc_inventory()`)
 
 ---
 

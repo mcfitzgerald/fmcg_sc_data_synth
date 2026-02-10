@@ -209,13 +209,23 @@ node_id_to_idx: dict[str, int]
 product_id_to_idx: dict[str, int]
 ```
 
-**Critical:** Always use `state.update_inventory(node_id, product_id, delta)` - never modify tensors directly.
+**Critical:** Always use `state.update_inventory(node_id, product_id, delta)` for simple changes. For inventory receipt (production output, arrivals), use `state.receive_inventory(node_idx, product_idx, qty)` which handles age blending. When deducting inventory, apply FIFO age reduction: `age *= (old_qty - shipped) / old_qty`.
 
-### Inventory Age Tracking (v0.39.2)
+### Inventory Age Tracking (v0.39.2, fixed v0.59.0)
 Used for industry-standard SLOB calculation (age-based, not DOS-based):
 - `age_inventory(days)` - Age all positive inventory by N days (called daily)
-- `receive_inventory_batch(delta)` - Receive fresh inventory with weighted average age blending
+- `receive_inventory(node_idx, product_idx, qty)` - Receive fresh inventory with weighted average age blending
+- `receive_inventory_batch(delta)` - Batch receive with age blending
 - `get_weighted_age_by_product()` - Get inventory-weighted average age per SKU
+
+**FIFO Age Pattern (v0.59.0):** Every inventory deduction must reduce age proportionally:
+```python
+old_qty = max(0.0, float(state.actual_inventory[node_idx, prod_idx]))
+if old_qty > 0:
+    fraction_remaining = max(0.0, (old_qty - ship_qty) / old_qty)
+    state.inventory_age[node_idx, prod_idx] *= fraction_remaining
+```
+This is applied in: POS consumption, allocation, plant deployment, RDC push, ingredient consumption.
 
 ---
 
@@ -655,7 +665,7 @@ When simulation behaves unexpectedly:
    - **SLOB drift:** C-items accumulating (slow movers don't sell)
    - **Key diagnostic:** Compare ABC class inventory at day 30 vs day 365
    - Run `diagnose_365day.py` for comprehensive 3-layer diagnostic
-   - **v0.56.1 validated results:** Fill 99.7%, Turns 6.93×, OEE 58.5%, SLOB 38.3%, Prod/Demand 1.01
+   - **v0.59.0 validated results:** Fill 98.5%, Turns 10.31×, OEE 54.3%, SLOB 0.0%, Prod/Demand 0.98, C2C 20.6d
 
 8. **Inventory turns low but production/demand ratio near 1.0?**
    - This is a **distribution-level problem**, not a production problem

@@ -1830,7 +1830,17 @@ class Orchestrator:
                 if ship_qty < 0.01:  # noqa: PLR2004
                     continue
 
-                # Deduct from plant inventory
+                # Deduct from plant inventory with FIFO age reduction
+                old_qty = max(
+                    0.0, float(self.state.actual_inventory[plant_idx, p_idx])
+                )
+                if old_qty > 0:
+                    fraction_remaining = max(
+                        0.0, (old_qty - ship_qty) / old_qty
+                    )
+                    self.state.inventory_age[plant_idx, p_idx] *= (
+                        fraction_remaining
+                    )
                 self.state.actual_inventory[plant_idx, p_idx] -= ship_qty
                 self.state.perceived_inventory[plant_idx, p_idx] -= ship_qty
                 total_deployed += ship_qty
@@ -2163,9 +2173,23 @@ class Orchestrator:
                     status=ShipmentStatus.IN_TRANSIT,
                 )
 
-                # Deduct from RDC inventory
+                # Deduct from RDC inventory with FIFO age reduction
+                rdc_idx = self.state.node_id_to_idx.get(rdc_id)
                 for line in lines:
-                    self.state.update_inventory(rdc_id, line.product_id, -line.quantity)
+                    p_idx = self.state.product_id_to_idx.get(line.product_id)
+                    if rdc_idx is not None and p_idx is not None:
+                        old_qty = max(
+                            0.0,
+                            float(self.state.actual_inventory[rdc_idx, p_idx]),
+                        )
+                        if old_qty > 0:
+                            frac = max(
+                                0.0, (old_qty - line.quantity) / old_qty
+                            )
+                            self.state.inventory_age[rdc_idx, p_idx] *= frac
+                    self.state.update_inventory(
+                        rdc_id, line.product_id, -line.quantity
+                    )
 
                 push_shipments.append(shipment)
 

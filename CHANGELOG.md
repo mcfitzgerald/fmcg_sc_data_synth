@@ -5,6 +5,59 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.59.0] - 2026-02-09
+
+### Remove Artificial Config Knobs & Fix Age Tracking Bugs
+
+End-to-end flow tracing revealed two independent root causes of poor KPIs: (1) artificial configuration parameters with no real-world supply chain analog were inflating store ordering, and (2) inventory age tracking had bugs in 4 of 5 deduction paths — only POS sales properly reduced age via FIFO.
+
+#### Config: Remove Artificial Controls
+- **`default_min_qty`** 100 → 10: Was forcing C-items into 33-day orders at stores (100 units / 3 units/day demand). Reduced to 10 (= batch_size, representing real case-pack minimums)
+- **`min_order_qty`** 100 → 25: DC minimum order had no supply chain basis at 100
+- **`order_cycle_days`** 1 → 3: Real stores order 2-3x/week, not daily
+- **`min_safety_stock_days`** 3.0 → 0.5: Artificial floor was overriding the variance-based safety stock formula
+- **`drp_replenish_multiplier`** 1.75 → 1.0: Fudge factor with no DRP analog — real DRP uses net requirements
+
+#### Code: Fix Store Priority
+- Store order priority changed from `LOW` → `STANDARD` in replenishment agent — stores were being deprioritized vs DCs in allocation with no real-world basis
+
+#### Code: Fix FIFO Age Tracking (4 bugs)
+Age tracking used a weighted-average FIFO approximation (`new_age = old_age × fraction_remaining`), but only POS consumption applied it. Four other inventory deduction paths bypassed age reduction entirely, causing plant FG age to climb monotonically (~1 day/day):
+
+1. **Production output** (`transform.py`): Used `update_inventory()` (no age blending) instead of `receive_inventory()` — fresh FG wasn't blending with existing stock age
+2. **Ingredient consumption** (`transform.py`): No FIFO age reduction when ingredients consumed for production
+3. **Plant deployment** (`orchestrator.py`): No FIFO age reduction when FG shipped from plants to DCs/RDCs
+4. **RDC push** (`orchestrator.py`): No FIFO age reduction when RDC overflow pushed to DCs
+5. **Allocation** (`allocation.py`): No FIFO age reduction when DCs/RDCs fill replenishment orders
+
+#### Validated Results (365-day)
+| Metric | v0.58.0 | v0.59.0 | Change |
+|---|---|---|---|
+| Fill Rate | 99.54% | 98.5% | -1% (GREEN) |
+| Inventory Turns | 6.90x | 10.31x | **+49%** |
+| SLOB | 37.3% | 0.0% | **Fixed** |
+| Store DOS | 24.1 | 6.1 | **On target** |
+| Cash-to-Cash | 38.1d | 20.6d | **-46%** |
+| Prod/Demand | 1.01 | 0.98 | GREEN |
+| Perfect Order | 97.5% | 97.5% | Stable |
+| Bullwhip | 0.67x | 0.46x | Better |
+| OEE | 58.5% | 54.3% | YELLOW |
+
+#### Remaining Observations
+- Customer DC accumulation (+25.1% inflow vs outflow)
+- RDC inventory diverging (+26K/day)
+- A-item production -2.5% below demand
+- OEE slightly below target (54.3% vs 55%)
+
+#### Files Modified
+| File | Changes |
+|---|---|
+| `src/prism_sim/config/simulation_config.json` | 5 config parameter changes (min_qty, order_cycle, safety_stock, drp_multiplier) |
+| `src/prism_sim/agents/replenishment.py` | Store priority LOW → STANDARD |
+| `src/prism_sim/simulation/transform.py` | Production output uses `receive_inventory()` for age blending; ingredient consumption gets FIFO age reduction |
+| `src/prism_sim/simulation/orchestrator.py` | Plant deployment and RDC push get FIFO age reduction |
+| `src/prism_sim/agents/allocation.py` | Order allocation gets FIFO age reduction |
+
 ## [0.58.0] - 2026-02-09
 
 ### Removed
