@@ -548,8 +548,8 @@ class Orchestrator:
         Create synthetic production orders already mid-completion at plants.
 
         Seeds both in-progress POs (completing day 1-2) and finished goods
-        buffer at plants (2 days of expected shipments). Eliminates the
-        3-day production gap that occurs in cold start.
+        buffer at plants (plant_fg_prime_days per plant from config).
+        Eliminates the 3-day production gap that occurs in cold start.
         """
         expected_demand = self.mrp_engine.expected_daily_demand
         lead_time = self.mrp_engine.production_lead_time
@@ -581,13 +581,21 @@ class Orchestrator:
             self.active_production_orders.append(po)
             po_count += 1
 
-        # Seed finished goods at plants (2 days of expected shipments)
+        # Seed finished goods at plants
+        # Config: plant_fg_prime_days per plant. 4 plants x 3.5 = 14 DOS total.
+        # With ~2 DOS in-production WIP + ~1 DOS in-transit, total IP ~ 17 DOS
+        # matching MRP A-item MPS target (horizon 14 x a_buffer 1.22).
+        sim_params = self.config.get("simulation_parameters", {})
+        cal_config = sim_params.get("calibration", {})
+        init_config = cal_config.get("initialization", {})
+        plant_fg_prime_days = init_config.get("plant_fg_prime_days", 3.5)
+
         fg_count = 0
         for plant_id in self.mrp_engine._plant_ids:
             plant_idx = self.state.node_id_to_idx.get(plant_id)
             if plant_idx is None:
                 continue
-            fg_buffer = expected_demand * 2.0
+            fg_buffer = expected_demand * plant_fg_prime_days
             self.state.actual_inventory[plant_idx, :] += fg_buffer
             self.state.perceived_inventory[plant_idx, :] += fg_buffer
             fg_count += 1

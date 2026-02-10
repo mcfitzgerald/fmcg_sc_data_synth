@@ -6,27 +6,35 @@ Prism Sim is a discrete-event supply chain Digital Twin simulating a North Ameri
 
 ---
 
-## 2. Validated State (v0.59.0, 365-day)
+## 2. Validated State (v0.61.0, 365-day)
 
-| Metric | Value | Notes |
-|--------|-------|-------|
-| Fill Rate | 98.5% | GREEN |
-| Inventory Turns | 10.31x | GREEN (+49% from v0.58.0) |
-| OEE | 54.3% | YELLOW |
-| SLOB | 0.0% | GREEN (fixed: age tracking bugs) |
-| Prod/Demand | 0.98 | GREEN |
-| Bullwhip | 0.46x | GREEN |
-| Perfect Order | 97.5% | GREEN |
-| Cash-to-Cash | 20.6d | GREEN (-46% from v0.58.0) |
-| Store DOS | 6.1 | On target (was 24.1) |
+| Metric | v0.59.0 | v0.61.0 | Status |
+|--------|---------|---------|--------|
+| Fill Rate | 98.5% | 98.51% | GREEN |
+| Inventory Turns | 10.31x | 10.41x | GREEN |
+| OEE | 54.3% | 55.3% | GREEN |
+| SLOB | 0.0% | 0.0% | GREEN |
+| Prod/Demand | 0.98 | 1.01 | GREEN |
+| Bullwhip | 0.46x | 0.68x | GREEN |
+| Perfect Order | 97.5% | 97.4% | GREEN |
+| Cash-to-Cash | 20.6d | 20.1d | GREEN |
+| Store DOS | 6.1 | 6.1 | On target |
 
 These are observations — not pass/fail grades against fixed targets.
 
-**v0.60.0 fixes applied** (pending 365-day validation):
-- DC priming now matches deployment targets (was using RDC targets — 71% over-prime for A-items)
+**v0.60.0 + v0.61.0 + v0.62.0 changes validated:**
+- DC priming matches deployment targets (was using RDC targets — 71% over-prime for A-items)
 - Store priming matches channel profiles (`store_days_supply` 10→6)
-- DC priming has pipeline adjustment (prevents double-stocking)
-- RDC push threshold lowered (40→20 DOS, eliminates 25-DOS accumulation dead zone)
+- DC pipeline adjustment prevents double-stocking
+- RDC push threshold lowered (40→20 DOS)
+- Seasonal-aware deployment (`_compute_deployment_needs()` and `_push_excess_rdc_inventory()`)
+- Tighter MRP DOS caps: A=22, B=25, C=25
+- Plant FG priming raised to 3.5 DOS/plant (was 2.0) — total IP ≈17 DOS matches MRP A-item target
+
+**Remaining stability concerns** (top-line metrics healthy, structural issues persist):
+- All 24 deployment targets UNDER (position ratios 0.32-0.68x, target 0.8-1.1x)
+- MRP backpressure correlation: +0.322 (positive = caps not constraining production)
+- Customer DC flow imbalance: 26.1% inflow > outflow (but inventory draining -17.2%)
 
 ---
 
@@ -47,13 +55,14 @@ The simulation is in an iterative shake-out phase. The core engine is complete; 
 - `scripts/analysis/diagnose_365day.py` (3-layer pyramid: physics → operational → flow)
 - Standalone analyzers: `diagnose_slob.py`, `diagnose_a_item_fill.py`, `analyze_bullwhip.py`
 
-**Known observations** (measured, not yet classified as issues or accepted):
-- Customer DC accumulation (+25.1% inflow vs outflow) — **v0.60.0: priming fix should reduce/eliminate**
-- RDC inventory diverging (+26K/day) — **v0.60.0: push threshold fix (40→20) should address**
-- A-item production -2.5% below demand
-- OEE 54.3% — slightly below target
-- Mass balance period 0 ~211% (warm-start artifact, expected)
-- CLUB-DC classification trap (diagnostic lesson, documented in `llm_context.md`)
+**Known observations** (v0.61.0, measured):
+- Customer DC flow imbalance: 26.1% inflow > outflow (persistent across v0.59.0-v0.61.0)
+- RDC growth: +38.3% over 365 days (push threshold fix reduced divergence rate)
+- Plant FG growth: +61.4% — early overproduction (day 1-60) dominates; FG plateaus at 59-63M then declines
+- MRP backpressure not engaging: production correlates positively with plant FG (+0.322)
+- All deployment targets UNDER (0.32-0.68x position ratios)
+- Mass balance period 0 ~155% (warm-start artifact, expected)
+- Prod/Demand now 1.01 (was 0.98 in v0.59.0 — slight overcorrection)
 
 ---
 

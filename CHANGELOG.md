@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.62.0] - 2026-02-10
+
+### Fix Plant FG Priming to Match MRP Steady State
+
+Plant FG grew +61% over 365 days because per-plant priming was 2.0 DOS (total 8 DOS across 4 plants) while MRP's A-item MPS target was ~17 DOS. MRP saw a 9 DOS deficit on day 1 and overproduced at +25% above demand for 30 days, building 22M cases that persisted all year.
+
+#### Fix: Increase plant FG priming to match MRP IP target (orchestrator.py, simulation_config.json)
+- New config: `calibration.initialization.plant_fg_prime_days` = 3.5 (was hardcoded 2.0)
+- Per-plant FG: 3.5 DOS × 4 plants = 14 DOS total
+- With ~2 DOS in-production WIP + ~1 DOS in-transit = ~17 DOS total plant IP
+- Matches MRP A-item target: `horizon(14) × a_buffer(1.22)` = 17.08 DOS
+- MRP starts in equilibrium — minimal catch-up production needed
+- Expected plant FG growth: ~14% (was +61%)
+
 ## [0.61.0] - 2026-02-10
 
 ### Seasonal-Aware Deployment + Tighter MRP Caps
