@@ -51,9 +51,11 @@ class Orchestrator:
         output_format: str | None = None,
         inventory_sample_rate: int | None = None,
         memory_callback: MemoryCallback = None,
+        warm_start_dir: str | None = None,
     ) -> None:
         # Store memory callback for periodic snapshots
         self._memory_callback = memory_callback
+        self._warm_start_dir = warm_start_dir
         # 1. Initialize World
         manifest = load_manifest()
         self.config = load_simulation_config()
@@ -70,7 +72,12 @@ class Orchestrator:
         sim_params = self.config.get("simulation_parameters", {})
         cal_config = sim_params.get("calibration", {})
         init_config = cal_config.get("initialization", {})
-        self._stabilization_days = init_config.get("stabilization_days", 10)
+        if warm_start_dir:
+            self._stabilization_days = init_config.get(
+                "warm_start_stabilization_days", 3
+            )
+        else:
+            self._stabilization_days = init_config.get("stabilization_days", 10)
         self._start_day = 1
         self._metrics_start_day = self._stabilization_days + 1
 
@@ -102,8 +109,22 @@ class Orchestrator:
         )
         self.mrp_engine.drp_planner = self.drp_planner
 
-        # Initialize inventory with demand-proportional priming
-        self._initialize_inventory()
+        # Initialize inventory: warm-start from parquet or cold-start from formulas
+        if self._warm_start_dir:
+            from prism_sim.simulation.warm_start import load_warm_start_state
+
+            ws = load_warm_start_state(self._warm_start_dir, self.state, self.world)
+            self.state.perceived_inventory[:] = ws.perceived_inventory
+            self.state.actual_inventory[:] = ws.actual_inventory
+            self.state.add_shipments_batch(ws.active_shipments)
+            self._warm_start_production_orders = ws.active_production_orders
+            print(
+                f"Warm-start applied (day {ws.checkpoint_day}): "
+                f"{len(ws.active_shipments)} shipments, "
+                f"{len(ws.active_production_orders)} POs"
+            )
+        else:
+            self._initialize_inventory()
 
         self.replenisher = MinMaxReplenisher(
             self.world,
@@ -392,9 +413,23 @@ class Orchestrator:
                 link.target_id
             )
 
+        # Always prime history buffers (not in parquet, settles in ~14d)
         self._prime_history_buffers()
-        self._prime_pipeline()
-        self._prime_production_wip()
+
+        if self._warm_start_dir:
+            # Warm-start: pipeline + WIP loaded from parquet
+            self.active_production_orders = getattr(
+                self, "_warm_start_production_orders", []
+            )
+            if hasattr(self, "_warm_start_production_orders"):
+                del self._warm_start_production_orders
+            print("  Pipeline + WIP: loaded from warm-start (skipping synthetic)")
+        else:
+            # Cold-start: full synthetic priming
+            self._prime_pipeline()
+            self._prime_production_wip()
+
+        # Always prime inventory age (not in parquet)
         self._prime_inventory_age()
 
         # Clean up temporary maps

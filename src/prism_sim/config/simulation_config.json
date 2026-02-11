@@ -79,6 +79,7 @@
       "initialization": {
         "_comment": "v0.58.0: Single init path — priming + synthetic steady-state + stabilization",
         "stabilization_days": 10,
+        "warm_start_stabilization_days": 3,
         "plant_fg_prime_days": 3.5,
         "_plant_fg_prime_note": "v0.62.0: Per-plant FG priming in days of demand. 4 plants × 3.5 = 14 DOS total. With ~2 DOS in-production WIP + ~1 DOS in-transit, total plant IP ≈ 17 DOS — matches MRP A-item MPS target (horizon 14 × a_buffer 1.22 = 17.08).",
         "priming_noise": {

@@ -123,6 +123,16 @@ Examples:
         action="store_true",
         help="Enable memory profiling with tracemalloc (outputs memory_profile.json)",
     )
+    parser.add_argument(
+        "--warm-start",
+        type=str,
+        default=None,
+        metavar="DIR",
+        help=(
+            "Load initial state from a prior run's parquet output directory. "
+            "Requires: inventory.parquet, shipments.parquet, production_orders.parquet."
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -138,6 +148,8 @@ Examples:
     mode_parts = []
     mode_parts.append(f"Days={args.days}")
     mode_parts.append(f"Logging={'Enabled' if enable_logging else 'Disabled'}")
+    if args.warm_start:
+        mode_parts.append(f"WarmStart={args.warm_start}")
     if enable_logging and args.streaming:
         mode_parts.append("Streaming=On")
         if args.format:
@@ -152,6 +164,7 @@ Examples:
         output_format=args.format,
         inventory_sample_rate=args.inventory_sample_rate,
         memory_callback=log_memory if args.profile_memory else None,
+        warm_start_dir=args.warm_start,
     )
 
     log_memory("after_world_build")

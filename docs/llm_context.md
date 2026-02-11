@@ -66,6 +66,7 @@ The simulation enforces these constraints - violations indicate bugs:
 | **Risk events** | `simulation/risk_events.py` | `RiskEventManager` |
 | **Data export** | `simulation/writer.py` | `SimulationWriter`, `ThreadedParquetWriter` |
 | **Initialization & priming** | `simulation/orchestrator.py` | `_initialize_inventory()`, `_prime_synthetic_steady_state()` |
+| **Warm-start loader** | `simulation/warm_start.py` | `load_warm_start_state()`, `WarmStartState` |
 
 ### Data Models
 | Concept | File | Key Classes |
@@ -177,7 +178,7 @@ poetry run python scripts/generate_static_world.py
 ```
 
 **Key Concepts:**
-- **Single Init Path:** Every run follows: demand-proportional priming → synthetic steady-state → 10-day stabilization → data collection. No checkpoints or snapshots.
+- **Two Init Paths:** Cold-start (formula priming → synthetic steady-state → 10-day stabilization) or warm-start (`--warm-start <dir>` → load converged state from prior run's parquet → 3-day stabilization).
 - **Demand Sensing:** Agents (MRP/Replenishment) use proactive demand forecasts from `POSEngine` to build stock ahead of promotions and seasonality.
 - **P&G Scale:** The simulation is calibrated to ~4M cases/day (realistic North American FMCG volume) with ~33 production lines network-wide (15 default + 4 OH + 2 TX + 3 CA + 6 GA + 3 other).
 
@@ -189,11 +190,22 @@ poetry run python scripts/generate_static_world.py
 
 ## 5. Initialization & Stabilization
 
-Every run follows a single initialization path:
+Two initialization paths:
 
+### Cold Start (default)
 1. **Demand-proportional priming** (`_initialize_inventory()`): Seeds on-hand inventory at every node proportional to expected demand and ABC class. Priming targets match operational targets: stores use `store_days_supply=6.0` × ABC factors; DCs use `dc_buffer_days × 1.5/2.0/2.5` (A/B/C); RDCs use `rdc_days_supply × ABC factors` with pipeline adjustment. Both RDCs and Customer DCs subtract upstream lead time to prevent double-stocking with pipeline inventory.
 2. **Synthetic steady-state priming** (`_prime_synthetic_steady_state()`): Adds pipeline shipments, production WIP (plant FG at `plant_fg_prime_days`=3.5 per plant → 14 DOS total, matching MRP A-item target ~17 DOS with WIP+transit), history buffers, and inventory age
 3. **Stabilization** (default 10 days): Normal simulation steps excluded from metrics
+
+### Warm Start (`--warm-start <dir>`)
+Loads converged state from a prior run's parquet output, eliminating the synthetic→converged transient:
+1. **Inventory**: Reads final-day snapshot from `inventory.parquet` (perceived + actual tensors)
+2. **Pipeline**: Restores in-transit shipments from `shipments.parquet` (`arrival_day > checkpoint_day`)
+3. **WIP**: Restores active production orders from `production_orders.parquet`
+4. **History**: Still synthetically primed (demand/LT buffers not in parquet, settle in ~14d)
+5. **Stabilization**: Reduced to 3 days (`warm_start_stabilization_days` config)
+
+Module: `simulation/warm_start.py` — `load_warm_start_state()` returns `WarmStartState` dataclass.
 
 `--days N` specifies N days of **steady-state data** (after stabilization).
 Total simulated days = stabilization_days + N.

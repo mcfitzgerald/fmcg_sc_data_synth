@@ -5,6 +5,38 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.67.0] - 2026-02-11
+
+### Warm-Start from Converged State
+
+Eliminates first-30-day production overshoot by initializing from a prior run's converged inventory state instead of synthetic formula priming.
+
+#### New: `--warm-start <dir>` CLI option (run_simulation.py, orchestrator.py)
+- Loads final-day inventory snapshot from `inventory.parquet` (perceived + actual tensors)
+- Restores in-transit shipments from `shipments.parquet` (filters `arrival_day > checkpoint_day`)
+- Restores active production orders from `production_orders.parquet` (in_progress/planned/released)
+- Day remapping: all entity timestamps shifted so checkpoint_day → day 0
+- ID prefixing (`WS-`) prevents collision with new-sim entities
+
+#### New: `warm_start.py` module
+- `WarmStartState` dataclass holds restored inventory, shipments, and production orders
+- `load_warm_start_state()` streams parquet row groups for memory-safe loading
+- Handles inventory sample rate (uses `max(day)` from parquet, works with any rate)
+- Graceful handling of world definition mismatches (logs + skips unmatched nodes/products)
+
+#### Changed: Conditional priming in orchestrator
+- Warm-start skips `_initialize_inventory()`, `_prime_pipeline()`, `_prime_production_wip()`
+- Still runs `_prime_history_buffers()` (demand/LT history not in parquet, settles in ~14d)
+- Still runs `_prime_inventory_age()` (age not in parquet, uses ABC approximation)
+- Stabilization reduced from 10 → 3 days (`warm_start_stabilization_days` config key)
+
+#### Results (365-day warm-start vs cold-start)
+- Plant FG growth: +27% → **-14%** (starts converged, drains slightly)
+- MRP backpressure corr: +0.58 → **+0.15** (3.9x closer to neutral)
+- Echelon drain slopes: 8-12x flatter (system near steady state from day 1)
+- Bullwhip: 0.72x → **0.63x** (improved)
+- Fill rate: 98.6% → 98.5% (minimal impact)
+
 ## [0.66.0] - 2026-02-11
 
 ### Diagnostic Hygiene & Performance
