@@ -38,7 +38,7 @@ def classify_node(node_id: str) -> str:
     if node_id.startswith("RDC-"):
         return "RDC"
     if node_id.startswith(
-        ("RET-DC-", "DIST-DC-", "ECOM-FC-", "DTC-FC-", "PHARM-DC-", "CLUB-DC-")
+        ("RET-DC-", "GRO-DC-", "DIST-DC-", "ECOM-FC-", "DTC-FC-", "PHARM-DC-", "CLUB-DC-")
     ):
         return "Customer DC"
     if node_id.startswith("STORE-"):
@@ -132,83 +132,63 @@ def _decode_dict_column(col: pa.Array) -> pa.Array:
     return col
 
 
-def _stream_fg_parquet(
+def _load_fg_parquet(
     path: Path,
     columns: list[str],
 ) -> tuple[pd.DataFrame, dict[str, float]]:
-    """Stream a parquet file, keeping only finished-good rows.
+    """Load a parquet file, keeping only finished-good rows.
 
-    Uses PyArrow row-group streaming with FG filtering.
-    String columns converted to pandas Categorical for ~20x memory savings.
+    Uses bulk Arrow read + dictionary encoding for fast Categorical conversion.
+    ~8x faster than row-group streaming on large files.
 
     Returns:
         df: DataFrame with only FG rows and categorical string columns.
         product_volumes: {product_id: total_quantity} for ABC classification.
     """
     pf = pq.ParquetFile(path)
-    n_rg = pf.metadata.num_row_groups
     n_rows = pf.metadata.num_rows
-    print(f"  Streaming {path.name} ({n_rows:,} rows, {n_rg} RGs)...")
+    print(f"  Loading {path.name} ({n_rows:,} rows)...")
 
-    arrow_tables: list[pa.Table] = []
-    rows_kept = 0
+    # Bulk read — Arrow handles column projection + predicate pushdown
+    tbl = pq.read_table(path, columns=columns)
+
+    # FG filter in Arrow (vectorized C++)
+    prod_col = _decode_dict_column(tbl.column("product_id"))
+    mask = pc.starts_with(prod_col, pattern="SKU-")
+    tbl = tbl.filter(mask)
+
+    # Product volumes for ABC classification (Arrow-native groupby)
     product_volumes: dict[str, float] = {}
+    if "quantity" in columns and tbl.num_rows > 0:
+        vol_tbl = tbl.select(["product_id", "quantity"])
+        vol_agg = vol_tbl.group_by("product_id").aggregate([("quantity", "sum")])
+        pid_arr = _decode_dict_column(vol_agg.column("product_id")).to_pylist()
+        qty_arr = vol_agg.column("quantity_sum").to_pylist()
+        product_volumes = dict(zip(pid_arr, qty_arr))
 
-    for rg_idx in range(n_rg):
-        table = pf.read_row_group(rg_idx, columns=columns)
+    # Dictionary-encode string columns → pandas Categorical (no 12GB intermediate)
+    for col_name in columns:
+        col_arr = tbl.column(col_name)
+        if col_arr.type == pa.string() or (
+            pa.types.is_dictionary(col_arr.type)
+            and col_arr.type.value_type == pa.string()
+        ):
+            if not pa.types.is_dictionary(col_arr.type):
+                idx = tbl.schema.get_field_index(col_name)
+                tbl = tbl.set_column(idx, col_name, col_arr.dictionary_encode())
 
-        # Filter to finished goods (product_id starts with "SKU-")
-        prod_arr = _decode_dict_column(table.column("product_id"))
-        mask = pc.starts_with(prod_arr, pattern="SKU-")
-        filtered = table.filter(mask)
+    # Arrow dict → pandas Categorical automatically
+    df = tbl.to_pandas()
 
-        if filtered.num_rows > 0:
-            arrow_tables.append(filtered)
-            rows_kept += filtered.num_rows
-
-            # Accumulate product volumes for ABC classification
-            # Use Arrow groupby for speed (avoids 60M+ Python iterations)
-            if "quantity" in columns:
-                chunk_df = filtered.select(
-                    ["product_id", "quantity"]
-                ).to_pandas()
-                for col in chunk_df.columns:
-                    if hasattr(chunk_df[col], "cat"):
-                        chunk_df[col] = chunk_df[col].astype(str)
-                grp = chunk_df.groupby("product_id")["quantity"].sum()
-                for pid, qty in grp.items():
-                    product_volumes[pid] = (
-                        product_volumes.get(pid, 0.0) + float(qty)
-                    )
-
-        if (rg_idx + 1) % 2000 == 0:
-            print(f"    ... {rg_idx + 1}/{n_rg} RGs ({rows_kept:,} rows kept)")
-
-    if not arrow_tables:
-        return pd.DataFrame(columns=columns), product_volumes
-
-    # Concatenate in Arrow (memory-efficient, keeps dictionary encoding)
-    combined = pa.concat_tables(arrow_tables)
-
-    # Convert to pandas
-    df = combined.to_pandas()
-
-    # Convert string columns to categorical (~20x memory savings)
-    for col in df.columns:
-        if df[col].dtype == object:
-            df[col] = df[col].astype("category")
-
-    # Downcast day columns to int32
-    for col in ("creation_day", "arrival_day", "day"):
-        if col in df.columns and df[col].dtype in (np.float64, np.int64):
-            df[col] = df[col].astype(np.int32)
-
-    # Downcast quantity to float32
+    # Downcast numerics
+    for col_name in ("creation_day", "arrival_day", "day"):
+        if col_name in df.columns and df[col_name].dtype in (np.float64, np.int64):
+            df[col_name] = df[col_name].astype(np.int32)
     if "quantity" in df.columns:
         df["quantity"] = df["quantity"].astype(np.float32)
 
     mem_mb = df.memory_usage(deep=True).sum() / 1e6
-    print(f"    Done: {rows_kept:,} FG rows ({mem_mb:.0f} MB)")
+    print(f"    Done: {tbl.num_rows:,} FG rows ({mem_mb:.0f} MB)")
     return df, product_volumes
 
 
@@ -221,6 +201,9 @@ def stream_inventory_by_echelon(
     abc_map: dict[str, str],
 ) -> pd.DataFrame:
     """Stream inventory.parquet by row group, returning per-(day, echelon) totals.
+
+    Builds a node→echelon dict once from the first RG's unique nodes, then
+    uses Arrow FG filter + pandas categorical map per RG for fast aggregation.
 
     Returns DataFrame with columns: day, echelon, total, A, B, C.
     """
@@ -235,54 +218,78 @@ def stream_inventory_by_echelon(
     print(f"  Streaming inventory.parquet ({n_rows:,} rows, {n_rg} RGs)...")
 
     columns = ["day", "node_id", "product_id", "actual_inventory"]
-    accum: dict[tuple[int, str], dict[str, float]] = {}
+
+    # Pre-build node→echelon dict from locations.csv (covers ALL nodes).
+    # First RG only has ~2098 of 3933 nodes — later days have nodes absent on day 11.
+    loc_path = data_dir / "static_world" / "locations.csv"
+    loc_ids = pd.read_csv(loc_path, usecols=["id"])["id"]
+    node_ech = {nid: classify_node(str(nid)) for nid in loc_ids}
+
+    partial_frames: list[pd.DataFrame] = []
     rg_loaded = 0
 
     for rg_idx in range(n_rg):
-        chunk = pf.read_row_group(rg_idx, columns=columns).to_pandas()
+        tbl = pf.read_row_group(rg_idx, columns=columns)
         rg_loaded += 1
 
-        for col in ("node_id", "product_id"):
-            if hasattr(chunk[col], "cat"):
-                chunk[col] = chunk[col].astype(str)
-
-        fg = chunk[chunk["product_id"].apply(is_finished_good)]
-        if len(fg) == 0:
+        # FG filter in Arrow (vectorized C++)
+        prod_col = _decode_dict_column(tbl.column("product_id"))
+        tbl = tbl.filter(pc.starts_with(prod_col, "SKU-"))
+        if tbl.num_rows == 0:
             continue
 
-        fg = fg.copy()
-        fg["echelon"] = fg["node_id"].map(classify_node)
-        fg["abc"] = fg["product_id"].map(abc_map)
+        # Convert to pandas with dict-encode for fast categorical map
+        for col_name in ("node_id", "product_id"):
+            arr = tbl.column(col_name)
+            if not pa.types.is_dictionary(arr.type):
+                idx = tbl.schema.get_field_index(col_name)
+                tbl = tbl.set_column(idx, col_name, _decode_dict_column(arr).dictionary_encode())
 
-        grp = fg.groupby(["day", "echelon"])
-        totals = grp["actual_inventory"].sum()
-        for (day, ech), inv_total in totals.items():
-            key = (int(day), ech)
-            if key not in accum:
-                accum[key] = {"total": 0.0, "A": 0.0, "B": 0.0, "C": 0.0}
-            accum[key]["total"] += inv_total
+        chunk = tbl.to_pandas()
 
+        # Categorical map: only touches ~4200 unique categories, not ~1M rows
+        chunk["echelon"] = chunk["node_id"].map(node_ech)
+        chunk["abc"] = chunk["product_id"].map(abc_map).fillna("C")
+
+        # GroupBy (day, echelon) with ABC pivot
+        grp = chunk.groupby(["day", "echelon"], observed=True)
+        totals = grp["actual_inventory"].sum().reset_index()
+        totals.columns = ["day", "echelon", "total"]
+
+        abc_grp = chunk.groupby(["day", "echelon", "abc"], observed=True)["actual_inventory"].sum().reset_index()
+        abc_grp.columns = ["day", "echelon", "abc", "inv"]
+        pivot = abc_grp.pivot_table(index=["day", "echelon"], columns="abc", values="inv", fill_value=0.0).reset_index()
+        # Ensure all ABC columns exist
         for cls in ("A", "B", "C"):
-            cls_fg = fg[fg["abc"] == cls]
-            if len(cls_fg) == 0:
-                continue
-            cls_totals = cls_fg.groupby(["day", "echelon"])["actual_inventory"].sum()
-            for (day, ech), inv_total in cls_totals.items():
-                key = (int(day), ech)
-                if key not in accum:
-                    accum[key] = {"total": 0.0, "A": 0.0, "B": 0.0, "C": 0.0}
-                accum[key][cls] += inv_total
+            if cls not in pivot.columns:
+                pivot[cls] = 0.0
 
-        if rg_loaded % 50 == 0:
+        chunk_df = totals.merge(pivot[["day", "echelon", "A", "B", "C"]], on=["day", "echelon"], how="left")
+        for cls in ("A", "B", "C"):
+            if cls not in chunk_df.columns:
+                chunk_df[cls] = 0.0
+            chunk_df[cls] = chunk_df[cls].fillna(0.0)
+
+        partial_frames.append(chunk_df)
+
+        if rg_loaded % 100 == 0:
             print(f"    ... {rg_loaded}/{n_rg} row groups processed")
 
-    print(f"    Done: {rg_loaded} RGs, {len(accum)} (day, echelon) entries")
-
-    rows = [{"day": d, "echelon": e, **vals} for (d, e), vals in accum.items()]
-    df = pd.DataFrame(rows)
-    if len(df) == 0:
+    if not partial_frames:
+        print(f"    Done: {rg_loaded} RGs, 0 entries")
         return pd.DataFrame(columns=["day", "echelon", "total", "A", "B", "C"])
-    return df.sort_values(["day", "echelon"]).reset_index(drop=True)
+
+    # Combine all RG results and re-aggregate (RGs may split the same day)
+    combined = pd.concat(partial_frames, ignore_index=True)
+    result = (
+        combined.groupby(["day", "echelon"])[["total", "A", "B", "C"]]
+        .sum()
+        .reset_index()
+    )
+    result = result.sort_values(["day", "echelon"]).reset_index(drop=True)
+
+    print(f"    Done: {rg_loaded} RGs, {len(result)} (day, echelon) entries")
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -312,8 +319,8 @@ class DataBundle:
 def load_all_data(data_dir: Path) -> DataBundle:
     """Load all parquet + static files into a DataBundle.
 
-    v0.60.0: Shipments and orders are streamed with FG filtering and
-    categorical string dtypes for ~20x memory reduction (~1.5GB vs ~30GB).
+    v0.65.0: Bulk Arrow read + dictionary encoding for shipments/orders.
+    Inventory streamed with Arrow-native filtering and groupby.
     """
     print("Loading data...")
 
@@ -335,7 +342,7 @@ def load_all_data(data_dir: Path) -> DataBundle:
         "product_id", "source_id", "target_id",
         "creation_day", "arrival_day", "quantity",
     ]
-    shipments, product_volumes = _stream_fg_parquet(
+    shipments, product_volumes = _load_fg_parquet(
         data_dir / "shipments.parquet", ship_columns
     )
 
@@ -356,7 +363,7 @@ def load_all_data(data_dir: Path) -> DataBundle:
         "product_id", "source_id", "target_id",
         "day", "quantity", "status",
     ]
-    orders, _ = _stream_fg_parquet(
+    orders, _ = _load_fg_parquet(
         data_dir / "orders.parquet", order_columns
     )
 

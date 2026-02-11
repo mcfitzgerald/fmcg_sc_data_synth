@@ -5,6 +5,45 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.65.0] - 2026-02-11
+
+### Deep Flow Diagnostic: Bug Fixes, Performance Optimization, Data Slicer
+
+New 20-question diagnostic script (`diagnose_flow_deep.py`) with bug fixes to the loader and a 3.3x performance optimization on full 365-day data (1004s → 301s).
+
+#### New: Deep flow diagnostic (scripts/analysis/diagnose_flow_deep.py)
+- 20 questions across 7 themes: inventory location, flow routing, demand fidelity, production/MRP, deployment mechanics, push/pull interaction, system dynamics
+- Precomputed echelon/channel/ABC columns via `EnrichedData` — avoids O(62M) `.map()` per question
+- `_cat_unique()` helper for fast unique extraction from pandas Categoricals
+
+#### New: Data slicer (scripts/analysis/slice_data.py)
+- Filters all parquet files to first N days for fast diagnostic iteration
+- 30-day slice: 384MB vs 6.6GB full output
+
+#### Fix: GRO-DC missing from classify_node (loader.py)
+- `"GRO-DC-"` prefix was not in the `classify_node()` tuple — 10 grocery DCs fell through to "Other"
+- This caused 24.5% of store supply to appear as "Other → Store" route in diagnostics
+
+#### Fix: Inventory streaming node dict built from wrong source (loader.py)
+- Node→echelon dict was built from first row group (RG 0, day 11) which only contained 2,098 of 3,933 nodes
+- Later days had nodes absent from RG 0, causing ~892K rows/RG to silently drop (NaN echelon)
+- Store inventory was underreported by ~37% in Q20 convergence analysis
+- Fix: read `locations.csv` (all 3,933 nodes) instead of sampling first RG
+
+#### Performance: Bulk Arrow read + dictionary encoding (loader.py)
+- Replaced `_stream_fg_parquet` (row-group loop) with `_load_fg_parquet` (bulk Arrow read)
+- Arrow-native groupby for product volumes (replaces Python iteration over 60M+ rows)
+- Dictionary-encode string columns → pandas Categorical (no 12GB intermediate object arrays)
+- Inventory streaming: prebuilt node→echelon dict + pandas categorical `.map()` per RG (operates on ~4,200 unique categories, not ~1M rows)
+- Loading: 497s → 159s, Enrichment: 140s → 14s, Total: 1004s → 301s
+
+#### Bug fixes in diagnose_flow_deep.py
+- Q3/Q19: Store throughput used outflow (always 0 for terminal nodes) — fixed to use inflow
+- Q9: MAPE with `clip(lower=1)` caused infinite APE for zero-demand — replaced with WMAPE
+- Q11: Snapshot logic failed for short datasets — added bounds checking
+- Q12: `iterrows()` on plant inventory — replaced with vectorized DataFrame ops
+- Q15: Magic `*3.0` multiplier and hardcoded `target_dos=12.0` — replaced with in/out ratio analysis
+
 ## [0.64.0] - 2026-02-10
 
 ### Config Hygiene: Fix Push Cap, Migrate Hardcodes, Remove Dead Config
