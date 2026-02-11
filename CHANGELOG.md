@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.67.1] - 2026-02-11
+
+### Snapshot Mode for Convergence Chains
+
+Adds `--snapshot` flag to write final-day state to parquet without per-day logging overhead, enabling fast convergence chains.
+
+#### New: `--snapshot` CLI flag (run_simulation.py)
+- Writes final-day inventory, in-transit shipments, and active POs to `{output_dir}/snapshot/`
+- Works with `--no-logging` for maximum speed (no SimulationWriter dependency)
+- Uses PyArrow directly; sparse inventory (non-zero rows only)
+- Output is directly consumable by `--warm-start data/output/snapshot`
+
+#### New: `Orchestrator.save_snapshot(output_dir)` method
+- Writes 3 parquet files matching `load_warm_start_state()` schema
+- `inventory.parquet`: day, node_id, product_id, perceived/actual inventory
+- `shipments.parquet`: full SHIPMENT_FIELDS schema for in-transit shipments
+- `production_orders.parquet`: active POs with PRODUCTION_ORDER_FIELDS schema
+
 ## [0.67.0] - 2026-02-11
 
 ### Warm-Start from Converged State

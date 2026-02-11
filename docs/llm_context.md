@@ -207,6 +207,17 @@ Loads converged state from a prior run's parquet output, eliminating the synthet
 
 Module: `simulation/warm_start.py` — `load_warm_start_state()` returns `WarmStartState` dataclass.
 
+### Snapshot Mode (`--snapshot`)
+Writes final-day state to `{output_dir}/snapshot/` as 3 parquet files (inventory, shipments, production orders). Works with `--no-logging` for fast convergence chains:
+```bash
+# Fast 1000-day convergence → snapshot
+poetry run python run_simulation.py --days 1000 --no-logging --snapshot
+# Warm-start from snapshot
+poetry run python run_simulation.py --days 365 --streaming --format parquet --warm-start data/output/snapshot
+```
+
+Method: `Orchestrator.save_snapshot(output_dir)` — uses PyArrow directly, no SimulationWriter dependency.
+
 `--days N` specifies N days of **steady-state data** (after stabilization).
 Total simulated days = stabilization_days + N.
 
@@ -620,6 +631,8 @@ poetry run python run_simulation.py --days 50 --no-logging
 | `--format parquet` | Parquet output (columnar, dictionary-encoded strings) |
 | `--inventory-sample-rate N` | Inventory snapshots every N days (1=daily, 7=weekly) |
 | `--no-logging` | Skip data export (fastest, Triangle Report metrics only) |
+| `--snapshot` | Write final-day state to `{output_dir}/snapshot/` for warm-start |
+| `--warm-start DIR` | Load converged state from prior run's parquet output |
 
 ### Post-Run Diagnostics
 ```bash

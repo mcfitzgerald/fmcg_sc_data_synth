@@ -124,6 +124,11 @@ Examples:
         help="Enable memory profiling with tracemalloc (outputs memory_profile.json)",
     )
     parser.add_argument(
+        "--snapshot",
+        action="store_true",
+        help="Write final-day state snapshot for warm-start (works with --no-logging).",
+    )
+    parser.add_argument(
         "--warm-start",
         type=str,
         default=None,
@@ -150,6 +155,8 @@ Examples:
     mode_parts.append(f"Logging={'Enabled' if enable_logging else 'Disabled'}")
     if args.warm_start:
         mode_parts.append(f"WarmStart={args.warm_start}")
+    if args.snapshot:
+        mode_parts.append("Snapshot=On")
     if enable_logging and args.streaming:
         mode_parts.append("Streaming=On")
         if args.format:
@@ -179,6 +186,11 @@ Examples:
     duration = end_time - start_time
     log_memory("after_simulation")
     print(f"\nSimulation completed in {duration:.2f} seconds.")
+
+    # Save snapshot if requested (before reports, works with --no-logging)
+    if args.snapshot:
+        snapshot_dir = os.path.join(args.output_dir, "snapshot")
+        sim.save_snapshot(snapshot_dir)
 
     # Generate Reports
     print("\nGenerating Artifacts...")

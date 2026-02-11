@@ -1028,6 +1028,7 @@ class Orchestrator:
             if self._memory_callback and day % 10 == 0:
                 self._memory_callback(f"day_{day}")
 
+        self._last_day = total_days
         print("Simulation Complete.")
 
     def _step(self, day: int) -> None:
@@ -1684,6 +1685,89 @@ class Orchestrator:
         """Export all collected data."""
         report = self.monitor.get_report()
         self.writer.save(report)
+
+    def save_snapshot(self, output_dir: str) -> None:
+        """Write final-day state snapshot for warm-start consumption.
+
+        Writes the three parquet files that load_warm_start_state() expects:
+        inventory.parquet, shipments.parquet, production_orders.parquet.
+
+        Uses PyArrow directly — no SimulationWriter dependency — so this
+        works even with --no-logging.
+        """
+        from pathlib import Path
+
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        out = Path(output_dir)
+        out.mkdir(parents=True, exist_ok=True)
+        day = self._last_day
+
+        # --- inventory.parquet (sparse: non-zero rows only) ---
+        inv = self.state.actual_inventory
+        nz = np.nonzero(inv)
+        node_ids = [self.state.node_idx_to_id[int(i)] for i in nz[0]]
+        product_ids = [self.state.product_idx_to_id[int(i)] for i in nz[1]]
+        inv_table = pa.table({
+            "day": pa.array([day] * len(node_ids), type=pa.int32()),
+            "node_id": pa.array(node_ids, type=pa.string()),
+            "product_id": pa.array(product_ids, type=pa.string()),
+            "perceived_inventory": pa.array(
+                self.state.perceived_inventory[nz].astype(np.float32),
+                type=pa.float32(),
+            ),
+            "actual_inventory": pa.array(
+                inv[nz].astype(np.float32), type=pa.float32()
+            ),
+        })
+        pq.write_table(inv_table, out / "inventory.parquet")
+
+        # --- shipments.parquet (one row per line per in-transit shipment) ---
+        ship_rows: dict[str, list[Any]] = {
+            "shipment_id": [], "creation_day": [], "arrival_day": [],
+            "source_id": [], "target_id": [], "product_id": [],
+            "quantity": [], "total_weight_kg": [], "total_volume_m3": [],
+            "status": [], "emissions_kg": [],
+        }
+        for s in self.state.active_shipments:
+            for line in s.lines:
+                ship_rows["shipment_id"].append(s.id)
+                ship_rows["creation_day"].append(s.creation_day)
+                ship_rows["arrival_day"].append(s.arrival_day)
+                ship_rows["source_id"].append(s.source_id)
+                ship_rows["target_id"].append(s.target_id)
+                ship_rows["product_id"].append(line.product_id)
+                ship_rows["quantity"].append(line.quantity)
+                ship_rows["total_weight_kg"].append(s.total_weight_kg)
+                ship_rows["total_volume_m3"].append(s.total_volume_m3)
+                ship_rows["status"].append(s.status.value)
+                ship_rows["emissions_kg"].append(s.emissions_kg)
+        ship_table = pa.table(ship_rows)
+        pq.write_table(ship_table, out / "shipments.parquet")
+
+        # --- production_orders.parquet (active POs only) ---
+        po_rows: dict[str, list[Any]] = {
+            "po_id": [], "plant_id": [], "product_id": [],
+            "quantity": [], "creation_day": [], "due_day": [], "status": [],
+        }
+        for po in self.active_production_orders:
+            po_rows["po_id"].append(po.id)
+            po_rows["plant_id"].append(po.plant_id)
+            po_rows["product_id"].append(po.product_id)
+            po_rows["quantity"].append(po.quantity_cases)
+            po_rows["creation_day"].append(po.creation_day)
+            po_rows["due_day"].append(po.due_day)
+            po_rows["status"].append(po.status.value)
+        po_table = pa.table(po_rows)
+        pq.write_table(po_table, out / "production_orders.parquet")
+
+        print(
+            f"Snapshot saved to {output_dir}/ (day {day}): "
+            f"{inv_table.num_rows} inventory, "
+            f"{ship_table.num_rows} shipment lines, "
+            f"{po_table.num_rows} POs"
+        )
 
     def generate_triangle_report(self) -> str:
         """
