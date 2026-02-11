@@ -5,6 +5,44 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.66.0] - 2026-02-11
+
+### Diagnostic Hygiene & Performance
+
+Precomputed echelon/ABC/demand columns, config-derived DOS targets, fixed flow conservation artifact, and clarified diagnostic roles.
+
+#### Performance: Precomputed enrichment (loader.py)
+- `_enrich_dataframes()` precomputes `source_echelon`, `target_echelon`, `is_demand_endpoint`, `abc_class` on shipments and orders ONCE during load
+- Eliminates 11 redundant O(62M) `.map(classify_node)` calls (one per analysis function)
+- Removes all redundant `.apply(is_finished_good)` calls (shipments already FG-filtered)
+- `DataBundle.fg_batches` pre-filtered for finished goods (avoids repeated inline filtering)
+- `_vectorize_route_types()` in flow_analysis.py: merge-based route classification (~10 unique pairs) replaces per-row `.apply(lambda)` on 62M rows
+
+#### Fix: Flow conservation DC imbalance artifact (first_principles.py)
+- ECOM-FC and DTC-FC nodes are demand endpoints classified as "Customer DC" echelon
+- Their 100% inflow (POS consumption, no downstream stores) was counted as DC accumulation
+- This inflated DC imbalance from ~-1% to +20.6%
+- Now reports raw and adjusted DC imbalance separately with annotation
+
+#### New: Config-derived DOS targets (loader.py)
+- `DOSTargets` dataclass and `load_dos_targets()` read from `simulation_config.json`
+- Plant: MRP horizon × ABC buffer (17.1/15.4/14.0 for A/B/C)
+- RDC: rdc_target_dos (15.0 uniform)
+- Customer DC: dc_buffer_days × ABC mult (10.5/14.0/17.5)
+- Store: target_days_supply (6.0 uniform)
+- MRP caps: inventory_cap_dos (22/25/25)
+- Replaces hardcoded targets in operational.py and diagnose_flow_deep.py Q12
+
+#### Diagnostic role clarification
+- `diagnose_365day.py` header: "EXECUTIVE SCORECARD — Quick health check with traffic-light KPIs"
+- `diagnose_flow_deep.py` header: "FORENSIC DEEP DIVE — 20 structural questions for root cause analysis"
+- Executive Scorecard now shows cross-reference: "For structural root-cause analysis, run diagnose_flow_deep.py"
+
+#### Deep flow diagnostic updates (diagnose_flow_deep.py)
+- `enrich_data()` now leverages loader-level precomputed columns (skip redundant echelon/demand/ABC computation)
+- Q10, Q11, Q13, Q14: use `ed.fg_batches` instead of inline FG filtering
+- Q12: MRP caps from `ed.bundle.dos_targets.mrp_caps` instead of hardcoded `{"A": 22, "B": 25, "C": 25}`
+
 ## [0.65.0] - 2026-02-11
 
 ### Deep Flow Diagnostic: Bug Fixes, Performance Optimization, Data Slicer

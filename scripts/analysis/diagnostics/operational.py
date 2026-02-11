@@ -5,6 +5,9 @@ Layer 2: Operational Health Assessment.
 2.2 Service Level Decomposition — fill rate by ABC x time window
 2.3 Production vs Demand Alignment — ratio trends, ABC breakdown, cumulative gap
 2.4 SLOB Decomposition — by ABC class, echelon contributions, risk products
+
+v0.66.0: Uses precomputed echelon/demand/ABC columns from DataBundle.
+DOS targets read from config via DataBundle.dos_targets (no hardcodes).
 """
 
 from __future__ import annotations
@@ -16,8 +19,6 @@ import numpy as np
 from .loader import (
     ECHELON_ORDER,
     DataBundle,
-    is_demand_endpoint,
-    is_finished_good,
 )
 
 # Thresholds
@@ -39,31 +40,22 @@ def analyze_inventory_positioning(
         dict with 'matrix' (echelon x ABC DOS), 'targets', 'trend'.
     """
     inv = data.inv_by_echelon
-    demand_ships = data.shipments[
-        data.shipments["target_id"].apply(is_demand_endpoint)
-        & data.shipments["product_id"].apply(is_finished_good)
-    ]
+    # Shipments already FG-filtered; use precomputed is_demand_endpoint
+    demand_ships = data.shipments[data.shipments["is_demand_endpoint"]]
     sim_days = data.sim_days
 
-    # Daily demand rate by ABC
+    # Daily demand rate by ABC using precomputed abc_class
+    demand_abc = data.shipments[data.shipments["is_demand_endpoint"]]["abc_class"]
+    demand_qty = demand_ships["quantity"]
     demand_by_abc: dict[str, float] = {}
     for cls in ("A", "B", "C"):
-        cls_prods = {p for p, c in data.abc_map.items() if c == cls}
-        cls_dem = demand_ships[demand_ships["product_id"].isin(cls_prods)][
-            "quantity"
-        ].sum()
+        cls_dem = demand_qty[demand_abc == cls].sum()
         demand_by_abc[cls] = cls_dem / sim_days if sim_days > 0 else 0
 
     total_demand_daily = sum(demand_by_abc.values())
 
-    # Configured targets
-    targets: dict[str, dict[str, float]] = {
-        "Plant": {"A": 15.0, "B": 15.0, "C": 15.0},
-        "RDC": {"A": 15.0, "B": 15.0, "C": 15.0},
-        "Customer DC": {"A": 10.5, "B": 14.0, "C": 17.5},
-        "Store": {"A": 14.0, "B": 14.0, "C": 14.0},
-        "Club": {"A": 14.0, "B": 14.0, "C": 14.0},
-    }
+    # v0.66.0: Config-derived targets (replaces hardcoded values)
+    targets = data.dos_targets.by_echelon
 
     # Latest-day inventory by echelon x ABC
     if len(inv) == 0:
@@ -123,25 +115,24 @@ def analyze_service_levels(data: DataBundle, window: int = 30) -> dict[str, Any]
     Returns:
         dict with 'by_period_abc' (heatmap data), 'underperformers' (product list).
     """
-    demand_ships = data.shipments[
-        data.shipments["target_id"].apply(is_demand_endpoint)
-        & data.shipments["product_id"].apply(is_finished_good)
-    ]
+    # Shipments already FG-filtered; use precomputed columns
+    demand_ships = data.shipments[data.shipments["is_demand_endpoint"]]
+    demand_abc = demand_ships["abc_class"]
     max_day = int(demand_ships["creation_day"].max()) if len(demand_ships) > 0 else 365
 
     # Per-period x ABC fill rate
     by_period_abc: list[dict[str, Any]] = []
     for start in range(0, max_day + 1, window):
         end = start + window - 1
-        period_ships = demand_ships[
+        period_mask = (
             (demand_ships["creation_day"] >= start)
             & (demand_ships["creation_day"] <= end)
-        ]
+        )
+        period_ships = demand_ships[period_mask]
+        period_abc = demand_abc[period_mask]
         row: dict[str, Any] = {"start_day": start, "end_day": end}
         for cls in ("A", "B", "C"):
-            cls_prods = {p for p, c in data.abc_map.items() if c == cls}
-            cls_ships = period_ships[period_ships["product_id"].isin(cls_prods)]
-            total_qty = cls_ships["quantity"].sum()
+            total_qty = period_ships[period_abc == cls]["quantity"].sum()
             row[f"{cls}_volume"] = total_qty
         row["total_volume"] = period_ships["quantity"].sum()
         by_period_abc.append(row)
@@ -150,9 +141,9 @@ def analyze_service_levels(data: DataBundle, window: int = 30) -> dict[str, Any]
     underperformers: list[dict[str, Any]] = []
     orders = data.orders
     if "status" in orders.columns and len(orders) > 0:
-        fg_orders = orders[orders["product_id"].apply(is_finished_good)]
-        total_by_product = fg_orders.groupby("product_id")["quantity"].sum()
-        fulfilled = fg_orders[fg_orders["status"] == "CLOSED"]
+        # Orders already FG-filtered by loader
+        total_by_product = orders.groupby("product_id")["quantity"].sum()
+        fulfilled = orders[orders["status"] == "CLOSED"]
         fulfilled_by_product = fulfilled.groupby("product_id")["quantity"].sum()
 
         for pid in total_by_product.index:
@@ -194,11 +185,9 @@ def analyze_production_alignment(
     Returns:
         dict with 'snapshots', 'abc_breakdown', 'cumulative_gap', 'verdict'.
     """
-    fg_batches = data.batches[data.batches["product_id"].apply(is_finished_good)]
-    demand_ships = data.shipments[
-        data.shipments["target_id"].apply(is_demand_endpoint)
-        & data.shipments["product_id"].apply(is_finished_good)
-    ]
+    fg_batches = data.fg_batches
+    # Shipments already FG-filtered; use precomputed is_demand_endpoint
+    demand_ships = data.shipments[data.shipments["is_demand_endpoint"]]
 
     demand_daily = demand_ships.groupby("creation_day")["quantity"].sum()
     prod_daily = fg_batches.groupby("day_produced")["quantity"].sum()
@@ -225,13 +214,12 @@ def analyze_production_alignment(
                 "gap_pct": (ratio - 1) * 100 if not np.isnan(ratio) else np.nan,
             })
 
-    # By ABC
+    # By ABC using precomputed abc_class
+    demand_abc = demand_ships["abc_class"]
     abc_breakdown: dict[str, dict[str, Any]] = {}
     for cls in ("A", "B", "C"):
         cls_prods = {p for p, c in data.abc_map.items() if c == cls}
-        cls_dem = demand_ships[demand_ships["product_id"].isin(cls_prods)][
-            "quantity"
-        ].sum()
+        cls_dem = demand_ships[demand_abc == cls]["quantity"].sum()
         cls_prod = fg_batches[fg_batches["product_id"].isin(cls_prods)][
             "quantity"
         ].sum()
@@ -303,19 +291,16 @@ def analyze_slob(data: DataBundle) -> dict[str, Any]:
     """
     headline = data.metrics.get("slob", {}).get("mean", 0)
     inv = data.inv_by_echelon
-    fg_batches = data.batches[data.batches["product_id"].apply(is_finished_good)]
-    demand_ships = data.shipments[
-        data.shipments["target_id"].apply(is_demand_endpoint)
-        & data.shipments["product_id"].apply(is_finished_good)
-    ]
+    fg_batches = data.fg_batches
+    # Shipments already FG-filtered; use precomputed columns
+    demand_ships = data.shipments[data.shipments["is_demand_endpoint"]]
+    demand_abc = demand_ships["abc_class"]
 
     # SLOB proxy by ABC: cumulative excess production
     by_abc: dict[str, dict[str, Any]] = {}
     for cls in ("A", "B", "C"):
         cls_prods = {p for p, c in data.abc_map.items() if c == cls}
-        cls_dem = demand_ships[demand_ships["product_id"].isin(cls_prods)][
-            "quantity"
-        ].sum()
+        cls_dem = demand_ships[demand_abc == cls]["quantity"].sum()
         cls_prod = fg_batches[fg_batches["product_id"].isin(cls_prods)][
             "quantity"
         ].sum()
@@ -429,7 +414,7 @@ def format_inventory_positioning(results: dict[str, Any], width: int = 78) -> st
         )
 
     # Target comparison
-    lines.append("\n  Configured targets (DOS):")
+    lines.append("\n  Configured targets (DOS) — from simulation_config.json:")
     targets = results["targets"]
     for ech in ECHELON_ORDER:
         if ech in targets:

@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """
-Comprehensive Supply Chain Diagnostic Suite.
+EXECUTIVE SCORECARD — Supply Chain Diagnostic Suite.
+
+Role: Quick health check with traffic-light KPIs, automated issue detection,
+and an executive summary. Designed for CI/CD integration and rapid triage.
+
+For structural root-cause analysis, run diagnose_flow_deep.py instead.
 
 Three-layer analysis pyramid:
   Layer 1: First Principles (mass balance, flow conservation, Little's Law)
@@ -8,7 +13,7 @@ Three-layer analysis pyramid:
   Layer 3: Flow & Stability (E2E throughput, deployment, bullwhip, convergence)
 
 Executive summary with traffic-light scorecard and ASCII flow diagram.
-All findings are data-driven — no hardcoded conclusions.
+All findings are data-driven — DOS targets derived from simulation_config.json.
 
 Usage:
     poetry run python scripts/analysis/diagnose_365day.py
@@ -19,8 +24,10 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import io
 import sys
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -401,6 +408,24 @@ def main() -> int:
         print(f"ERROR: Data directory not found: {data_dir}")
         return 1
 
+    # Tee stdout to file — every print goes to terminal AND report file
+    diag_dir = data_dir / "diagnostics"
+    diag_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    report_path = diag_dir / f"diagnose_365day_{stamp}.txt"
+    tee_buf = io.StringIO()
+    _real_stdout = sys.stdout
+
+    class _Tee:
+        def write(self, s: str) -> int:
+            _real_stdout.write(s)
+            tee_buf.write(s)
+            return len(s)
+        def flush(self) -> None:
+            _real_stdout.flush()
+
+    sys.stdout = _Tee()  # type: ignore[assignment]
+
     print(f"Data directory:  {data_dir}")
     print(f"Rolling window:  {window} days\n")
 
@@ -452,7 +477,14 @@ def main() -> int:
 
     print(f"\n{'=' * WIDTH}")
     print("  END OF DIAGNOSTIC REPORT".center(WIDTH))
-    print(f"{'=' * WIDTH}\n")
+    print(f"{'=' * WIDTH}")
+    print("\n  For structural root-cause analysis, run:")
+    print("    poetry run python scripts/analysis/diagnose_flow_deep.py\n")
+
+    # Flush tee to file
+    sys.stdout = _real_stdout
+    report_path.write_text(tee_buf.getvalue())
+    print(f"Report saved to: {report_path}")
     return 0
 
 

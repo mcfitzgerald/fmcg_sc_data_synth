@@ -102,23 +102,32 @@ The simulation enforces these constraints - violations indicate bugs:
 | `docs/planning/archive/` | Historical: `intent.md`, `roadmap.md`, investigation docs (Dec 2024 – Jan 2025) |
 | `V046_VALIDATION_STATE.md` | Historical: v0.46.0 365-day validation results. Superseded by v0.56.1 diagnostic suite and CHANGELOG. |
 
-### Diagnostic Suite (v0.55.1 — `scripts/analysis/diagnostics/`)
+### Diagnostic Suite (v0.66.0 — `scripts/analysis/diagnostics/`)
 
-Three-layer modular diagnostic package. Entry point: `scripts/analysis/diagnose_365day.py`.
+Two complementary diagnostic scripts with shared modular backend:
+- **`diagnose_365day.py`** — Executive Scorecard: traffic-light KPIs, issue detection, quick CI/CD health check
+- **`diagnose_flow_deep.py`** — Forensic Deep Dive: 20 structural questions, root cause analysis
 
 | Module | Key Functions | Layer |
 |--------|---------------|-------|
-| `diagnostics/loader.py` | `load_all_data()`, `classify_node()`, `is_demand_endpoint()`, `stream_inventory_by_echelon()` | Data loading & node classification |
+| `diagnostics/loader.py` | `load_all_data()`, `classify_node()`, `is_demand_endpoint()`, `DOSTargets`, `load_dos_targets()` | Data loading, enrichment, config-derived targets |
 | `diagnostics/first_principles.py` | `analyze_mass_balance()`, `analyze_flow_conservation()`, `analyze_littles_law()` | Layer 1: Physics validation |
 | `diagnostics/operational.py` | `analyze_inventory_positioning()`, `analyze_service_levels()`, `analyze_production_alignment()`, `analyze_slob()` | Layer 2: Operational health |
 | `diagnostics/flow_analysis.py` | `analyze_throughput_map()`, `analyze_deployment_effectiveness()`, `analyze_lead_times()`, `analyze_bullwhip()`, `analyze_control_stability()` | Layer 3: Flow & stability |
+
+**v0.66.0 key changes:**
+- Precomputed echelon/ABC/demand columns on shipments and orders (built ONCE during `load_all_data()`, eliminating redundant O(62M) `.map()` calls per analysis function)
+- DOS targets derived from `simulation_config.json` via `DOSTargets` dataclass (no hardcodes)
+- Flow conservation DC imbalance adjusted for ECOM-FC/DTC-FC demand endpoints
+- `DataBundle.fg_batches` pre-filtered for finished goods
 
 **DEMAND_PREFIXES** = `("STORE-", "ECOM-FC-", "DTC-FC-")` — NOT `"CLUB-"` (CLUB-DC nodes are intermediate warehouses, not demand endpoints).
 
 ### Standalone Diagnostic Scripts (Parquet-based, `data/output` default)
 | Script | Purpose | Key technique |
 |--------|---------|---------------|
-| `scripts/analysis/diagnose_365day.py` | Entry point for 3-layer diagnostic suite (calls all modules above) | PyArrow row-group streaming |
+| `scripts/analysis/diagnose_365day.py` | Executive Scorecard — 3-layer diagnostic suite | Precomputed enrichment via loader |
+| `scripts/analysis/diagnose_flow_deep.py` | Forensic Deep Dive — 20 structural questions across 7 themes | Precomputed enrichment via loader |
 | `scripts/analysis/diagnose_a_item_fill.py` | 4-layer A-item fill rate root cause analysis (measurement, stockout location, root cause, ranking) | PyArrow row-group streaming |
 | `scripts/analysis/diagnose_service_level.py` | Service level trend, echelon breakdown, worst performers, degradation phases | PyArrow row-group streaming |
 | `scripts/analysis/diagnose_slob.py` | SLOB inventory: echelon distribution, DOS, velocity, imbalance, production vs demand | PyArrow row-group streaming |

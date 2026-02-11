@@ -4,11 +4,16 @@ Shared data loading, ABC classification, and node helpers.
 All diagnostic modules consume a single DataBundle produced here.
 Memory-safe: inventory.parquet is streamed via PyArrow row groups.
 Shipments and orders are streamed with FG filtering + categorical dtypes (v0.60.0).
+
+v0.66.0: Precomputed echelon/ABC/demand columns on shipments and orders
+(built ONCE during load, eliminating redundant O(62M) .map() calls per analysis).
+DOS targets derived from simulation_config.json instead of hardcoded.
 """
 
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -24,6 +29,8 @@ import pyarrow.parquet as pq
 DEMAND_PREFIXES = ("STORE-", "ECOM-FC-", "DTC-FC-")
 
 # Echelon order for display
+# Note: "Club" echelon is typically empty — CLUB-DC-* → "Customer DC",
+# CLUB stores → STORE-CLUB-* → "Store". Kept for compatibility.
 ECHELON_ORDER = ["Plant", "RDC", "Customer DC", "Store", "Club"]
 
 
@@ -122,6 +129,91 @@ def classify_abc(
 
 
 # ---------------------------------------------------------------------------
+# DOS Targets (config-derived, v0.66.0)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class DOSTargets:
+    """Configured DOS targets derived from simulation_config.json.
+
+    Eliminates hardcoded target values across diagnostic modules.
+    """
+
+    by_echelon: dict[str, dict[str, float]]  # echelon -> {A/B/C -> target DOS}
+    mrp_caps: dict[str, float]  # {A/B/C -> DOS cap}
+
+
+def load_dos_targets(config_path: Path | None = None) -> DOSTargets:
+    """Load DOS targets from simulation_config.json.
+
+    Derives targets from the same config the simulation uses:
+    - Plant: MRP horizon x ABC production buffer
+    - RDC: rdc_target_dos (uniform)
+    - Customer DC: dc_buffer_days x ABC multiplier (1.5/2.0/2.5)
+    - Store: target_days_supply (uniform)
+    - MRP caps: inventory_cap_dos_{a,b,c}
+    """
+    if config_path is None:
+        # Locate config relative to this file (scripts/analysis/diagnostics/loader.py)
+        config_path = (
+            Path(__file__).parents[3]
+            / "src"
+            / "prism_sim"
+            / "config"
+            / "simulation_config.json"
+        )
+
+    with open(config_path) as f:
+        config = json.load(f)["simulation_parameters"]
+
+    replenishment = config["agents"]["replenishment"]
+    mrp = config["manufacturing"]["mrp_thresholds"]
+    batching = mrp["campaign_batching"]
+    cal = config["calibration"]
+
+    # Plant: MRP target = horizon x ABC buffer
+    horizon = batching["production_horizon_days"]
+    plant_targets = {
+        "A": horizon * cal["abc_production_factors"]["a_buffer"],
+        "B": horizon * cal["abc_production_factors"]["b_buffer"],
+        "C": horizon * cal["abc_production_factors"]["c_production_factor"],
+    }
+
+    # RDC: uniform target
+    rdc_dos = replenishment["rdc_target_dos"]
+    rdc_targets = {"A": rdc_dos, "B": rdc_dos, "C": rdc_dos}
+
+    # Customer DC: dc_buffer_days x ABC multiplier
+    dc_buffer = replenishment["dc_buffer_days"]
+    dc_targets = {
+        "A": dc_buffer * replenishment["dc_dos_cap_mult_a"],
+        "B": dc_buffer * replenishment["dc_dos_cap_mult_b"],
+        "C": dc_buffer * replenishment["dc_dos_cap_mult_c"],
+    }
+
+    # Store: target_days_supply (uniform)
+    store_dos = replenishment["target_days_supply"]
+    store_targets = {"A": store_dos, "B": store_dos, "C": store_dos}
+
+    # MRP DOS caps
+    mrp_caps = {
+        "A": float(mrp["inventory_cap_dos_a"]),
+        "B": float(mrp["inventory_cap_dos_b"]),
+        "C": float(mrp["inventory_cap_dos_c"]),
+    }
+
+    by_echelon = {
+        "Plant": plant_targets,
+        "RDC": rdc_targets,
+        "Customer DC": dc_targets,
+        "Store": store_targets,
+        "Club": store_targets,  # Same as store (Club echelon typically empty)
+    }
+
+    return DOSTargets(by_echelon=by_echelon, mrp_caps=mrp_caps)
+
+
+# ---------------------------------------------------------------------------
 # Memory-safe parquet streaming (v0.60.0)
 # ---------------------------------------------------------------------------
 
@@ -190,6 +282,60 @@ def _load_fg_parquet(
     mem_mb = df.memory_usage(deep=True).sum() / 1e6
     print(f"    Done: {tbl.num_rows:,} FG rows ({mem_mb:.0f} MB)")
     return df, product_volumes
+
+
+# ---------------------------------------------------------------------------
+# Precomputed enrichment (v0.66.0)
+# ---------------------------------------------------------------------------
+
+def _cat_unique(series: pd.Series) -> set[str]:
+    """Get unique string values from a Series (fast path for categoricals)."""
+    if hasattr(series, "cat"):
+        return set(str(x) for x in series.cat.categories)
+    return set(str(x) for x in series.unique())
+
+
+def _enrich_dataframes(
+    shipments: pd.DataFrame,
+    orders: pd.DataFrame,
+    abc_map: dict[str, str],
+) -> None:
+    """Add precomputed echelon/ABC/demand columns to shipments and orders (in-place).
+
+    Uses categorical .map() which maps only ~4200 unique categories,
+    not all 62M rows individually. Total cost: O(categories) not O(rows).
+    """
+    t0 = time.time()
+    print("  Precomputing echelon/ABC/demand columns...")
+
+    # Build lookup dicts from unique node IDs (~4200 unique)
+    all_node_ids = (
+        _cat_unique(shipments["source_id"])
+        | _cat_unique(shipments["target_id"])
+        | _cat_unique(orders["source_id"])
+        | _cat_unique(orders["target_id"])
+    )
+    node_ech = {nid: classify_node(nid) for nid in all_node_ids}
+    node_demand = {nid: is_demand_endpoint(nid) for nid in all_node_ids}
+
+    # Shipments: echelon, demand, ABC
+    shipments["source_echelon"] = (
+        shipments["source_id"].map(node_ech).astype("category")
+    )
+    shipments["target_echelon"] = (
+        shipments["target_id"].map(node_ech).astype("category")
+    )
+    shipments["is_demand_endpoint"] = shipments["target_id"].map(node_demand)
+    shipments["abc_class"] = (
+        shipments["product_id"].map(abc_map).fillna("C").astype("category")
+    )
+
+    # Orders: echelon
+    orders["source_echelon"] = orders["source_id"].map(node_ech).astype("category")
+    orders["target_echelon"] = orders["target_id"].map(node_ech).astype("category")
+
+    elapsed = time.time() - t0
+    print(f"    Done in {elapsed:.1f}s ({len(all_node_ids)} unique nodes)")
 
 
 # ---------------------------------------------------------------------------
@@ -298,20 +444,27 @@ def stream_inventory_by_echelon(
 
 @dataclass
 class DataBundle:
-    """All data needed by diagnostic modules."""
+    """All data needed by diagnostic modules.
+
+    v0.66.0: Shipments and orders have precomputed echelon/ABC/demand columns
+    (source_echelon, target_echelon, is_demand_endpoint, abc_class).
+    fg_batches pre-filtered for finished goods. DOS targets config-derived.
+    """
 
     products: pd.DataFrame
-    shipments: pd.DataFrame
-    batches: pd.DataFrame
+    shipments: pd.DataFrame  # Pre-enriched: echelon, demand, ABC
+    batches: pd.DataFrame  # All batches (including ingredients)
+    fg_batches: pd.DataFrame  # FG batches only (product_id starts with SKU-)
     production_orders: pd.DataFrame
     forecasts: pd.DataFrame
-    orders: pd.DataFrame
+    orders: pd.DataFrame  # Pre-enriched: source_echelon, target_echelon
     returns: pd.DataFrame
     metrics: dict
     locations: pd.DataFrame
     links: pd.DataFrame
     abc_map: dict[str, str]
     inv_by_echelon: pd.DataFrame
+    dos_targets: DOSTargets
     sim_days: int = 0
     data_dir: Path = field(default_factory=lambda: Path("data/output"))
 
@@ -319,8 +472,9 @@ class DataBundle:
 def load_all_data(data_dir: Path) -> DataBundle:
     """Load all parquet + static files into a DataBundle.
 
-    v0.65.0: Bulk Arrow read + dictionary encoding for shipments/orders.
-    Inventory streamed with Arrow-native filtering and groupby.
+    v0.66.0: Precomputes echelon/ABC/demand columns on shipments and orders
+    during load (built ONCE). DOS targets derived from simulation_config.json.
+    FG batches pre-filtered.
     """
     print("Loading data...")
 
@@ -349,6 +503,11 @@ def load_all_data(data_dir: Path) -> DataBundle:
     print("  Loading batches.parquet...")
     batches = pd.read_parquet(data_dir / "batches.parquet")
     print(f"    {len(batches):,} rows")
+
+    # Pre-filter FG batches (used by most analysis functions)
+    fg_mask = batches["product_id"].apply(is_finished_good)
+    fg_batches = batches[fg_mask].copy()
+    print(f"    {len(fg_batches):,} FG batches")
 
     print("  Loading production_orders.parquet...")
     production_orders = pd.read_parquet(data_dir / "production_orders.parquet")
@@ -382,6 +541,10 @@ def load_all_data(data_dir: Path) -> DataBundle:
     )
     abc_map = classify_abc(vol_df, products)
 
+    # v0.66.0: Precompute echelon/ABC/demand columns ONCE
+    print("\nEnriching data...")
+    _enrich_dataframes(shipments, orders, abc_map)
+
     # Stream inventory
     print("\nStreaming inventory by echelon...")
     inv_by_echelon = stream_inventory_by_echelon(data_dir, abc_map)
@@ -391,10 +554,14 @@ def load_all_data(data_dir: Path) -> DataBundle:
     min_day = int(shipments["creation_day"].min()) if len(shipments) > 0 else 0
     sim_days = max_day - min_day + 1
 
+    # v0.66.0: Config-derived DOS targets
+    dos_targets = load_dos_targets()
+
     return DataBundle(
         products=products,
         shipments=shipments,
         batches=batches,
+        fg_batches=fg_batches,
         production_orders=production_orders,
         forecasts=forecasts,
         orders=orders,
@@ -404,6 +571,7 @@ def load_all_data(data_dir: Path) -> DataBundle:
         links=links,
         abc_map=abc_map,
         inv_by_echelon=inv_by_echelon,
+        dos_targets=dos_targets,
         sim_days=sim_days,
         data_dir=data_dir,
     )

@@ -6,6 +6,9 @@ Layer 3: End-to-End Flow & Stability Analysis.
 3.3 Lead Time Analysis — actual vs configured by route type
 3.4 Bullwhip Measurement — order variance amplification per echelon
 3.5 Control System Stability — convergence assessment
+
+v0.66.0: Uses precomputed echelon/demand columns from loader enrichment.
+Route classification vectorized via merge (~10 unique pairs, not 62M .apply).
 """
 
 from __future__ import annotations
@@ -13,13 +16,12 @@ from __future__ import annotations
 from typing import Any
 
 import numpy as np
+import pandas as pd
 
 from .loader import (
     ECHELON_ORDER,
     DataBundle,
-    classify_node,
-    is_demand_endpoint,
-    is_finished_good,
+    classify_node,  # Still needed for links.csv (not pre-enriched)
 )
 
 # Thresholds
@@ -58,6 +60,34 @@ def _classify_route(source_ech: str, target_ech: str) -> str:
     return f"{source_ech} -> {target_ech}"
 
 
+# Pre-built lookup for vectorized route classification
+_ROUTE_MAP: dict[tuple[str, str], str] = {
+    (src, tgt): name for name, src, tgt in ROUTE_TYPES
+}
+
+
+def _vectorize_route_types(df: pd.DataFrame) -> pd.Series:
+    """Vectorized route classification from precomputed echelon columns.
+
+    Builds a tiny lookup (~10 unique echelon pairs) and merges back,
+    replacing the per-row .apply(lambda) that was O(62M) Python iterations.
+    """
+    pairs = (
+        df[["source_echelon", "target_echelon"]]
+        .drop_duplicates()
+        .reset_index(drop=True)
+    )
+    pairs["route_type"] = [
+        _ROUTE_MAP.get((str(s), str(t)), f"{s} -> {t}")
+        for s, t in zip(pairs["source_echelon"], pairs["target_echelon"])
+    ]
+    # Merge on key columns only (avoids copying all shipment columns)
+    merged = df[["source_echelon", "target_echelon"]].merge(
+        pairs, on=["source_echelon", "target_echelon"], how="left"
+    )
+    return merged["route_type"]
+
+
 # ---------------------------------------------------------------------------
 # 3.1 End-to-End Throughput Map
 # ---------------------------------------------------------------------------
@@ -68,34 +98,28 @@ def analyze_throughput_map(data: DataBundle) -> dict[str, Any]:
     Returns:
         dict with 'routes' (per-route stats), 'flow_data' (for ASCII diagram).
     """
-    ships = data.shipments.copy()
-    ships["source_echelon"] = ships["source_id"].map(classify_node)
-    ships["target_echelon"] = ships["target_id"].map(classify_node)
-    ships["route_type"] = ships.apply(
-        lambda r: _classify_route(r["source_echelon"], r["target_echelon"]), axis=1
-    )
-
+    ships = data.shipments  # Already FG-filtered + echelon-enriched
     sim_days = data.sim_days
-    fg_ships = ships[ships["product_id"].apply(is_finished_good)]
+    route_types = _vectorize_route_types(ships)
 
     routes: dict[str, dict[str, Any]] = {}
-    for route_type in fg_ships["route_type"].unique():
-        route_ships = fg_ships[fg_ships["route_type"] == route_type]
-        total_qty = route_ships["quantity"].sum()
-        daily_qty = total_qty / sim_days if sim_days > 0 else 0
-        n_shipments = len(route_ships)
-        routes[route_type] = {
+    for rt in route_types.unique():
+        mask = route_types == rt
+        total_qty = float(ships.loc[mask, "quantity"].sum())
+        n_shipments = int(mask.sum())
+        routes[str(rt)] = {
             "total_quantity": total_qty,
-            "daily_quantity": daily_qty,
+            "daily_quantity": total_qty / sim_days if sim_days > 0 else 0,
             "n_shipments": n_shipments,
             "daily_shipments": n_shipments / sim_days if sim_days > 0 else 0,
         }
 
     # Flow data for ASCII diagram
-    fg_batches = data.batches[data.batches["product_id"].apply(is_finished_good)]
-    production_daily = fg_batches["quantity"].sum() / sim_days if sim_days > 0 else 0
+    production_daily = (
+        data.fg_batches["quantity"].sum() / sim_days if sim_days > 0 else 0
+    )
 
-    demand_ships = fg_ships[fg_ships["target_id"].apply(is_demand_endpoint)]
+    demand_ships = ships[ships["is_demand_endpoint"]]
     pos_daily = demand_ships["quantity"].sum() / sim_days if sim_days > 0 else 0
 
     # Inventory at end of sim
@@ -131,13 +155,9 @@ def analyze_deployment_effectiveness(data: DataBundle) -> dict[str, Any]:
     Returns:
         dict with 'split', 'plant_inv_trend', 'retention'.
     """
-    fg_ships = data.shipments[
-        data.shipments["product_id"].apply(is_finished_good)
-    ].copy()
-    fg_ships["source_echelon"] = fg_ships["source_id"].map(classify_node)
-    fg_ships["target_echelon"] = fg_ships["target_id"].map(classify_node)
+    ships = data.shipments  # Already FG-filtered + echelon-enriched
 
-    plant_ships = fg_ships[fg_ships["source_echelon"] == "Plant"]
+    plant_ships = ships[ships["source_echelon"] == "Plant"]
     to_rdc = plant_ships[plant_ships["target_echelon"] == "RDC"]["quantity"].sum()
     to_dc = plant_ships[plant_ships["target_echelon"] == "Customer DC"][
         "quantity"
@@ -176,8 +196,7 @@ def analyze_deployment_effectiveness(data: DataBundle) -> dict[str, Any]:
         growth_pct = np.nan
 
     # Retention rate: production vs deployed
-    fg_batches = data.batches[data.batches["product_id"].apply(is_finished_good)]
-    total_production = fg_batches["quantity"].sum()
+    total_production = data.fg_batches["quantity"].sum()
     retention_pct = (
         (1 - total_deployed / total_production) * 100
         if total_production > 0
@@ -203,17 +222,11 @@ def analyze_lead_times(data: DataBundle) -> dict[str, Any]:
     Returns:
         dict with 'by_route' (p50/p90/p99, configured LT).
     """
-    ships = data.shipments[
-        data.shipments["product_id"].apply(is_finished_good)
-    ].copy()
-    ships["source_echelon"] = ships["source_id"].map(classify_node)
-    ships["target_echelon"] = ships["target_id"].map(classify_node)
-    ships["route_type"] = ships.apply(
-        lambda r: _classify_route(r["source_echelon"], r["target_echelon"]), axis=1
-    )
-    ships["actual_lt"] = ships["arrival_day"] - ships["creation_day"]
+    ships = data.shipments  # Already FG-filtered + echelon-enriched
+    route_types = _vectorize_route_types(ships)
+    actual_lt = ships["arrival_day"] - ships["creation_day"]
 
-    # Configured LTs from links.csv
+    # Configured LTs from links.csv (small df — classify_node is fine)
     links = data.links.copy()
     links["source_echelon"] = links["source_id"].map(classify_node)
     links["target_echelon"] = links["target_id"].map(classify_node)
@@ -223,18 +236,18 @@ def analyze_lead_times(data: DataBundle) -> dict[str, Any]:
     config_lt = links.groupby("route_type")["lead_time_days"].mean()
 
     by_route: dict[str, dict[str, Any]] = {}
-    for route_type in sorted(ships["route_type"].unique()):
-        route_ships = ships[ships["route_type"] == route_type]
-        lts = route_ships["actual_lt"].dropna()
+    for rt in sorted(route_types.unique()):
+        mask = route_types == rt
+        lts = actual_lt[mask].dropna()
         if len(lts) == 0:
             continue
-        by_route[route_type] = {
+        by_route[str(rt)] = {
             "n_shipments": len(lts),
             "p50": float(np.percentile(lts, 50)),
             "p90": float(np.percentile(lts, 90)),
             "p99": float(np.percentile(lts, 99)),
             "mean": float(lts.mean()),
-            "configured_lt": float(config_lt.get(route_type, np.nan)),
+            "configured_lt": float(config_lt.get(str(rt), np.nan)),
         }
 
     return {"by_route": by_route}
@@ -249,22 +262,17 @@ def analyze_bullwhip(data: DataBundle) -> dict[str, Any]:
 
     Bullwhip = order_variance[echelon] / pos_variance.
     """
-    fg_ships = data.shipments[
-        data.shipments["product_id"].apply(is_finished_good)
-    ].copy()
-    fg_ships["source_echelon"] = fg_ships["source_id"].map(classify_node)
-    fg_ships["target_echelon"] = fg_ships["target_id"].map(classify_node)
+    ships = data.shipments  # Already FG-filtered + echelon-enriched
 
     # POS demand variance (baseline)
-    demand_ships = fg_ships[fg_ships["target_id"].apply(is_demand_endpoint)]
+    demand_ships = ships[ships["is_demand_endpoint"]]
     pos_daily = demand_ships.groupby("creation_day")["quantity"].sum()
     pos_var = float(pos_daily.var()) if len(pos_daily) > 1 else 1.0
     pos_mean = float(pos_daily.mean())
     pos_cv = float(pos_daily.std() / pos_mean) if pos_mean > 0 else 0
 
-    # Order variance per echelon (using orders.parquet)
-    orders = data.orders[data.orders["product_id"].apply(is_finished_good)].copy()
-    orders["source_echelon"] = orders["source_id"].map(classify_node)
+    # Order variance per echelon (orders already FG + echelon-enriched)
+    orders = data.orders
 
     echelon_results: dict[str, dict[str, Any]] = {}
     for ech in ECHELON_ORDER:
@@ -316,11 +324,8 @@ def analyze_control_stability(
     2. inventory growth rate per echelon
     3. DOS per echelon
     """
-    fg_batches = data.batches[data.batches["product_id"].apply(is_finished_good)]
-    demand_ships = data.shipments[
-        data.shipments["target_id"].apply(is_demand_endpoint)
-        & data.shipments["product_id"].apply(is_finished_good)
-    ]
+    fg_batches = data.fg_batches
+    demand_ships = data.shipments[data.shipments["is_demand_endpoint"]]
     inv = data.inv_by_echelon
 
     demand_daily = demand_ships.groupby("creation_day")["quantity"].sum()

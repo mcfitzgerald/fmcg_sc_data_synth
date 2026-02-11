@@ -4,6 +4,9 @@ Layer 1: First Principles Physics Validation.
 1.1 System Mass Balance — production = consumption + delta_inventory + shrinkage
 1.2 Echelon Flow Conservation — inflow vs outflow per echelon (waterfall)
 1.3 Little's Law — implied cycle time vs configured lead time
+
+v0.66.0: Precomputed echelon/demand columns from DataBundle.
+Flow conservation separates demand-endpoint DCs from flow DCs.
 """
 
 from __future__ import annotations
@@ -16,7 +19,6 @@ from .loader import (
     ECHELON_ORDER,
     DataBundle,
     classify_node,
-    is_demand_endpoint,
     is_finished_good,
 )
 
@@ -38,11 +40,9 @@ def analyze_mass_balance(data: DataBundle, window: int = 30) -> dict[str, Any]:
     Returns:
         dict with 'periods' (list of period dicts), 'verdict'.
     """
-    fg_batches = data.batches[data.batches["product_id"].apply(is_finished_good)]
-    demand_ships = data.shipments[
-        data.shipments["target_id"].apply(is_demand_endpoint)
-        & data.shipments["product_id"].apply(is_finished_good)
-    ]
+    fg_batches = data.fg_batches
+    # Shipments are already FG-filtered by loader; use precomputed is_demand_endpoint
+    demand_ships = data.shipments[data.shipments["is_demand_endpoint"]]
     fg_returns = data.returns[data.returns["product_id"].apply(is_finished_good)]
 
     inv = data.inv_by_echelon
@@ -127,24 +127,25 @@ def analyze_flow_conservation(
 ) -> dict[str, Any]:
     """Compute inflow/outflow/accumulation per echelon.
 
-    Returns:
-        dict with 'echelons' (per-echelon flow stats), 'snapshots', 'verdicts'.
-    """
-    ships = data.shipments[
-        data.shipments["product_id"].apply(is_finished_good)
-    ].copy()
-    ships["source_echelon"] = ships["source_id"].map(classify_node)
-    ships["target_echelon"] = ships["target_id"].map(classify_node)
+    v0.66.0: Separates demand-endpoint DCs (ECOM-FC, DTC-FC) from flow DCs.
+    Reports both raw and adjusted Customer DC imbalance.
 
-    fg_batches = data.batches[data.batches["product_id"].apply(is_finished_good)]
+    Returns:
+        dict with 'echelons' (per-echelon flow stats), 'snapshots', 'verdicts',
+        'dc_adjustment' (ECOM/DTC endpoint correction).
+    """
+    # Shipments already FG-filtered and enriched with echelon columns
+    ships = data.shipments
+
+    fg_batches = data.fg_batches
     max_day = int(ships["creation_day"].max()) if len(ships) > 0 else 365
     sim_days = data.sim_days
 
-    # Build daily inflow/outflow per echelon
+    # Build daily inflow/outflow per echelon using precomputed columns
     echelon_flows: dict[str, dict[str, float]] = {}
 
     # Demand-endpoint shipments represent POS consumption
-    demand_ships = ships[ships["target_id"].apply(is_demand_endpoint)]
+    demand_ships = ships[ships["is_demand_endpoint"]]
 
     for ech in ECHELON_ORDER:
         if ech == "Plant":
@@ -190,6 +191,46 @@ def analyze_flow_conservation(
             "delta_pct_of_throughput": delta_pct,
         }
 
+    # v0.66.0: Compute DC adjustment for ECOM-FC/DTC-FC demand endpoints.
+    # These nodes are classified as "Customer DC" but are demand endpoints —
+    # their inflow is POS consumption, not warehouse accumulation.
+    tgt = ships["target_id"].str
+    src = ships["source_id"].str
+    ecom_dtc_in = (
+        tgt.startswith("ECOM-FC-") | tgt.startswith("DTC-FC-")
+    )
+    ecom_dtc_out = (
+        src.startswith("ECOM-FC-") | src.startswith("DTC-FC-")
+    )
+    ecom_dtc_inflow = ships[ecom_dtc_in]["quantity"].sum()
+    ecom_dtc_outflow = ships[ecom_dtc_out]["quantity"].sum()
+    ecom_dtc_net = (
+        (ecom_dtc_inflow - ecom_dtc_outflow) / sim_days
+        if sim_days > 0 else 0
+    )
+
+    dc_raw = echelon_flows.get("Customer DC", {})
+    dc_raw_delta = dc_raw.get("daily_delta", 0)
+    dc_adjusted_delta = dc_raw_delta - ecom_dtc_net
+    dc_raw_inflow = dc_raw.get("daily_inflow", 0)
+    ecom_daily = (
+        ecom_dtc_inflow / sim_days if sim_days > 0 else 0
+    )
+    dc_adj_inflow = dc_raw_inflow - ecom_daily
+    dc_adjusted_pct = (
+        abs(dc_adjusted_delta) / dc_adj_inflow * 100
+        if dc_adj_inflow > 0 else 0
+    )
+
+    dc_adjustment = {
+        "ecom_dtc_daily_inflow": ecom_daily,
+        "ecom_dtc_daily_consumption": ecom_dtc_net,
+        "raw_dc_delta": dc_raw_delta,
+        "raw_dc_delta_pct": dc_raw.get("delta_pct_of_throughput", 0),
+        "adjusted_dc_delta": dc_adjusted_delta,
+        "adjusted_dc_delta_pct": dc_adjusted_pct,
+    }
+
     # Snapshots at intervals
     snapshots: list[dict[str, Any]] = []
     window = 30  # Rolling window for rate calculation
@@ -206,9 +247,7 @@ def analyze_flow_conservation(
         ]
         days_in_window = snap_day - snap_start + 1
 
-        snap_demand = snap_ships[
-            snap_ships["target_id"].apply(is_demand_endpoint)
-        ]
+        snap_demand = snap_ships[snap_ships["is_demand_endpoint"]]
         row: dict[str, Any] = {"day": snap_day}
         for ech in ECHELON_ORDER:
             if ech == "Plant":
@@ -252,6 +291,9 @@ def analyze_flow_conservation(
     verdicts: dict[str, str] = {}
     for ech, flows in echelon_flows.items():
         pct = flows["delta_pct_of_throughput"]
+        # For Customer DC, use adjusted percentage
+        if ech == "Customer DC":
+            pct = dc_adjusted_pct
         if pct < _FLOW_STABLE_PCT:
             verdicts[ech] = "STABLE"
         elif flows["daily_delta"] > 0:
@@ -263,6 +305,7 @@ def analyze_flow_conservation(
         "echelons": echelon_flows,
         "snapshots": snapshots,
         "verdicts": verdicts,
+        "dc_adjustment": dc_adjustment,
     }
 
 
@@ -276,13 +319,10 @@ def analyze_littles_law(data: DataBundle) -> dict[str, Any]:
     Compares implied cycle time (inventory / throughput) to configured lead times.
     """
     inv = data.inv_by_echelon
-    ships = data.shipments[
-        data.shipments["product_id"].apply(is_finished_good)
-    ].copy()
-    ships["source_echelon"] = ships["source_id"].map(classify_node)
-    ships["target_echelon"] = ships["target_id"].map(classify_node)
+    # Shipments already enriched with echelon columns
+    ships = data.shipments
 
-    fg_batches = data.batches[data.batches["product_id"].apply(is_finished_good)]
+    fg_batches = data.fg_batches
     links = data.links
     sim_days = data.sim_days
 
@@ -395,6 +435,32 @@ def format_flow_conservation(results: dict[str, Any], width: int = 78) -> str:
             f"  {f['daily_delta']:>+12,.0f}"
             f"  {f['delta_pct_of_throughput']:>7.1f}%"
             f"  {v:>12}"
+        )
+
+    # v0.66.0: DC adjustment annotation
+    adj = results.get("dc_adjustment")
+    if adj and adj["ecom_dtc_daily_inflow"] > 0:
+        lines.append("")
+        ecom_in = adj["ecom_dtc_daily_inflow"]
+        raw_d = adj["raw_dc_delta"]
+        raw_p = adj["raw_dc_delta_pct"]
+        adj_d = adj["adjusted_dc_delta"]
+        adj_p = adj["adjusted_dc_delta_pct"]
+        lines.append(
+            "  NOTE: Customer DC includes ECOM-FC + DTC-FC"
+            " demand endpoints."
+        )
+        lines.append(
+            f"  Their inflow ({ecom_in:,.0f}/d) = POS"
+            " consumption, not accumulation."
+        )
+        lines.append(
+            f"  Raw DC imbalance:        "
+            f"{raw_d:+,.0f}/d ({raw_p:.1f}%)"
+        )
+        lines.append(
+            f"  Adjusted (excl ECOM/DTC): "
+            f"{adj_d:+,.0f}/d ({adj_p:.1f}%)"
         )
 
     # Snapshot table

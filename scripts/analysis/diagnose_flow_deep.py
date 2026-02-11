@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """
-Deep Flow Diagnostic — 20 Questions to Diagnose Structural Issues.
+FORENSIC DEEP DIVE — 20 Questions to Diagnose Structural Issues.
+
+Role: Detailed structural analysis with 20 precise questions across 7 themes.
+Designed for root-cause investigation when the Executive Scorecard
+(diagnose_365day.py) flags issues.
 
 Seven themes, 20 precise questions answered from simulation Parquet data:
   Theme 1: Where Is the Inventory? (Q1–Q3)
@@ -11,6 +15,9 @@ Seven themes, 20 precise questions answered from simulation Parquet data:
   Theme 6: Push & Pull Interaction (Q16–Q18)
   Theme 7: System Dynamics (Q19–Q20)
 
+v0.66.0: Leverages loader-level echelon/demand/ABC enrichment (built ONCE).
+DOS targets and MRP caps derived from simulation_config.json.
+
 Usage:
     poetry run python scripts/analysis/diagnose_flow_deep.py
     poetry run python scripts/analysis/diagnose_flow_deep.py --data-dir data/output
@@ -19,9 +26,11 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import io
 import sys
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -32,8 +41,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from diagnostics.loader import (
     DataBundle,
-    classify_node,
-    is_demand_endpoint,
+    classify_node,  # Still needed for links.csv static lookups
     load_all_data,
 )
 
@@ -42,24 +50,30 @@ WIDTH = 78
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Precomputed columns (avoids O(62M) .map() per question)
+# v0.66.0: Echelon/demand/ABC now precomputed by loader; only channel and
+# static lookups are computed here.
 # ═══════════════════════════════════════════════════════════════════════════════
 
 @dataclass
 class EnrichedData:
-    """DataBundle with precomputed echelon/channel columns on shipments & orders."""
+    """DataBundle with precomputed echelon/channel columns on shipments & orders.
+
+    v0.66.0: Echelon/demand/ABC columns come from loader enrichment.
+    Channel classification and static lookups are computed here.
+    """
 
     bundle: DataBundle
 
-    # Precomputed on shipments (62M rows — built ONCE)
-    ship_src_ech: pd.Series    # source echelon
-    ship_tgt_ech: pd.Series    # target echelon
-    ship_tgt_chan: pd.Series   # target channel (for DCs)
-    ship_src_str: pd.Series    # source_id as str
-    ship_tgt_str: pd.Series    # target_id as str
-    ship_abc: pd.Series        # ABC class
-    ship_is_demand: pd.Series  # target is demand endpoint
+    # Precomputed on shipments — from loader (echelon/demand/ABC) + here (channel)
+    ship_src_ech: pd.Series    # source echelon (from loader)
+    ship_tgt_ech: pd.Series    # target echelon (from loader)
+    ship_tgt_chan: pd.Series   # target channel (deep diagnostic only)
+    ship_src_str: pd.Series    # source_id
+    ship_tgt_str: pd.Series    # target_id
+    ship_abc: pd.Series        # ABC class (from loader)
+    ship_is_demand: pd.Series  # target is demand endpoint (from loader)
 
-    # Precomputed on orders (58M rows — built ONCE)
+    # Precomputed on orders — from loader
     ord_src_ech: pd.Series
     ord_tgt_ech: pd.Series
     ord_src_str: pd.Series
@@ -88,6 +102,10 @@ class EnrichedData:
     @property
     def batches(self) -> pd.DataFrame:
         return self.bundle.batches
+
+    @property
+    def fg_batches(self) -> pd.DataFrame:
+        return self.bundle.fg_batches
 
     @property
     def forecasts(self) -> pd.DataFrame:
@@ -136,49 +154,41 @@ def _cat_unique(series: pd.Series) -> set[str]:
 
 
 def enrich_data(data: DataBundle) -> EnrichedData:
-    """Build precomputed columns from unique node IDs (O(4200)), then map vectorized.
+    """Build deep-diagnostic columns on top of loader-level enrichment.
 
-    Uses categorical .map() which only maps the ~4200 unique categories,
-    not all 62M rows individually.
+    v0.66.0: Echelon/demand/ABC columns are already precomputed by the loader
+    on shipments and orders. This function only adds:
+    - Channel classification (target node → channel)
+    - Static lookups (plant-direct DCs, store counts per DC)
     """
     t0 = time.time()
-    print("  Precomputing echelon/channel/ABC columns...")
+    print("  Enriching deep diagnostic columns...")
 
     ships = data.shipments
     orders = data.orders
 
-    # Use columns directly — they're already categorical from the loader
-    src_col = ships["source_id"]
-    tgt_col = ships["target_id"]
-    ord_src_col = orders["source_id"]
-    ord_tgt_col = orders["target_id"]
+    # Echelon/demand/ABC already precomputed by loader (v0.66.0)
+    ship_src_ech = ships["source_echelon"]
+    ship_tgt_ech = ships["target_echelon"]
+    ship_is_demand = ships["is_demand_endpoint"]
+    ship_abc = ships["abc_class"]
+    ord_src_ech = orders["source_echelon"]
+    ord_tgt_ech = orders["target_echelon"]
 
-    # 1. Build lookup dicts from UNIQUE node IDs (~4200 unique)
-    all_node_ids = _cat_unique(src_col) | _cat_unique(tgt_col) | _cat_unique(ord_src_col) | _cat_unique(ord_tgt_col)
-    node_ech = {nid: classify_node(nid) for nid in all_node_ids}
+    # Channel classification (deep diagnostic only — not in loader)
+    all_node_ids = _cat_unique(ships["target_id"]) | _cat_unique(ships["source_id"])
     node_chan = {nid: _channel_from_node(nid) for nid in all_node_ids}
-    node_demand = {nid: is_demand_endpoint(nid) for nid in all_node_ids}
+    ship_tgt_chan = ships["target_id"].map(node_chan).astype("category")
 
-    # 2. Map on categoricals — pandas maps only the unique categories (~4200),
-    #    not every row (62M), making this O(categories) not O(rows)
-    ship_src_ech = src_col.map(node_ech).astype("category")
-    ship_tgt_ech = tgt_col.map(node_ech).astype("category")
-    ship_tgt_chan = tgt_col.map(node_chan).astype("category")
-    ship_is_demand = tgt_col.map(node_demand)
-    ship_abc = ships["product_id"].map(data.abc_map).astype("category")
-
-    ord_src_ech = ord_src_col.map(node_ech).astype("category")
-    ord_tgt_ech = ord_tgt_col.map(node_ech).astype("category")
-
-    # 3. Static lookups from links
+    # Static lookups from links
     plant_direct_dcs: set[str] = set()
     store_counts: dict[str, int] = {}
     for _, row in data.links.iterrows():
         s = str(row["source_id"])
         t = str(row["target_id"])
-        if s.startswith("PLANT-") and node_ech.get(t) == "Customer DC":
+        if s.startswith("PLANT-") and classify_node(t) == "Customer DC":
             plant_direct_dcs.add(t)
-        if t.startswith("STORE-") and node_ech.get(s) == "Customer DC":
+        if t.startswith("STORE-") and classify_node(s) == "Customer DC":
             store_counts[s] = store_counts.get(s, 0) + 1
 
     elapsed = time.time() - t0
@@ -189,14 +199,14 @@ def enrich_data(data: DataBundle) -> EnrichedData:
         ship_src_ech=ship_src_ech,
         ship_tgt_ech=ship_tgt_ech,
         ship_tgt_chan=ship_tgt_chan,
-        ship_src_str=src_col,
-        ship_tgt_str=tgt_col,
+        ship_src_str=ships["source_id"],
+        ship_tgt_str=ships["target_id"],
         ship_abc=ship_abc,
         ship_is_demand=ship_is_demand,
         ord_src_ech=ord_src_ech,
         ord_tgt_ech=ord_tgt_ech,
-        ord_src_str=ord_src_col,
-        ord_tgt_str=ord_tgt_col,
+        ord_src_str=orders["source_id"],
+        ord_tgt_str=orders["target_id"],
         plant_direct_dcs=plant_direct_dcs,
         store_counts=store_counts,
     )
@@ -671,12 +681,10 @@ def q10_bc_production_deficit(ed: EnrichedData) -> None:
     """Q10: B/C Production Deficit — Why -1.2% / -3.9% under demand?"""
     print(_header(10, "B/C Production Deficit Analysis"))
 
-    batches = ed.batches
     ships = ed.ships
     sim_days = ed.sim_days
 
-    batch_prod = _ensure_str(batches["product_id"])
-    fg_batches = batches[batch_prod.str.startswith("SKU-")].copy()
+    fg_batches = ed.fg_batches.copy()
     fg_batches["abc"] = _ensure_str(fg_batches["product_id"]).map(ed.abc_map)
     fg_batches["plant"] = _ensure_str(fg_batches["plant_id"])
 
@@ -769,11 +777,10 @@ def q11_plant_fg_timeline(ed: EnrichedData) -> None:
         print(f"\n  Growth over {max_day}d: {growth_30:+.1f}%")
 
     # Per-plant production vs deployment
-    batches = ed.batches
     ships = ed.ships
     sim_days = ed.sim_days
 
-    fg_batches = batches[_ensure_str(batches["product_id"]).str.startswith("SKU-")].copy()
+    fg_batches = ed.fg_batches.copy()
     fg_batches["plant"] = _ensure_str(fg_batches["plant_id"])
 
     plant_mask = ed.ship_src_ech == "Plant"
@@ -800,7 +807,6 @@ def q12_mrp_backpressure(ed: EnrichedData) -> None:
     print(_header(12, "MRP Backpressure Effectiveness"))
 
     inv = ed.inv
-    batches = ed.batches
     ships = ed.ships
     sim_days = ed.sim_days
 
@@ -810,10 +816,10 @@ def q12_mrp_backpressure(ed: EnrichedData) -> None:
 
     plant_inv = inv[inv["echelon"] == "Plant"].sort_values("day")
 
-    fg_batches = batches[_ensure_str(batches["product_id"]).str.startswith("SKU-")].copy()
-    daily_prod = fg_batches.groupby("day_produced")["quantity"].sum()
+    daily_prod = ed.fg_batches.groupby("day_produced")["quantity"].sum()
 
-    caps = {"A": 22, "B": 25, "C": 25}
+    # MRP caps from simulation_config.json (v0.66.0)
+    caps = ed.bundle.dos_targets.mrp_caps
 
     # Total daily demand
     demand_ships = ships[ed.ship_is_demand]
@@ -877,8 +883,7 @@ def q13_deployment_need_vs_actual(ed: EnrichedData) -> None:
     demand_ships = ships[ed.ship_is_demand]
     demand_daily = demand_ships["quantity"].sum() / sim_days
 
-    fg_batches = ed.batches[_ensure_str(ed.batches["product_id"]).str.startswith("SKU-")]
-    prod_daily = fg_batches["quantity"].sum() / sim_days
+    prod_daily = ed.fg_batches["quantity"].sum() / sim_days
 
     print(f"\n  Daily flow rates:")
     print(f"    Production:          {prod_daily:>12,.0f}")
@@ -932,8 +937,7 @@ def q14_seasonal_alignment(ed: EnrichedData) -> None:
     daily_deploy = plant_ships.groupby("creation_day")["quantity"].sum()
 
     # Production by day
-    fg_batches = ed.batches[_ensure_str(ed.batches["product_id"]).str.startswith("SKU-")]
-    daily_prod = fg_batches.groupby("day_produced")["quantity"].sum()
+    daily_prod = ed.fg_batches.groupby("day_produced")["quantity"].sum()
 
     print(f"\n  Monthly flow comparison (30-day averages):")
     print(f"  {'Month':>6} {'Demand/d':>10} {'Deploy/d':>10} {'Prod/d':>10} "
@@ -1357,6 +1361,24 @@ def main() -> int:
         print(f"ERROR: Data directory not found: {data_dir}")
         return 1
 
+    # Tee stdout to file — every print goes to terminal AND report file
+    diag_dir = data_dir / "diagnostics"
+    diag_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    report_path = diag_dir / f"diagnose_flow_deep_{stamp}.txt"
+    tee_buf = io.StringIO()
+    _real_stdout = sys.stdout
+
+    class _Tee:
+        def write(self, s: str) -> int:
+            _real_stdout.write(s)
+            tee_buf.write(s)
+            return len(s)
+        def flush(self) -> None:
+            _real_stdout.flush()
+
+    sys.stdout = _Tee()  # type: ignore[assignment]
+
     print("=" * WIDTH)
     print("  DEEP FLOW DIAGNOSTIC — 20 QUESTIONS".center(WIDTH))
     print("=" * WIDTH)
@@ -1442,6 +1464,11 @@ def main() -> int:
     print(f"\n{'═' * WIDTH}")
     print(f"  DIAGNOSTIC COMPLETE — {elapsed:.0f}s elapsed".center(WIDTH))
     print(f"{'═' * WIDTH}\n")
+
+    # Flush tee to file
+    sys.stdout = _real_stdout
+    report_path.write_text(tee_buf.getvalue())
+    print(f"Report saved to: {report_path}")
     return 0
 
 
