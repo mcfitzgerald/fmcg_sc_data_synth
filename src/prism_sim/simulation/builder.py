@@ -120,7 +120,6 @@ class WorldBuilder:
                         type=node_type,
                         location=row["location"],
                         throughput_capacity=float(row["throughput_capacity"]),
-                        storage_capacity=float(row["storage_capacity"]),
                         channel=channel,
                         store_format=store_format,
                         parent_account_id=parent_id,
@@ -182,7 +181,6 @@ class WorldBuilder:
                     name=rdc["name"],
                     type=NodeType.DC,
                     location=rdc["location"],
-                    storage_capacity=rdc["storage_capacity"],
                 )
             )
 
@@ -212,7 +210,6 @@ class WorldBuilder:
                     type=NodeType.PLANT,
                     location=plant["location"],
                     throughput_capacity=plant["throughput_capacity"],
-                    storage_capacity=plant["storage_capacity"],
                 )
             )
 
@@ -273,7 +270,6 @@ class WorldBuilder:
                     name=store_name,
                     type=NodeType.STORE,
                     location=stores_config.get("location", "Various"),
-                    storage_capacity=stores_config.get("storage_capacity", 5000),
                 )
             )
 

@@ -45,7 +45,6 @@ class Node:
 
     # Capacity constraints
     throughput_capacity: float = float("inf")  # Units per day
-    storage_capacity: float = float("inf")  # Pallets
 
     # State (will be vectorized later, but kept here for object clarity)
     current_inventory: float = 0.0

@@ -10,11 +10,9 @@ def test_node_creation() -> None:
         name="Northeast RDC",
         type=NodeType.DC,
         location="Pennsylvania",
-        storage_capacity=50000,
     )
     assert node.id == "RDC-NAM-NE"
     assert node.type == NodeType.DC
-    assert node.storage_capacity == 50000
 
 
 def test_link_creation() -> None:
