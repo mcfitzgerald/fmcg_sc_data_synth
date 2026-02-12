@@ -132,6 +132,7 @@ Two complementary diagnostic scripts with shared modular backend:
 | `scripts/analysis/diagnose_a_item_fill.py` | 4-layer A-item fill rate root cause analysis (measurement, stockout location, root cause, ranking) | PyArrow row-group streaming |
 | `scripts/analysis/diagnose_service_level.py` | Service level trend, echelon breakdown, worst performers, degradation phases | PyArrow row-group streaming |
 | `scripts/analysis/diagnose_slob.py` | SLOB inventory: echelon distribution, DOS, velocity, imbalance, production vs demand | PyArrow row-group streaming |
+| `scripts/analysis/diagnose_cost.py` | Cost Analytics — COGS, logistics cost, carrying cost, OTIF, cost-to-serve, C2C | Parquet + cost_master.json |
 | `scripts/analysis/analyze_bullwhip.py` | Bullwhip effect: echelon variance amplification, production oscillation, order batching | Lightweight (no inventory load) |
 | `scripts/analysis/check_plant_balance.py` | Plant production load balance (batches per plant, zero-production days) | Lightweight |
 | `scripts/analysis/analyze_results.py` | General results overview (orders, shipments, batches, inventory) | **Legacy CSV — needs migration** |
@@ -151,7 +152,7 @@ All files are `.csv` by default or `.parquet` with `--format parquet`. Parquet u
 
 | File | Contents |
 |------|----------|
-| `orders` | Replenishment orders (header + lines flattened) |
+| `orders` | Replenishment orders (header + lines flattened). Includes `requested_date` (v0.69.0) for OTIF measurement. |
 | `shipments` | Logistics shipments with `emissions_kg` for Scope 3 tracking |
 | `batches` | Production batches (Work Order execution) |
 | `batch_ingredients` | Ingredient consumption per batch (BOM traceability) |
@@ -193,7 +194,7 @@ poetry run python scripts/generate_static_world.py
 Two initialization paths:
 
 ### Cold Start (default)
-1. **Demand-proportional priming** (`_initialize_inventory()`): Seeds on-hand inventory at every node proportional to expected demand and ABC class. Priming targets match operational targets: stores use `store_days_supply=6.0` × ABC factors; DCs use `dc_buffer_days × 1.5/2.0/2.5` (A/B/C); RDCs use `rdc_days_supply × ABC factors` with pipeline adjustment. Both RDCs and Customer DCs subtract upstream lead time to prevent double-stocking with pipeline inventory.
+1. **Demand-proportional priming** (`_initialize_inventory()`): Seeds on-hand inventory at every node proportional to expected demand and ABC class. Priming targets match operational targets: stores use `store_days_supply=6.0` × ABC factors; DCs use `dc_buffer_days × 1.5/2.0/2.5` (A/B/C); RDCs use `rdc_days_supply=9` × ABC factors with pipeline adjustment. Both RDCs and Customer DCs subtract upstream lead time to prevent double-stocking with pipeline inventory.
 2. **Synthetic steady-state priming** (`_prime_synthetic_steady_state()`): Adds pipeline shipments, production WIP (plant FG at `plant_fg_prime_days`=3.5 per plant → 14 DOS total, matching MRP A-item target ~17 DOS with WIP+transit), history buffers, and inventory age
 3. **Stabilization** (default 10 days): Normal simulation steps excluded from metrics
 
@@ -334,7 +335,7 @@ slob_dampening_floor = 1.0  # No production reduction for aged inventory
 ### ABC Production Buffers (v0.39.3, updated v0.42.0)
 - **A-Items:** `a_production_buffer` = 1.22x (raised from 1.15 in v0.42.0 — safe with ABC-aware Phase 4 clipping)
 - **B-Items:** `b_production_buffer` = 1.1x (modest buffer, applied to batch qty)
-- **C-Items:** No penalty factor — DRP handles batch sizing (v0.48.0)
+- **C-Items:** `c_production_factor` = 1.05x (v0.68.0, was 1.0) — applied as buffer multiplier on C-item DRP batches in `mrp.py`
 
 ### Emergency Replenishment (v0.39.3, updated v0.42.0)
 Bypass order staggering when any product DOS < `emergency_dos_threshold` (default 3.0):
@@ -375,15 +376,17 @@ need = max(0, target_dos × expected_demand × seasonal_factor - current_positio
 | Echelon | A-Items | B-Items | C-Items | Config |
 |---------|---------|---------|---------|--------|
 | **DCs** | `dc_buffer_days × 1.5` (≈10.5d) | `dc_buffer_days × 2.0` (14d) | `dc_buffer_days × 2.5` (17.5d) | `dc_buffer_days=7.0` |
-| **RDCs** | 15.0d | 15.0d | 15.0d | Flat `_rdc_target_dos` |
+| **RDCs** | 9.0d | 9.0d | 9.0d | Flat `_rdc_target_dos` (flow-through cross-dock, actual DOS ≈8.4) |
 
 ### `_push_excess_rdc_inventory()` — RDC→DC Overflow
-Active as secondary overflow valve: pushes excess RDC inventory to customer DCs when RDC DOS exceeds threshold (`push_threshold_dos=20.0`, ~1.3× the 15 DOS target). Activates at 20 DOS to prevent accumulation in the RDC dead zone. v0.61.0: DOS calculations use seasonally-adjusted demand (same factor as deployment). v0.64.0: Push receive cap is ABC-differentiated — `dc_buffer_days × ABC_mult × push_receive_headroom(1.15)` → A≈12.1, B≈16.1, C≈20.1 DOS. Replaces the scalar `push_receive_dos_cap=12.0` which blocked B/C items below their deployment targets.
+Active as secondary overflow valve: pushes excess RDC inventory to customer DCs when RDC DOS exceeds threshold (`push_threshold_dos=12.0`, ~1.33× the 9 DOS target). Activates at 12 DOS to prevent accumulation in the RDC dead zone. v0.61.0: DOS calculations use seasonally-adjusted demand (same factor as deployment). v0.64.0: Push receive cap is ABC-differentiated — `dc_buffer_days × ABC_mult × push_receive_headroom(1.15)` → A≈12.1, B≈16.1, C≈20.1 DOS. Replaces the scalar `push_receive_dos_cap=12.0` which blocked B/C items below their deployment targets.
 
 ### Key Design: Plant FG as Natural Backpressure
 Unneeded FG stays at the plant and enters MRP's inventory position calculation (`_calculate_inventory_position()` includes plant FG in pipeline IP). This creates a natural negative feedback loop: high plant FG → high IP → MRP reduces production → equilibrium.
 
 **Design decision (v0.63.0):** Production backpressure is handled entirely by MRP DOS caps + plant FG in IP — not by physical storage constraints. `Node.storage_capacity` was removed as dead code (all nodes had `inf`, never enforced). This matches real FMCG operations where MRP prevents overproduction at the planning level; plants don't physically block production lines due to warehouse capacity.
+
+**v0.68.0:** MRP backpressure (diagnostic Q12) and B/C underproduction (diagnostic Q10) are formally closed. RDC flow-through redesign (`rdc_target_dos` 15 to 9) combined with `c_production_factor=1.05` resolved the structural imbalances.
 
 ---
 
@@ -609,6 +612,7 @@ Every decision impacts the balance between:
 | `config/simulation_config.json` | Runtime parameters (MRP, logistics, quirks, initialization) |
 | `config/world_definition.json` | Static world (products, network topology, recipe logic) |
 | `config/benchmark_manifest.json` | Risk scenarios, validation targets |
+| `config/cost_master.json` | Post-sim cost parameters (logistics, penalties, working capital, product costs). Not used by simulation engine. |
 
 ---
 

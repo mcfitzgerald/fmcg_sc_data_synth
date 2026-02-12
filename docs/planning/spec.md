@@ -31,10 +31,24 @@ These are observations — not pass/fail grades against fixed targets.
 - Tighter MRP DOS caps: A=22, B=25, C=25
 - Plant FG priming raised to 3.5 DOS/plant (was 2.0) — total IP ≈17 DOS matches MRP A-item target
 
-**Remaining stability concerns** (top-line metrics healthy, structural issues persist):
-- All 24 deployment targets UNDER (position ratios 0.32-0.68x, target 0.8-1.1x)
-- MRP backpressure correlation: +0.322 (positive = caps not constraining production)
-- Customer DC flow imbalance: 26.1% inflow > outflow (but inventory draining -17.2%)
+**Closed items (v0.68.0, converged 365-day diagnostic):**
+- MRP backpressure: +0.606 correlation is seasonal confound, plant FG stable (-1.3%), caps never fire. **Closed.**
+- B/C underproduction: B P/D=0.990, C=0.984 — within tolerance. Post-warm-start B≈1.009, C≈1.007. **Closed.**
+- DC flow imbalance: 26.1% → **0.7% adjusted** (ECOM/DTC were measurement artifact). **Closed.**
+
+**v0.68.0 fixes:**
+- RDC target: 15→9 DOS (flow-through topology, actual ≈8.4)
+- C-item buffer: 1.0→1.05 (compensates 1.6% changeover deficit)
+
+**v0.69.0: Cost Analytics Layer (post-sim enrichment, no physics changes):**
+- `Order.requested_date` populated from link lead times — enables OTIF measurement
+- `cost_master.json` config for logistics, penalty, working capital, product costs
+- `diagnose_cost.py` — COGS, logistics cost, carrying cost, OTIF, cost-to-serve, C2C
+
+**Remaining observations** (converged baseline):
+- All echelons draining: P/D=0.993, -65K/day total drain (warm-start Q1 + seasonal lag)
+- RDC DOS: 8.4 vs target 9.0 (previously 15.0 — now realistic)
+- OEE: 54.8% (just under 55% GREEN threshold)
 
 ---
 
@@ -55,14 +69,13 @@ The simulation is in an iterative shake-out phase. The core engine is complete; 
 - `scripts/analysis/diagnose_365day.py` (3-layer pyramid: physics → operational → flow)
 - Standalone analyzers: `diagnose_slob.py`, `diagnose_a_item_fill.py`, `analyze_bullwhip.py`
 
-**Known observations** (v0.61.0, measured):
-- Customer DC flow imbalance: 26.1% inflow > outflow (persistent across v0.59.0-v0.61.0)
-- RDC growth: +38.3% over 365 days (push threshold fix reduced divergence rate)
-- Plant FG growth: +61.4% — early overproduction (day 1-60) dominates; FG plateaus at 59-63M then declines
-- MRP backpressure not engaging: production correlates positively with plant FG (+0.322)
-- All deployment targets UNDER (0.32-0.68x position ratios)
-- Mass balance period 0 ~155% (warm-start artifact, expected)
-- Prod/Demand now 1.01 (was 0.98 in v0.59.0 — slight overcorrection)
+**Known observations** (v0.67.0, converged 365-day warm-start):
+- Plant FG growth: -1.3% (essentially stable; was +61.4% in v0.61.0 cold-start)
+- System drain: all echelons draining at -65K/day total (P/D=0.993)
+- RDC DOS: 8.4 (operating as flow-through cross-dock, not buffer warehouse)
+- OEE: 54.8% (was 55.3% in v0.61.0)
+- Fill rate: 98.6%, Perfect Order: 97.5%, Turns: 10.43x, C2C: 20.0d
+- MRP backpressure corr: +0.606 (seasonal confound — caps never fire, plant FG stable)
 
 ---
 

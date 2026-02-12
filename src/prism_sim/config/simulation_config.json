@@ -73,8 +73,8 @@
         "_comment": "v0.42.0: A-buffer raised to 1.22 — with Phase 4 ABC-aware clipping, higher buffer is safe",
         "a_buffer": 1.22,
         "b_buffer": 1.1,
-        "c_production_factor": 1.0,
-        "_c_note": "C-items no longer penalized - use longer horizon instead"
+        "c_production_factor": 1.05,
+        "_c_note": "v0.68.0: Raised from 1.0→1.05 to compensate for C-item 1.6% production deficit (changeover overhead). Applied as buffer multiplier on DRP batches."
       },
       "initialization": {
         "_comment": "v0.58.0: Single init path — priming + synthetic steady-state + stabilization",
@@ -163,13 +163,13 @@
         "_floor_gating_note": "v0.51.0: Anti-windup — demand floor scales with inventory deficit, disengages when DOS >= target",
         "outflow_history_days": 5,
         "_outflow_history_note": "v0.51.0: Reduced from 7 to 5 — shorter window passes weekly variance, enables bullwhip emergence",
-        "rdc_target_dos": 15.0,
-        "_rdc_target_dos_note": "v0.55.0: RDC deployment target. Need = target_dos x demand - position. Matches init.",
+        "rdc_target_dos": 9.0,
+        "_rdc_target_dos_note": "v0.68.0: Lowered from 15→9. RDC operates as flow-through (actual DOS ≈8.4 in converged state). 15 was unrealistic for this topology — RDCs never built to target because downstream pull kept them drained.",
         "_dc_deploy_dos_note": "v0.55.0: DC deployment targets are ABC-differentiated: dc_buffer_days x 1.5/2.0/2.5 (A/B/C). Physics-derived from dc_buffer_days.",
         "share_ceiling_headroom": 1.5,
         "_share_ceiling_note": "v0.55.0: Max deploy per target = demand_share x available x headroom.",
         "push_allocation_enabled": true,
-        "push_threshold_dos": 20.0,
+        "push_threshold_dos": 12.0,
         "push_receive_headroom": 1.15,
         "_push_receive_note": "v0.64.0: ABC-differentiated push cap = dc_buffer × ABC mult × headroom. A≈12.1, B≈16.1, C≈20.1. Replaces scalar push_receive_dos_cap.",
         "channel_profiles": {
@@ -320,7 +320,7 @@
       "initialization": {
         "_comment": "v0.60.0: Store priming matches channel profiles (target_days=6.0 for MASS_RETAIL/CLUB/ECOM/default). ABC factors give A=7.2, B=6.0, C=4.8",
         "store_days_supply": 6.0,
-        "rdc_days_supply": 15.0,
+        "rdc_days_supply": 9.0,
         "plant_ingredient_buffer": 200000.0,
         "abc_velocity_factors": {
           "A": 1.2,

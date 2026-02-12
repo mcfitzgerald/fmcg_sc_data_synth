@@ -1177,6 +1177,8 @@ class MRPEngine:
 
                 if abc == 1:  # B-item
                     batch_qty *= b_production_buffer
+                elif abc == 2:  # C-item  # noqa: PLR2004
+                    batch_qty *= self.c_production_factor
 
                 # v0.56.0: Graduated SLOB dampening (replaces binary 0.25 cut)
                 batch_qty = self._apply_slob_dampening(
@@ -1206,6 +1208,8 @@ class MRPEngine:
 
                 if abc == 1:  # B-item
                     batch_qty *= b_production_buffer
+                elif abc == 2:  # C-item  # noqa: PLR2004
+                    batch_qty *= self.c_production_factor
 
                 # DOS throttling for B-items only (high inventory levels).
                 abc_class_c = 2

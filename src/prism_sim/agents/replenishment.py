@@ -795,8 +795,10 @@ class MinMaxReplenisher:
     def _build_supplier_map(self) -> dict[str, str]:
         """Builds a lookup map for Store -> Source ID."""
         mapping = {}
+        self._link_lead_time: dict[str, float] = {}
         for link in self.world.links.values():
             mapping[link.target_id] = link.source_id
+            self._link_lead_time[link.target_id] = link.lead_time_days
         return mapping
 
     def generate_orders(self, day: int, demand_signal: np.ndarray) -> list[Order]:
@@ -1417,6 +1419,7 @@ class MinMaxReplenisher:
                 priority = OrderPriority.RUSH
 
             order_count += 1
+            lead_time = self._link_lead_time.get(target_id, 3.0)
             orders.append(Order(
                 id=f"ORD-{day}-{target_id}-{order_count}",
                 source_id=source_id,
@@ -1425,7 +1428,8 @@ class MinMaxReplenisher:
                 lines=data["lines"],
                 order_type=o_type,
                 promo_id=data["promo_id"],
-                priority=priority
+                priority=priority,
+                requested_date=day + int(lead_time),
             ))
 
         return orders

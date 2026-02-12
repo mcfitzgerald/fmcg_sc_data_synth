@@ -5,6 +5,77 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.69.0] - 2026-02-11
+
+### Cost Analytics Layer — Post-Simulation Enrichment
+
+Adds SKU profitability, OTIF, working capital, and cost-to-serve analysis as post-sim enrichment. No simulation physics changes.
+
+#### Step 1: Order Requested Date
+- `replenishment.py`: Populate `Order.requested_date = day + lead_time` using link's `lead_time_days`
+- `writer.py`: Add `requested_date` to `ORDER_FIELDS` and `log_orders()` export
+- Enables on-time measurement: `arrival_day <= requested_date`
+
+#### Step 2: Cost Master Config
+- NEW: `src/prism_sim/config/cost_master.json` — logistics costs, penalty costs, working capital params, product costs by category
+- Read-only config for diagnostic scripts, not used by simulation engine
+
+#### Step 3: Cost Diagnostic Script
+- NEW: `scripts/analysis/diagnose_cost.py` — 6-section post-sim enrichment:
+  1. COGS by ABC/Echelon
+  2. Logistics Cost by Route (FTL vs LTL by case threshold)
+  3. Inventory Carrying Cost by Echelon
+  4. OTIF (On-Time In-Full) with breakdown by ABC class and echelon
+  5. Cost-to-Serve by Channel
+  6. Cash-to-Cash (DIO + DSO - DPO)
+
+#### Fix: Parquet Schema
+- `writer.py`: Added `("requested_date", pa.int32())` to the PyArrow orders schema (was missing despite being in `ORDER_FIELDS`)
+
+#### Performance: Memory-Optimized Diagnostic
+- Selective column loading (`SHIP_COLS`, `ORDER_COLS`) — avoids loading unused columns from 60M+ row parquet files
+- PyArrow row-group streaming for inventory (908MB file) — O(1 row-group) memory instead of O(100M rows)
+- Explicit `del` of intermediate DataFrames after use
+
+#### Files Modified/Created
+- `agents/replenishment.py` — populate `requested_date`
+- `simulation/writer.py` — export `requested_date` in orders (schema + fields)
+- `config/cost_master.json` — NEW cost parameters
+- `scripts/analysis/diagnose_cost.py` — NEW cost analytics diagnostic
+
+## [0.68.0] - 2026-02-11
+
+### Structural Fixes: RDC Target + Production Drain
+
+Diagnostic forensics on converged data (1000d cold → 1000d warm → 365d warm) identified two structural issues. This release fixes both with minimal, physics-justified changes.
+
+#### Closed: MRP Backpressure (Q12)
+- corr(inv[t], prod[t+1]) = +0.606 — positive, but plant FG is stable (-1.3%)
+- MRP DOS caps never fire (max 17.6 vs cap 22)
+- Positive correlation is seasonal confound: high demand → high production AND high throughput inventory
+- **Verdict: Working via natural feedback loop, not via caps. Closed as seasonal confound.**
+
+#### Closed: B/C Underproduction (Q10)
+- B P/D = 0.990 (≥0.99 threshold), C P/D = 0.984 (≥0.98 threshold)
+- Post-warm-start (Q2-Q4): B ≈ 1.009, C ≈ 1.007 — actually overproducing
+- Annual average pulled below 1.0 by warm-start Q1 ramp-up
+- **Verdict: Within operational tolerance. Closed as ABC-specific; systemic gap addressed below.**
+
+#### Fix 1: RDC Target Recalibration
+- `rdc_target_dos`: 15.0 → **9.0** (actual converged DOS was 8.4)
+- `push_threshold_dos`: 20.0 → **12.0** (1.33× new target)
+- `rdc_days_supply` (init priming): 15.0 → **9.0** (matches operational target)
+- RDCs operate as flow-through cross-docks in this topology. The 15 DOS target was unrealistic — downstream pull kept them drained to ~8.4 DOS. Config now matches physics.
+
+#### Fix 2: C-item Production Buffer
+- `c_production_factor`: 1.0 → **1.05** (5% buffer for C-items)
+- Applied `c_production_factor` to C-item DRP batches in `mrp.py` (was dead code)
+- C-items had the largest production deficit (-1.6%) due to changeover overhead with no buffer to compensate. B-items have 1.1× buffer, A-items have 1.22× — C had 1.0×.
+
+#### Files Modified
+- `simulation_config.json` — RDC target, push threshold, C-item buffer
+- `simulation/mrp.py` — apply c_production_factor to C-item batch sizing
+
 ## [0.67.1] - 2026-02-11
 
 ### Snapshot Mode for Convergence Chains

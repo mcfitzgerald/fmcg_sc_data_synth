@@ -1,0 +1,25 @@
+{
+  "_comment": "v0.69.0: Cost parameters for post-sim enrichment (diagnose_cost.py). Not used by simulation engine.",
+  "logistics_costs": {
+    "ftl_cost_per_km": 1.50,
+    "ltl_cost_per_case": 0.75,
+    "handling_cost_per_case": 0.25,
+    "warehouse_cost_per_case_per_day": 0.02
+  },
+  "penalty_costs": {
+    "stockout_cost_multiplier": 3.0,
+    "late_delivery_penalty_per_case": 0.10
+  },
+  "working_capital": {
+    "dso_days": 30.0,
+    "dpo_days": 45.0,
+    "annual_carrying_cost_pct": 0.25
+  },
+  "product_costs": {
+    "_comment": "Cost per case by category. Used for COGS and carrying cost calculations.",
+    "ORAL_CARE": 12.50,
+    "PERSONAL_WASH": 8.75,
+    "HOME_CARE": 6.50,
+    "default": 9.00
+  }
+}
