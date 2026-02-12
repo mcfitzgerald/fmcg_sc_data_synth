@@ -5,6 +5,40 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.69.4] - 2026-02-12
+
+### Fix: Diagnostic False Alarms (diagnostic-only, no simulation changes)
+
+Fixes 4 false/misleading alarms in the 365-day diagnostic suite when run on converged warm-start data:
+
+#### Mass Balance Period 0 (first_principles.py)
+- Period 0 showed 158.5% "VIOLATION" because first inventory snapshot is day 7, not day 0
+- Now falls back to first available snapshot when no day-0 data exists
+- Period 0 imbalance drops to 3.9%; overall verdict: BALANCED (was VIOLATION)
+- Fallback periods marked with `*` in output
+
+#### Customer DC Waterfall Display (first_principles.py)
+- DC row in waterfall table showed raw 20.7% imbalance (includes ECOM/DTC endpoints)
+- Now displays adjusted 0.4%* in the main table row, with `*` footnote explaining the correction
+- Raw and adjusted values both shown in the NOTE section for transparency
+
+#### Stability Assessment Seasonal Detrending (flow_analysis.py)
+- Summer→winter inventory decline was misread as structural "DRAINING"
+- Now uses linear+harmonic regression (`y = a + bt + c·sin + d·cos`) to extract structural slope
+- Separates seasonal oscillation from true drift; all echelons now read STABLE/CONVERGING
+- Executive scorecard: System Stability GREEN (was RED)
+
+#### MRP Backpressure Detrending (diagnose_flow_deep.py)
+- Q12 raw correlation (+0.60) inflated by seasonal confound (both inv and prod track demand)
+- Now shows both raw and detrended correlation; detrended value (+0.14) used for interpretation
+- Added cap effectiveness metric (reports whether MRP DOS caps actually fire)
+- Q14 seasonal alignment: reads amplitude/phase/cycle from config instead of hardcoded values
+
+#### Shared Infrastructure (loader.py)
+- New `SeasonalityConfig` dataclass with `factor(day)` method
+- New `load_seasonality_config()` reads from simulation_config.json
+- Added `seasonality` field to `DataBundle` for use by all diagnostic modules
+
 ## [0.69.3] - 2026-02-12
 
 ### Performance: Integer Index Caching + Inner Loop Optimization

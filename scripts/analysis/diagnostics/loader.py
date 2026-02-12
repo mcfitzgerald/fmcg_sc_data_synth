@@ -13,6 +13,7 @@ DOS targets derived from simulation_config.json instead of hardcoded.
 from __future__ import annotations
 
 import json
+import math
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -141,6 +142,45 @@ class DOSTargets:
 
     by_echelon: dict[str, dict[str, float]]  # echelon -> {A/B/C -> target DOS}
     mrp_caps: dict[str, float]  # {A/B/C -> DOS cap}
+
+
+@dataclass
+class SeasonalityConfig:
+    """Demand seasonality parameters from simulation_config.json.
+
+    Used to detrend diagnostic time series (stability, backpressure).
+    """
+
+    amplitude: float
+    phase_shift_days: int
+    cycle_days: int
+
+    def factor(self, day: int | np.ndarray) -> float | np.ndarray:
+        """Seasonal multiplier for a given day (scalar or array)."""
+        return 1.0 + self.amplitude * np.sin(
+            2 * math.pi * (day - self.phase_shift_days) / self.cycle_days
+        )
+
+
+def load_seasonality_config(config_path: Path | None = None) -> SeasonalityConfig:
+    """Load seasonality parameters from simulation_config.json."""
+    if config_path is None:
+        config_path = (
+            Path(__file__).parents[3]
+            / "src"
+            / "prism_sim"
+            / "config"
+            / "simulation_config.json"
+        )
+
+    with open(config_path) as f:
+        seas = json.load(f)["simulation_parameters"]["demand"]["seasonality"]
+
+    return SeasonalityConfig(
+        amplitude=seas["amplitude"],
+        phase_shift_days=int(seas["phase_shift_days"]),
+        cycle_days=int(seas["cycle_days"]),
+    )
 
 
 def load_dos_targets(config_path: Path | None = None) -> DOSTargets:
@@ -465,6 +505,7 @@ class DataBundle:
     abc_map: dict[str, str]
     inv_by_echelon: pd.DataFrame
     dos_targets: DOSTargets
+    seasonality: SeasonalityConfig
     sim_days: int = 0
     data_dir: Path = field(default_factory=lambda: Path("data/output"))
 
@@ -557,6 +598,9 @@ def load_all_data(data_dir: Path) -> DataBundle:
     # v0.66.0: Config-derived DOS targets
     dos_targets = load_dos_targets()
 
+    # v0.69.4: Seasonality config for detrending
+    seasonality = load_seasonality_config()
+
     return DataBundle(
         products=products,
         shipments=shipments,
@@ -572,6 +616,7 @@ def load_all_data(data_dir: Path) -> DataBundle:
         abc_map=abc_map,
         inv_by_echelon=inv_by_echelon,
         dos_targets=dos_targets,
+        seasonality=seasonality,
         sim_days=sim_days,
         data_dir=data_dir,
     )

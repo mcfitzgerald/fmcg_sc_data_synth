@@ -845,7 +845,7 @@ def q12_mrp_backpressure(ed: EnrichedData) -> None:
     print(f"    Max DOS:       {dos_df['dos'].max():.1f} days")
     print(f"    Min DOS:       {dos_df['dos'].min():.1f} days")
 
-    # Backpressure correlation
+    # Backpressure correlation (raw + seasonally detrended)
     if len(dos_df) > 10 and len(daily_prod) > 10:
         prod_series = daily_prod.reindex(dos_df["day"]).fillna(0)
         inv_series = dos_df.set_index("day")["inv"]
@@ -854,13 +854,50 @@ def q12_mrp_backpressure(ed: EnrichedData) -> None:
             inv_vals = np.array([inv_series.loc[d] for d in common_days[:-1]])
             prod_vals = np.array([prod_series.loc[d] for d in common_days[1:]])
             if inv_vals.std() > 0 and prod_vals.std() > 0:
-                corr = np.corrcoef(inv_vals, prod_vals)[0, 1]
-                print(f"\n  Backpressure correlation (inv[t] vs prod[t+1]): {corr:+.3f}")
-                if corr > 0:
-                    print(f"    WARNING: Positive — higher inventory → MORE production")
-                    print(f"    Expected: Negative (backpressure should reduce production)")
-                else:
-                    print(f"    Good: Negative — backpressure is working")
+                # Raw correlation
+                raw_corr = np.corrcoef(inv_vals, prod_vals)[0, 1]
+
+                # Detrended: divide out seasonal factor from both series
+                seasonal = ed.bundle.seasonality
+                day_arr_inv = np.array(common_days[:-1], dtype=float)
+                day_arr_prod = np.array(common_days[1:], dtype=float)
+                inv_detrended = inv_vals / seasonal.factor(day_arr_inv)
+                prod_detrended = prod_vals / seasonal.factor(day_arr_prod)
+
+                detrended_corr = float("nan")
+                if inv_detrended.std() > 0 and prod_detrended.std() > 0:
+                    detrended_corr = np.corrcoef(
+                        inv_detrended, prod_detrended
+                    )[0, 1]
+
+                print(f"\n  Backpressure correlation (inv[t] vs prod[t+1]):")
+                print(f"    Raw:       {raw_corr:+.3f} (includes seasonal confound)")
+                print(f"    Detrended: {detrended_corr:+.3f} (seasonal removed)")
+                if not np.isnan(detrended_corr) and detrended_corr > 0:
+                    print(f"    WARNING: Positive after detrending — backpressure weak")
+                elif not np.isnan(detrended_corr):
+                    print(f"    Good: Negative after detrending — backpressure working")
+
+    # Cap effectiveness: how often do MRP caps actually fire?
+    if len(dos_df) > 0:
+        a_cap = caps["A"]
+        cap_exceeded_days = dos_df[dos_df["dos"] > a_cap]["day"].values
+        if len(cap_exceeded_days) > 0:
+            prod_on_cap_days = daily_prod.reindex(cap_exceeded_days).dropna()
+            prod_on_normal = daily_prod.drop(
+                cap_exceeded_days, errors="ignore"
+            )
+            if len(prod_on_cap_days) > 0 and len(prod_on_normal) > 0:
+                cap_avg = prod_on_cap_days.mean()
+                normal_avg = prod_on_normal.mean()
+                reduction = (1 - cap_avg / normal_avg) * 100 if normal_avg > 0 else 0
+                print(f"\n  Cap effectiveness (DOS > {a_cap:.0f}d threshold):")
+                print(f"    Days above cap:     {len(cap_exceeded_days)}/{len(dos_df)}")
+                print(f"    Prod on cap days:   {cap_avg:,.0f}/day")
+                print(f"    Prod on normal days:{normal_avg:,.0f}/day")
+                print(f"    Production reduction:{reduction:+.1f}%")
+        else:
+            print(f"\n  Cap effectiveness: DOS never exceeded {a_cap:.0f}d — caps never fired")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -958,13 +995,12 @@ def q14_seasonal_alignment(ed: EnrichedData) -> None:
         print(f"  {month:>6} {dem:>10,.0f} {dep:>10,.0f} {prd:>10,.0f} "
               f"{dep_dem:>8.3f} {prd_dem:>8.3f}")
 
-    amplitude = 0.12
-    phase = 150
-    cycle = 365
-    print(f"\n  Expected seasonal pattern (amplitude={amplitude}, phase={phase}d):")
+    seasonal = ed.bundle.seasonality
+    print(f"\n  Expected seasonal pattern (amplitude={seasonal.amplitude},"
+          f" phase={seasonal.phase_shift_days}d, cycle={seasonal.cycle_days}d):")
     for month in [1, 4, 7, 10]:
         day = (month - 1) * 30 + 15
-        factor = 1.0 + amplitude * np.sin(2 * np.pi * (day - phase) / cycle)
+        factor = seasonal.factor(day)
         print(f"    Month {month}: factor={factor:.3f}")
 
 

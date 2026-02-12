@@ -359,19 +359,35 @@ def analyze_control_stability(
             "verdict": _classify_stability(slope, last_val, 1.0),
         }
 
-    # 2. Inventory growth rate per echelon
+    # 2. Inventory growth rate per echelon (seasonally detrended)
+    # Uses linear+harmonic regression: y = a + b*t + c*sin + d*cos
+    # to extract the structural linear slope (b) independent of seasonality.
+    seasonal = data.seasonality
     if len(inv) > 0:
         for ech in ECHELON_ORDER:
             ech_inv = inv[inv["echelon"] == ech]
             if len(ech_inv) == 0:
                 continue
             daily_inv = ech_inv.groupby("day")["total"].sum()
-            # Growth rate = day-over-day change (rolling)
             last_days = daily_inv[daily_inv.index >= last_180_start]
             if len(last_days) > _MIN_ECHELON_POINTS:
-                x = np.arange(len(last_days), dtype=float)
-                slope, _intercept = np.polyfit(x, last_days.values, 1)
-                mean_inv = float(last_days.mean())
+                day_vals = np.array(last_days.index, dtype=float)
+                y_vals = last_days.values.astype(float)
+                omega = 2 * np.pi / seasonal.cycle_days
+                phase = day_vals - seasonal.phase_shift_days
+
+                # Design matrix: [1, t, sin(ωt'), cos(ωt')]
+                X = np.column_stack([
+                    np.ones(len(day_vals)),
+                    day_vals,
+                    np.sin(omega * phase),
+                    np.cos(omega * phase),
+                ])
+                # Least-squares fit
+                coeffs, *_ = np.linalg.lstsq(X, y_vals, rcond=None)
+                slope = coeffs[1]  # structural linear trend
+
+                mean_inv = float(y_vals.mean())
                 pct_slope = slope / mean_inv * 100 if mean_inv > 0 else 0
                 indicators[f"{ech}_inventory"] = {
                     "last_value": float(last_days.iloc[-1]),
@@ -631,7 +647,7 @@ def format_control_stability(results: dict[str, Any], width: int = 78) -> str:
     lines = [
         f"\n{'[3.5] Control System Stability':=^{width}}",
         f"  Overall verdict: {results['overall_verdict']}",
-        "  (based on last 180 days, linear regression slopes)",
+        "  (last 180 days, seasonally-detrended linear regression)",
         "",
         f"  {'Indicator':<24}  {'Last Value':>12}  {'Slope/day':>12}  {'Verdict':>12}",
         f"  {'-'*24}  {'-'*12}  {'-'*12}  {'-'*12}",

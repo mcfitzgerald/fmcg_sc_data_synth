@@ -119,7 +119,7 @@ Shared modular backend used by Tier 1 diagnostics:
 
 | Module | Key Functions | Layer |
 |--------|---------------|-------|
-| `diagnostics/loader.py` | `load_all_data()`, `classify_node()`, `is_demand_endpoint()`, `DOSTargets`, `load_dos_targets()` | Data loading, enrichment, config-derived targets |
+| `diagnostics/loader.py` | `load_all_data()`, `classify_node()`, `is_demand_endpoint()`, `DOSTargets`, `load_dos_targets()`, `SeasonalityConfig`, `load_seasonality_config()` | Data loading, enrichment, config-derived targets + seasonality |
 | `diagnostics/first_principles.py` | `analyze_mass_balance()`, `analyze_flow_conservation()`, `analyze_littles_law()` | Layer 1: Physics validation |
 | `diagnostics/operational.py` | `analyze_inventory_positioning()`, `analyze_service_levels()`, `analyze_production_alignment()`, `analyze_slob()` | Layer 2: Operational health |
 | `diagnostics/flow_analysis.py` | `analyze_throughput_map()`, `analyze_deployment_effectiveness()`, `analyze_lead_times()`, `analyze_bullwhip()`, `analyze_control_stability()` | Layer 3: Flow & stability |
@@ -156,7 +156,7 @@ Shared modular backend used by Tier 1 diagnostics:
 |--------|---------|
 | `slice_data.py` | Create small data subset (first N days) for fast diagnostic iteration |
 
-**Shared infrastructure:** `diagnostics/loader.py` is the canonical source for `classify_node()`, `classify_abc()`, `DataBundle`, `load_all_data()`. Used by Tier 1 scripts. Standalone scripts (Tier 2) have local copies of classification functions — acceptable for isolation, but `loader.py` is the source of truth.
+**Shared infrastructure:** `diagnostics/loader.py` is the canonical source for `classify_node()`, `classify_abc()`, `DataBundle`, `load_all_data()`, `SeasonalityConfig`. Used by Tier 1 scripts. Standalone scripts (Tier 2) have local copies of classification functions — acceptable for isolation, but `loader.py` is the source of truth. `SeasonalityConfig.factor(day)` is used by stability and backpressure analyses for seasonal detrending (v0.69.4).
 
 **Archived scripts:** `scripts/analysis/archive/` contains 9 legacy scripts (CSV-based, shell subprocess, or version-specific) superseded by the diagnostic suite above.
 

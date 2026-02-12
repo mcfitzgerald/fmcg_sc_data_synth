@@ -51,6 +51,13 @@ def analyze_mass_balance(data: DataBundle, window: int = 30) -> dict[str, Any]:
         int(demand_ships["creation_day"].max()) if len(demand_ships) > 0 else 0,
     )
 
+    # Pre-compute total inventory per snapshot day for robust fallback
+    all_inv_snapshots = (
+        inv.groupby("day")["total"].sum().sort_index()
+        if len(inv) > 0
+        else pd.Series(dtype=float)
+    )
+
     periods: list[dict[str, Any]] = []
     worst_imbalance = 0.0
 
@@ -76,11 +83,21 @@ def analyze_mass_balance(data: DataBundle, window: int = 30) -> dict[str, Any]:
                 (fg_returns["day"] >= start) & (fg_returns["day"] <= end)
             ]["quantity"].sum()
 
-        # Inventory delta: find closest available days in streamed data
+        # Inventory delta: find closest available days in streamed data.
+        # Fallback to first available snapshot when no data exists at/before
+        # the period start (e.g. period 0 when first snapshot is day 7).
         inv_start_data = inv[inv["day"] <= start].groupby("day")["total"].sum()
         inv_end_data = inv[inv["day"] <= end].groupby("day")["total"].sum()
 
-        inv_at_start = inv_start_data.iloc[-1] if len(inv_start_data) > 0 else 0.0
+        used_fallback = False
+        if len(inv_start_data) > 0:
+            inv_at_start = inv_start_data.iloc[-1]
+        elif len(all_inv_snapshots) > 0:
+            inv_at_start = all_inv_snapshots.iloc[0]
+            used_fallback = True
+        else:
+            inv_at_start = 0.0
+
         inv_at_end = inv_end_data.iloc[-1] if len(inv_end_data) > 0 else 0.0
         delta_inv = inv_at_end - inv_at_start
 
@@ -101,6 +118,7 @@ def analyze_mass_balance(data: DataBundle, window: int = 30) -> dict[str, Any]:
             "returns": period_returns,
             "imbalance": imbalance,
             "imbalance_pct": imbalance_pct,
+            "used_fallback": used_fallback,
         })
 
     # Verdict
@@ -400,12 +418,21 @@ def format_mass_balance(results: dict[str, Any], width: int = 78) -> str:
         f"  {'Delta Inv':>12}  {'Imbalance':>12}  {'Imb%':>6}",
         f"  {'-'*12}  {'-'*14}  {'-'*14}  {'-'*12}  {'-'*12}  {'-'*6}",
     ]
+    any_fallback = False
     for p in results["periods"]:
+        fallback_marker = "*" if p.get("used_fallback") else " "
+        if p.get("used_fallback"):
+            any_fallback = True
         lines.append(
-            f"  {p['start_day']:>3}-{p['end_day']:>3}d"
+            f" {fallback_marker}{p['start_day']:>3}-{p['end_day']:>3}d"
             f"      {p['production']:>14,.0f}  {p['consumption']:>14,.0f}"
             f"  {p['delta_inv']:>+12,.0f}  {p['imbalance']:>+12,.0f}"
             f"  {p['imbalance_pct']:>5.1f}%"
+        )
+    if any_fallback:
+        lines.append(
+            "\n  * Period start used first available inventory snapshot"
+            " (no day-0 data)"
         )
     lines.append(
         f"\n  Verdict: {results['verdict']}"
@@ -425,21 +452,34 @@ def format_flow_conservation(results: dict[str, Any], width: int = 78) -> str:
         f"  {'Delta/day':>12}  {'Delta%':>8}  {'Verdict':>12}",
         f"  {'-'*14}  {'-'*14}  {'-'*14}  {'-'*12}  {'-'*8}  {'-'*12}",
     ]
+    adj = results.get("dc_adjustment")
+    dc_has_adjustment = adj and adj["ecom_dtc_daily_inflow"] > 0
+
     for ech in ECHELON_ORDER:
         if ech not in results["echelons"]:
             continue
         f = results["echelons"][ech]
         v = results["verdicts"].get(ech, "?")
-        lines.append(
-            f"  {ech:<14}  {f['daily_inflow']:>14,.0f}  {f['daily_outflow']:>14,.0f}"
-            f"  {f['daily_delta']:>+12,.0f}"
-            f"  {f['delta_pct_of_throughput']:>7.1f}%"
-            f"  {v:>12}"
-        )
+
+        # For Customer DC, show adjusted delta% (excludes ECOM/DTC endpoints)
+        if ech == "Customer DC" and dc_has_adjustment:
+            adj_pct = adj["adjusted_dc_delta_pct"]
+            lines.append(
+                f"  {ech:<14}  {f['daily_inflow']:>14,.0f}  {f['daily_outflow']:>14,.0f}"
+                f"  {f['daily_delta']:>+12,.0f}"
+                f"  {adj_pct:>6.1f}%*"
+                f"  {v:>12}"
+            )
+        else:
+            lines.append(
+                f"  {ech:<14}  {f['daily_inflow']:>14,.0f}  {f['daily_outflow']:>14,.0f}"
+                f"  {f['daily_delta']:>+12,.0f}"
+                f"  {f['delta_pct_of_throughput']:>7.1f}%"
+                f"  {v:>12}"
+            )
 
     # v0.66.0: DC adjustment annotation
-    adj = results.get("dc_adjustment")
-    if adj and adj["ecom_dtc_daily_inflow"] > 0:
+    if dc_has_adjustment:
         lines.append("")
         ecom_in = adj["ecom_dtc_daily_inflow"]
         raw_d = adj["raw_dc_delta"]
@@ -447,19 +487,19 @@ def format_flow_conservation(results: dict[str, Any], width: int = 78) -> str:
         adj_d = adj["adjusted_dc_delta"]
         adj_p = adj["adjusted_dc_delta_pct"]
         lines.append(
-            "  NOTE: Customer DC includes ECOM-FC + DTC-FC"
+            "  * Customer DC includes ECOM-FC + DTC-FC"
             " demand endpoints."
         )
         lines.append(
-            f"  Their inflow ({ecom_in:,.0f}/d) = POS"
+            f"    Their inflow ({ecom_in:,.0f}/d) = POS"
             " consumption, not accumulation."
         )
         lines.append(
-            f"  Raw DC imbalance:        "
+            f"    Raw DC imbalance:        "
             f"{raw_d:+,.0f}/d ({raw_p:.1f}%)"
         )
         lines.append(
-            f"  Adjusted (excl ECOM/DTC): "
+            f"    Adjusted (excl ECOM/DTC): "
             f"{adj_d:+,.0f}/d ({adj_p:.1f}%)"
         )
 
