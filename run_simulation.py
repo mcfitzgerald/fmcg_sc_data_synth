@@ -138,6 +138,12 @@ Examples:
             "Requires: inventory.parquet, shipments.parquet, production_orders.parquet."
         ),
     )
+    parser.add_argument(
+        "--no-stabilization",
+        action="store_true",
+        help="Skip stabilization burn-in (0 days). "
+        "Use with --warm-start from a converged snapshot.",
+    )
 
     args = parser.parse_args()
 
@@ -172,6 +178,7 @@ Examples:
         inventory_sample_rate=args.inventory_sample_rate,
         memory_callback=log_memory if args.profile_memory else None,
         warm_start_dir=args.warm_start,
+        no_stabilization=args.no_stabilization,
     )
 
     log_memory("after_world_build")

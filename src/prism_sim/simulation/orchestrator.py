@@ -52,10 +52,12 @@ class Orchestrator:
         inventory_sample_rate: int | None = None,
         memory_callback: MemoryCallback = None,
         warm_start_dir: str | None = None,
+        no_stabilization: bool = False,
     ) -> None:
         # Store memory callback for periodic snapshots
         self._memory_callback = memory_callback
         self._warm_start_dir = warm_start_dir
+        self._no_stabilization = no_stabilization
         # 1. Initialize World
         manifest = load_manifest()
         self.config = load_simulation_config()
@@ -72,7 +74,9 @@ class Orchestrator:
         sim_params = self.config.get("simulation_parameters", {})
         cal_config = sim_params.get("calibration", {})
         init_config = cal_config.get("initialization", {})
-        if warm_start_dir:
+        if no_stabilization:
+            self._stabilization_days = 0
+        elif warm_start_dir:
             self._stabilization_days = init_config.get(
                 "warm_start_stabilization_days", 3
             )
