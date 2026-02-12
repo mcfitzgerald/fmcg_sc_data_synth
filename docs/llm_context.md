@@ -105,9 +105,7 @@ The simulation enforces these constraints - violations indicate bugs:
 
 ### Diagnostic Suite (v0.66.0 — `scripts/analysis/diagnostics/`)
 
-Two complementary diagnostic scripts with shared modular backend:
-- **`diagnose_365day.py`** — Executive Scorecard: traffic-light KPIs, issue detection, quick CI/CD health check
-- **`diagnose_flow_deep.py`** — Forensic Deep Dive: 20 structural questions, root cause analysis
+Shared modular backend used by Tier 1 diagnostics:
 
 | Module | Key Functions | Layer |
 |--------|---------------|-------|
@@ -116,28 +114,41 @@ Two complementary diagnostic scripts with shared modular backend:
 | `diagnostics/operational.py` | `analyze_inventory_positioning()`, `analyze_service_levels()`, `analyze_production_alignment()`, `analyze_slob()` | Layer 2: Operational health |
 | `diagnostics/flow_analysis.py` | `analyze_throughput_map()`, `analyze_deployment_effectiveness()`, `analyze_lead_times()`, `analyze_bullwhip()`, `analyze_control_stability()` | Layer 3: Flow & stability |
 
-**v0.66.0 key changes:**
-- Precomputed echelon/ABC/demand columns on shipments and orders (built ONCE during `load_all_data()`, eliminating redundant O(62M) `.map()` calls per analysis function)
-- DOS targets derived from `simulation_config.json` via `DOSTargets` dataclass (no hardcodes)
-- Flow conservation DC imbalance adjusted for ECOM-FC/DTC-FC demand endpoints
-- `DataBundle.fg_batches` pre-filtered for finished goods
-
 **DEMAND_PREFIXES** = `("STORE-", "ECOM-FC-", "DTC-FC-")` — NOT `"CLUB-"` (CLUB-DC nodes are intermediate warehouses, not demand endpoints).
 
-### Standalone Diagnostic Scripts (Parquet-based, `data/output` default)
-| Script | Purpose | Key technique |
-|--------|---------|---------------|
-| `scripts/analysis/diagnose_365day.py` | Executive Scorecard — 3-layer diagnostic suite | Precomputed enrichment via loader |
-| `scripts/analysis/diagnose_flow_deep.py` | Forensic Deep Dive — 20 structural questions across 7 themes | Precomputed enrichment via loader |
-| `scripts/analysis/diagnose_a_item_fill.py` | 4-layer A-item fill rate root cause analysis (measurement, stockout location, root cause, ranking) | PyArrow row-group streaming |
-| `scripts/analysis/diagnose_service_level.py` | Service level trend, echelon breakdown, worst performers, degradation phases | PyArrow row-group streaming |
-| `scripts/analysis/diagnose_slob.py` | SLOB inventory: echelon distribution, DOS, velocity, imbalance, production vs demand | PyArrow row-group streaming |
-| `scripts/analysis/diagnose_cost.py` | Cost Analytics — COGS, logistics cost, carrying cost, OTIF, cost-to-serve, C2C | Parquet + cost_master.json |
-| `scripts/analysis/analyze_bullwhip.py` | Bullwhip effect: echelon variance amplification, production oscillation, order batching | Lightweight (no inventory load) |
-| `scripts/analysis/check_plant_balance.py` | Plant production load balance (batches per plant, zero-production days) | Lightweight |
-| `scripts/analysis/analyze_results.py` | General results overview (orders, shipments, batches, inventory) | **Legacy CSV — needs migration** |
+### Diagnostic Playbook (Tiered)
 
-**Note:** `find_missing_skus.py`, `find_trapped_inventory.py`, `analyze_batches.py`, `analyze_production_mix.py`, `quick_check.py`, and `debug_head.py` are legacy CSV scripts. Use the diagnostic suite above for current analysis.
+**Standard workflow after a 365d streaming sim:**
+1. Run `diagnose_365day.py` → check all KPIs are GREEN/YELLOW
+2. If any RED items → run `diagnose_flow_deep.py` for root cause
+3. If fill rate issue → run `diagnose_a_item_fill.py`
+4. If cost/OTIF analysis needed → run `diagnose_cost.py`
+5. For specialized investigation → use Tier 2 scripts as needed
+
+#### Tier 1: Primary Diagnostics (run after every 365d sim)
+| Script | When | What |
+|--------|------|------|
+| `diagnose_365day.py` | **Always first** — executive scorecard | Traffic-light KPIs, 3-layer pyramid (physics → ops → flow), issue detection |
+| `diagnose_flow_deep.py` | **When issues found** — root-cause investigation | 20 structural questions across 7 themes, deep forensic analysis |
+| `diagnose_cost.py` | **For cost analysis** — post-sim enrichment | COGS, logistics, carrying cost, OTIF, cost-to-serve, C2C |
+
+#### Tier 2: Specialized Diagnostics (run when investigating specific issues)
+| Script | When | What |
+|--------|------|------|
+| `diagnose_a_item_fill.py` | Fill rate drops below target | 4-layer root cause: measurement → stockout location → root cause → ranking |
+| `diagnose_service_level.py` | Service degradation patterns | Daily/rolling trends, echelon breakdowns, worst performers |
+| `diagnose_slob.py` | SLOB percentage rises | Echelon distribution, velocity, stagnant inventory |
+| `analyze_bullwhip.py` | Order variance amplification | Echelon CV ratios, oscillation patterns |
+| `check_plant_balance.py` | OEE/production imbalance | Batches per plant, zero-production days |
+
+#### Tier 3: Utilities
+| Script | Purpose |
+|--------|---------|
+| `slice_data.py` | Create small data subset (first N days) for fast diagnostic iteration |
+
+**Shared infrastructure:** `diagnostics/loader.py` is the canonical source for `classify_node()`, `classify_abc()`, `DataBundle`, `load_all_data()`. Used by Tier 1 scripts. Standalone scripts (Tier 2) have local copies of classification functions — acceptable for isolation, but `loader.py` is the source of truth.
+
+**Archived scripts:** `scripts/analysis/archive/` contains 9 legacy scripts (CSV-based, shell subprocess, or version-specific) superseded by the diagnostic suite above.
 
 ### Data Export (`simulation/writer.py`)
 | Concept | Key Classes |
@@ -640,22 +651,20 @@ poetry run python run_simulation.py --days 50 --no-logging
 
 ### Post-Run Diagnostics
 ```bash
-# 365-day drift analysis (prod/demand, echelon inventory, cumulative excess)
+# Tier 1: Always run first — executive scorecard
 poetry run python scripts/analysis/diagnose_365day.py --data-dir data/output --window 30
 
-# A-item fill rate root cause (4-layer analysis)
+# Tier 1: Root cause investigation (when issues found)
+poetry run python scripts/analysis/diagnose_flow_deep.py --data-dir data/output
+
+# Tier 1: Cost analytics — COGS, OTIF, cost-to-serve, C2C
+poetry run python scripts/analysis/diagnose_cost.py --data-dir data/output
+
+# Tier 2: Specialized diagnostics (as needed)
 poetry run python scripts/analysis/diagnose_a_item_fill.py
-
-# Service level trend + degradation analysis
 poetry run python scripts/analysis/diagnose_service_level.py
-
-# SLOB inventory + echelon imbalance
 poetry run python scripts/analysis/diagnose_slob.py
-
-# Bullwhip effect detection
 poetry run python scripts/analysis/analyze_bullwhip.py
-
-# Plant production load balance
 poetry run python scripts/analysis/check_plant_balance.py
 ```
 

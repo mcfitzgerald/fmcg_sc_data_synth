@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.69.1] - 2026-02-12
+
+### Diagnostic Housekeeping
+
+Archive 9 legacy scripts and add tiered diagnostic playbook to `llm_context.md`.
+
+#### Archived (`scripts/analysis/archive/`)
+- `analyze_results.py` — CSV-based, superseded by `diagnose_365day.py`
+- `analyze_production_mix.py` — CSV + grep, covered by `diagnose_flow_deep.py` Q10-Q12
+- `analyze_batches.py` — CSV, covered by `diagnose_flow_deep.py` + `check_plant_balance.py`
+- `quick_check.py` — Shell subprocess, memory-unsafe
+- `find_missing_skus.py` — Shell grep, covered by `diagnose_a_item_fill.py`
+- `find_trapped_inventory.py` — Shell tail/grep, hardcoded store ID
+- `debug_head.py` — Debug utility, not a diagnostic
+- `verify_world.py` — Incomplete builder import
+- `diagnose_v060_stability.py` — Version-specific (v0.60.0), all hypotheses resolved
+
+#### Documentation
+- `docs/llm_context.md`: Replaced flat diagnostic table with tiered playbook (Tier 1: primary, Tier 2: specialized, Tier 3: utilities) and standard workflow directive
+- `pyproject.toml`: Bump version 0.69.0 → 0.69.1
+
 ## [0.69.0] - 2026-02-11
 
 ### Cost Analytics Layer — Post-Simulation Enrichment
