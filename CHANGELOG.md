@@ -5,6 +5,37 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.69.3] - 2026-02-12
+
+### Performance: Integer Index Caching + Inner Loop Optimization
+
+Eliminates ~100M redundant `dict.get()` string-to-int translations per 50-day run by caching integer indices on `OrderLine`, `Order`, and `Shipment` dataclasses at creation time.
+
+#### Integer Index Caching (`network/core.py`)
+- `OrderLine.product_idx`: Cached product index (+ `slots=True` for 155K/day allocation savings)
+- `Order.source_idx` / `Order.target_idx`: Cached node indices
+- `Shipment.source_idx` / `Shipment.target_idx`: Cached node indices
+- All 9 `OrderLine` creation sites, all `Order`/`Shipment` creation sites populate indices
+- All 21 `product_id_to_idx.get(line.product_id)` call sites converted to `line.product_idx`
+- All 6 `node_id_to_idx.get(shipment.target_id)` call sites converted to `shipment.target_idx`
+- Fallback to dict.get when `idx == -1` (unconverted code paths still work)
+
+#### Inner Loop Optimizations (`replenishment.py`)
+- `_create_order_objects`: Replaced dict-of-dicts with parallel dicts (eliminates string key hashing)
+- `_create_order_objects`: Moved promo check from inner loop (205K cells) to finalization loop (6.5K targets)
+- `record_inflow`: Pre-allocated numpy arrays for scatter-add coordinates
+- `get_demand_std`: Day-level cache invalidated by `record_demand()`; removed unnecessary `np.array()` wrapper
+
+#### Logistics Single-Pass (`logistics.py`)
+- `create_shipments`: Merged `_calculate_pallets()` + cases + weight + volume into single pass over order lines
+
+#### Allocation Sort (`allocation.py`)
+- `_prioritize_orders`: Schwartzian transform — compute sort key once per order instead of O(n log n) times
+
+#### Demand Forecast Caching (`demand.py`)
+- `get_deterministic_forecast`: Cached seasonality config at init (was re-reading nested dict every call)
+- `get_deterministic_forecast`: Cached promo multipliers per week (14-day window spans ≤3 weeks)
+
 ## [0.69.2] - 2026-02-12
 
 ### Performance: Hot-Path Optimizations

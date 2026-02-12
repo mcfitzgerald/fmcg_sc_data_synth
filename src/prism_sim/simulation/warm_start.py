@@ -215,7 +215,8 @@ def _load_active_shipments(
                     "lines": [],
                 }
             shipment_data[sid]["lines"].append(
-                OrderLine(product_ids[j], quantities[j])
+                OrderLine(product_ids[j], quantities[j],
+                          product_idx=state.product_id_to_idx.get(product_ids[j], -1))
             )
 
     # Build Shipment objects with remapped days
@@ -238,6 +239,8 @@ def _load_active_shipments(
                 arrival_day=data["arrival_day"] - checkpoint_day,
                 lines=data["lines"],
                 status=ShipmentStatus.IN_TRANSIT,
+                source_idx=state.node_id_to_idx.get(data["source_id"], -1),
+                target_idx=state.node_id_to_idx.get(data["target_id"], -1),
             )
         )
 

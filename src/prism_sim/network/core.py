@@ -98,10 +98,11 @@ class OrderType(enum.Enum):
     PROMOTIONAL = "promotional" # Promo-driven (10%)
 
 
-@dataclass
+@dataclass(slots=True)
 class OrderLine:
     product_id: str
     quantity: float
+    product_idx: int = -1
 
 
 @dataclass
@@ -118,6 +119,10 @@ class Order:
     promo_id: str | None = None
     priority: OrderPriority = OrderPriority.STANDARD  # 1=highest, 10=lowest
     requested_date: int | None = None  # Day number
+
+    # PERF v0.69.3: Cached integer indices to avoid repeated dict lookups
+    source_idx: int = -1
+    target_idx: int = -1
 
 
 
@@ -145,6 +150,10 @@ class Shipment:
     total_volume_m3: float = 0.0
     truck_count: int = 1
     emissions_kg: float = 0.0
+
+    # PERF v0.69.3: Cached integer indices to avoid repeated dict lookups
+    source_idx: int = -1
+    target_idx: int = -1
 
 
 # --- Manufacturing Primitives ---

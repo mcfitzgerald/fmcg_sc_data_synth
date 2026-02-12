@@ -79,6 +79,16 @@ The simulation enforces these constraints - violations indicate bugs:
 | **Packaging enums** | `product/core.py` | `PackagingType`, `ContainerType`, `ValueSegment` |
 | **Promo calendar** | `simulation/demand.py` | `PromoCalendar`, `PromoEffect` |
 
+#### PERF v0.69.3: Cached Integer Indices
+
+`OrderLine`, `Order`, and `Shipment` carry cached integer indices to avoid repeated `dict.get()` lookups in inner loops (~100M calls eliminated per 50-day run):
+
+- `OrderLine.product_idx: int = -1` — maps to `state.product_id_to_idx[line.product_id]`
+- `Order.source_idx: int = -1` / `Order.target_idx: int = -1` — maps to `state.node_id_to_idx`
+- `Shipment.source_idx: int = -1` / `Shipment.target_idx: int = -1` — maps to `state.node_id_to_idx`
+
+Sentinel `-1` means "not populated" — all consumer sites use `x.product_idx if x.product_idx >= 0 else dict.get(...)` for backwards-compatible fallback. `OrderLine` uses `@dataclass(slots=True)` for reduced allocation overhead (155K created/day).
+
 ### Generators (Static World Creation)
 | Concept | File | Key Classes |
 |---------|------|-------------|

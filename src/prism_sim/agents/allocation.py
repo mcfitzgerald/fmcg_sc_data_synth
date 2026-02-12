@@ -52,6 +52,9 @@ class AllocationAgent:
         1. Order Type (RUSH > PROMO > STANDARD > BACKORDER)
         2. Product Velocity (ABC Prioritization: High velocity > Low velocity)
         3. Order Priority Int (Tie-breaker)
+
+        PERF v0.69.3: Schwartzian transform — compute sort key once per order
+        instead of O(n log n) times via closure-based key function.
         """
         priority_map = {
             OrderType.RUSH: 1,
@@ -60,32 +63,33 @@ class AllocationAgent:
             OrderType.BACKORDER: 4,
         }
 
-        def order_sort_key(order: Order) -> tuple[int, float, int]:
-            # Primary sort: Order Type
-            type_priority = priority_map.get(order.order_type, 5)
-
-            # Secondary sort: Product Velocity (A-items first)
-            # Calculate total velocity of lines in order
-            order_velocity = 0.0
-            if self.product_velocity is not None:
+        velocity = self.product_velocity
+        keys: list[tuple[int, float, int]] = []
+        for order in orders:
+            v = 0.0
+            if velocity is not None:
                 for line in order.lines:
-                    p_idx = self.state.product_id_to_idx.get(line.product_id)
-                    if p_idx is not None:
-                        order_velocity += self.product_velocity[p_idx]
+                    p_idx = (
+                        line.product_idx if line.product_idx >= 0
+                        else self.state.product_id_to_idx.get(line.product_id)
+                    )
+                    if p_idx is not None and p_idx >= 0:
+                        v += velocity[p_idx]
+            keys.append((priority_map.get(order.order_type, 5), -v, order.priority))
 
-            # Return tuple: (low=high_priority, high=high_velocity, low=high_priority)
-            # We want high velocity to be first, so negate it
-            return (type_priority, -order_velocity, order.priority)
-
-        return sorted(orders, key=order_sort_key)
+        paired = sorted(zip(keys, orders, strict=False), key=lambda x: x[0])
+        return [o for _, o in paired]
 
     def _calculate_demand_vector(self, source_orders: list[Order]) -> np.ndarray:
         """Calculate total demand per product for a list of orders."""
         demand_vector = np.zeros(self.state.n_products)
         for order in source_orders:
             for line in order.lines:
-                p_idx = self.state.product_id_to_idx.get(line.product_id)
-                if p_idx is not None:
+                p_idx = (
+                    line.product_idx if line.product_idx >= 0
+                    else self.state.product_id_to_idx.get(line.product_id)
+                )
+                if p_idx is not None and p_idx >= 0:
                     demand_vector[p_idx] += line.quantity
         return demand_vector
 
@@ -207,8 +211,11 @@ class AllocationAgent:
             for order in sorted_orders:
                 new_lines = []
                 for line in order.lines:
-                    prod_idx = self.state.product_id_to_idx.get(line.product_id)
-                    if prod_idx is not None:
+                    prod_idx = (
+                        line.product_idx if line.product_idx >= 0
+                        else self.state.product_id_to_idx.get(line.product_id)
+                    )
+                    if prod_idx is not None and prod_idx >= 0:
                         ratio = fill_ratios[prod_idx]
                         new_qty = line.quantity * ratio
                         if new_qty > self.epsilon:

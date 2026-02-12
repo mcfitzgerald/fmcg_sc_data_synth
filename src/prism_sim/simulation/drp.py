@@ -191,8 +191,12 @@ class DRPPlanner:
             for shipment in self.state.active_shipments:
                 if shipment.source_id in plant_id_set:
                     for line in shipment.lines:
-                        p_idx = self.state.product_id_to_idx.get(line.product_id)
-                        if p_idx is not None:
+                        # PERF v0.69.3: Use cached indices
+                        p_idx = (
+                            line.product_idx if line.product_idx >= 0
+                            else self.state.product_id_to_idx.get(line.product_id)
+                        )
+                        if p_idx is not None and p_idx >= 0:
                             scheduled[p_idx] += line.quantity
 
         # In-production (not yet complete)

@@ -144,6 +144,9 @@ class LogisticsEngine:
         for route, route_orders in orders_by_route.items():
             source_id, target_id = route
             target_node = self.world.nodes.get(target_id)
+            # PERF v0.69.3: Cache node indices for shipment creation
+            _route_src_idx = self.state.node_id_to_idx.get(source_id, -1)
+            _route_tgt_idx = self.state.node_id_to_idx.get(target_id, -1)
 
             # v0.15.5: Determine if this is an LTL (store) or FTL (DC) shipment
             is_store_delivery = (
@@ -161,11 +164,33 @@ class LogisticsEngine:
                 "min_order_pallets", self.default_ftl_min_pallets
             )
 
-            # Calculate total pallets/cases for this route
-            total_pallets = sum(self._calculate_pallets(o) for o in route_orders)
-            total_cases = sum(
-                sum(line.quantity for line in o.lines) for o in route_orders
-            )
+            # PERF v0.69.3: Single-pass computation of pallets, cases, weight, volume
+            # Replaces separate _calculate_pallets() + cases sum + weight/volume loop
+            lines_for_packing: list[OrderLine] = []
+            for order in route_orders:
+                lines_for_packing.extend(order.lines)
+
+            total_pallets = 0.0
+            total_cases = 0.0
+            route_weight = 0.0
+            route_volume = 0.0
+            valid_lines: list[OrderLine] = []
+
+            _pw = self._product_weight
+            _pv = self._product_volume
+            _cpp = self._product_cases_per_pallet
+            for line in lines_for_packing:
+                p_idx = (
+                    line.product_idx if line.product_idx >= 0
+                    else self.state.product_id_to_idx.get(line.product_id)
+                )
+                if p_idx is not None and p_idx >= 0:
+                    q = line.quantity
+                    total_pallets += q / _cpp[p_idx]
+                    total_cases += q
+                    route_weight += _pw[p_idx] * q
+                    route_volume += _pv[p_idx] * q
+                    valid_lines.append(line)
 
             # Check shipment mode constraints
             if is_store_delivery:
@@ -183,12 +208,6 @@ class LogisticsEngine:
                     continue
                 self.ftl_shipment_count += 1
 
-            # If we proceed, we pack shipments
-            # We decompose orders into lines for packing "Tetris" style
-            lines_for_packing: list[OrderLine] = []
-            for order in route_orders:
-                lines_for_packing.extend(order.lines)
-
             # Find Lead Time
             link = self.route_map.get(route)
             lead_time = link.lead_time_days if link else 1.0
@@ -198,21 +217,6 @@ class LogisticsEngine:
             earliest_order_day = current_day
             if route_orders:
                 earliest_order_day = min(o.creation_day for o in route_orders)
-
-            # --- OPTIMIZATION: Single Truck Fast-Path ---
-            # Most store orders (LTL) fit in one truck.
-            # Pre-calc totals to skip bin packing.
-            # PERF: Use cached product arrays instead of dict lookups
-            route_weight = 0.0
-            route_volume = 0.0
-            valid_lines = []
-
-            for line in lines_for_packing:
-                p_idx = self.state.product_id_to_idx.get(line.product_id)
-                if p_idx is not None:
-                    route_weight += self._product_weight[p_idx] * line.quantity
-                    route_volume += self._product_volume[p_idx] * line.quantity
-                    valid_lines.append(line)
 
             # If everything fits in one truck, ship it immediately
             if (
@@ -226,6 +230,8 @@ class LogisticsEngine:
                     arrival_day,
                     shipment_counter,
                     earliest_order_day,
+                    source_idx=_route_src_idx,
+                    target_idx=_route_tgt_idx,
                 )
                 shipment_counter += 1
 
@@ -251,14 +257,19 @@ class LogisticsEngine:
                 arrival_day,
                 shipment_counter,
                 earliest_order_day,
+                source_idx=_route_src_idx,
+                target_idx=_route_tgt_idx,
             )
             shipment_counter += 1
 
             near_zero_threshold = 1e-9
 
             for line in lines_for_packing:
-                p_idx = self.state.product_id_to_idx.get(line.product_id)
-                if p_idx is None:
+                p_idx = (
+                    line.product_idx if line.product_idx >= 0
+                    else self.state.product_id_to_idx.get(line.product_id)
+                )
+                if p_idx is None or p_idx < 0:
                     continue
 
                 unit_weight = self._product_weight[p_idx]
@@ -282,7 +293,9 @@ class LogisticsEngine:
                             current_day,
                             arrival_day,
                             shipment_counter,
-                            earliest_order_day
+                            earliest_order_day,
+                            source_idx=_route_src_idx,
+                            target_idx=_route_tgt_idx,
                         )
                         shipment_counter += 1
                         weight_space = self.max_weight_kg
@@ -308,13 +321,17 @@ class LogisticsEngine:
                                 current_day,
                                 arrival_day,
                                 shipment_counter,
-                                earliest_order_day
+                                earliest_order_day,
+                                source_idx=_route_src_idx,
+                                target_idx=_route_tgt_idx,
                             )
                             shipment_counter += 1
                             continue
 
                     # Add to shipment
-                    current_shipment.lines.append(OrderLine(line.product_id, fit_qty))
+                    current_shipment.lines.append(
+                        OrderLine(line.product_id, fit_qty, product_idx=p_idx)
+                    )
                     current_shipment.total_weight_kg += fit_qty * unit_weight
                     current_shipment.total_volume_m3 += fit_qty * unit_vol
                     remaining_qty -= fit_qty
@@ -367,15 +384,22 @@ class LogisticsEngine:
 
                 # Create LTL shipment(s) for stale orders
                 # Use simple single-truck approach (most stale orders are small)
+                _stale_src_idx = self.state.node_id_to_idx.get(source_id, -1)
+                _stale_tgt_idx = self.state.node_id_to_idx.get(target_id, -1)
                 stale_shipment = self._new_shipment(
                     source_id, target_id, current_day, arrival_day,
-                    shipment_counter, earliest_order_day
+                    shipment_counter, earliest_order_day,
+                    source_idx=_stale_src_idx,
+                    target_idx=_stale_tgt_idx,
                 )
                 shipment_counter += 1
 
                 for line in stale_lines_for_packing:
-                    p_idx = self.state.product_id_to_idx.get(line.product_id)
-                    if p_idx is not None:
+                    p_idx = (
+                        line.product_idx if line.product_idx >= 0
+                        else self.state.product_id_to_idx.get(line.product_id)
+                    )
+                    if p_idx is not None and p_idx >= 0:
                         unit_weight = self._product_weight[p_idx]
                         unit_vol = self._product_volume[p_idx]
                         stale_shipment.lines.append(line)
@@ -430,6 +454,8 @@ class LogisticsEngine:
         arrival: int,
         counter: int,
         original_order_day: int | None = None,
+        source_idx: int = -1,
+        target_idx: int = -1,
     ) -> Shipment:
         return Shipment(
             id=f"SHP-{day}-{source}-{target}-{counter}",
@@ -440,6 +466,8 @@ class LogisticsEngine:
             lines=[],
             status=ShipmentStatus.IN_TRANSIT,
             original_order_day=original_order_day,
+            source_idx=source_idx,
+            target_idx=target_idx,
         )
 
     def _get_channel_rules(self, channel: CustomerChannel | None) -> dict[str, Any]:
@@ -456,8 +484,11 @@ class LogisticsEngine:
         """Calculate total pallets for an order using cached product attributes."""
         pallets = 0.0
         for line in order.lines:
-            p_idx = self.state.product_id_to_idx.get(line.product_id)
-            if p_idx is not None:
+            p_idx = (
+                line.product_idx if line.product_idx >= 0
+                else self.state.product_id_to_idx.get(line.product_id)
+            )
+            if p_idx is not None and p_idx >= 0:
                 pallets += line.quantity / self._product_cases_per_pallet[p_idx]
         return pallets
 

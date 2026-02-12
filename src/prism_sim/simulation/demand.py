@@ -311,6 +311,16 @@ class POSEngine:
 
         self.calendar = PromoCalendar(world, weeks_per_year, config)
 
+        # PERF v0.69.3: Cache seasonality config at init
+        # (used in get_deterministic_forecast)
+        demand_config_init = config.get("simulation_parameters", {}).get("demand", {})
+        season_cfg = demand_config_init.get("seasonality", {})
+        self._season_amplitude: float = season_cfg.get("amplitude", 0.2)
+        self._season_phase: int = season_cfg.get("phase_shift_days", 150)
+        self._season_cycle: int = season_cfg.get("cycle_days", 365)
+        # PERF v0.69.3: Cache promo multipliers per week
+        self._promo_mult_cache: dict[int, np.ndarray] = {}
+
         # Build SKU popularity weights using Zipf distribution
         # Top 20% of SKUs generate ~80% of volume (Pareto principle)
         self._build_sku_popularity_weights()
@@ -537,6 +547,8 @@ class POSEngine:
         [start_day, start_day + duration).
         Excludes random noise components.
 
+        PERF v0.69.3: Uses cached seasonality config and promo multipliers per week.
+
         Args:
             start_day: Day to start forecast from.
             duration: Number of days to forecast.
@@ -553,21 +565,25 @@ class POSEngine:
                 dtype=np.float64,
             )
 
-        # Get demand config
-        demand_config = self.config.get("simulation_parameters", {}).get("demand", {})
-        season_config = demand_config.get("seasonality", {})
-        amplitude = season_config.get("amplitude", 0.2)
-        phase = season_config.get("phase_shift_days", 150)
-        cycle = season_config.get("cycle_days", 365)
+        # PERF v0.69.3: Use cached config values
+        amplitude = self._season_amplitude
+        phase = self._season_phase
+        cycle = self._season_cycle
+        two_pi_over_cycle = 2.0 * np.pi / cycle
 
         for day in range(start_day, start_day + duration):
             week = (day // 7) + 1
 
             # 1. Seasonality
-            seasonality = 1.0 + amplitude * np.sin(2 * np.pi * (day - phase) / cycle)
+            seasonality = 1.0 + amplitude * np.sin(two_pi_over_cycle * (day - phase))
 
-            # 2. Promo Multipliers
-            promo_mult_matrix = self.calendar.get_weekly_multipliers(week, self.state)
+            # 2. Promo Multipliers (cached per week)
+            promo_mult_matrix = self._promo_mult_cache.get(week)
+            if promo_mult_matrix is None:
+                promo_mult_matrix = self.calendar.get_weekly_multipliers(
+                    week, self.state
+                )
+                self._promo_mult_cache[week] = promo_mult_matrix
 
             # 3. Daily Forecast
             daily_forecast_matrix = self.base_demand * seasonality * promo_mult_matrix

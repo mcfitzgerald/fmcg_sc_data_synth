@@ -364,12 +364,19 @@ class PhysicsAuditor:
         if not self.current_flows:
             return
         for s in shipments:
-            node_idx = self.state.node_id_to_idx.get(s.target_id)
+            # PERF v0.69.3: Use cached indices
+            node_idx = (
+                s.target_idx if s.target_idx >= 0
+                else self.state.node_id_to_idx.get(s.target_id)
+            )
             if node_idx is None:
                 continue
             for line in s.lines:
-                prod_idx = self.state.product_id_to_idx.get(line.product_id)
-                if prod_idx is not None:
+                prod_idx = (
+                    line.product_idx if line.product_idx >= 0
+                    else self.state.product_id_to_idx.get(line.product_id)
+                )
+                if prod_idx is not None and prod_idx >= 0:
                     self.current_flows.receipts[node_idx, prod_idx] += line.quantity
 
     def record_allocation_out(self, allocation_matrix: np.ndarray) -> None:
@@ -399,12 +406,19 @@ class PhysicsAuditor:
         if not self.current_flows:
             return
         for s in shipments:
-            source_idx = self.state.node_id_to_idx.get(s.source_id)
+            # PERF v0.69.3: Use cached indices
+            source_idx = (
+                s.source_idx if s.source_idx >= 0
+                else self.state.node_id_to_idx.get(s.source_id)
+            )
             if source_idx is None:
                 continue
             for line in s.lines:
-                prod_idx = self.state.product_id_to_idx.get(line.product_id)
-                if prod_idx is not None:
+                prod_idx = (
+                    line.product_idx if line.product_idx >= 0
+                    else self.state.product_id_to_idx.get(line.product_id)
+                )
+                if prod_idx is not None and prod_idx >= 0:
                     self.current_flows.allocation_out[
                         source_idx, prod_idx
                     ] += line.quantity

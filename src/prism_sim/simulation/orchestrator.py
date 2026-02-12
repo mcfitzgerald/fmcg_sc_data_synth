@@ -581,7 +581,8 @@ class Orchestrator:
                     if qty >= 1.0:
                         lines.append(
                             OrderLine(
-                                self.state.product_idx_to_id[p_idx], qty
+                                self.state.product_idx_to_id[p_idx], qty,
+                                product_idx=p_idx,
                             )
                         )
                 if lines:
@@ -594,6 +595,8 @@ class Orchestrator:
                         arrival_day=day_offset,
                         lines=lines,
                         status=ShipmentStatus.IN_TRANSIT,
+                        source_idx=self.state.node_id_to_idx.get(link.source_id, -1),
+                        target_idx=tgt_idx,
                     )
                     self.state.add_shipment(shipment)
 
@@ -1907,13 +1910,20 @@ class Orchestrator:
                     shipment.target_id, shipment.source_id, lead_time
                 )
 
-            target_idx = self.state.node_id_to_idx.get(shipment.target_id)
+            # PERF v0.69.3: Use cached indices
+            target_idx = (
+                shipment.target_idx if shipment.target_idx >= 0
+                else self.state.node_id_to_idx.get(shipment.target_id)
+            )
             if target_idx is None:
                 continue
 
             for line in shipment.lines:
-                p_idx = self.state.product_id_to_idx.get(line.product_id)
-                if p_idx is not None:
+                p_idx = (
+                    line.product_idx if line.product_idx >= 0
+                    else self.state.product_id_to_idx.get(line.product_id)
+                )
+                if p_idx is not None and p_idx >= 0:
                     delta[target_idx, p_idx] += line.quantity
 
         # v0.39.2: Use age-aware batch receive (SLOB fix)
@@ -2037,7 +2047,7 @@ class Orchestrator:
                 # Accumulate into shipment lines
                 key = (plant_id, target_id)
                 shipment_lines.setdefault(key, []).append(
-                    OrderLine(p_id, ship_qty)
+                    OrderLine(p_id, ship_qty, product_idx=p_idx)
                 )
                 product = self.world.products.get(p_id)
                 if product:
@@ -2071,6 +2081,8 @@ class Orchestrator:
                 status=ShipmentStatus.IN_TRANSIT,
                 total_weight_kg=shipment_weights.get(key, 0.0),
                 total_volume_m3=shipment_volumes.get(key, 0.0),
+                source_idx=self.state.node_id_to_idx.get(plant_id, -1),
+                target_idx=self.state.node_id_to_idx.get(target_id, -1),
             )
             shipments.append(shipment)
 
@@ -2174,12 +2186,19 @@ class Orchestrator:
     def _magic_fulfillment(self, orders: list[Order]) -> None:
         """Immediately fulfills orders for testing purposes."""
         for order in orders:
-            target_idx = self.state.node_id_to_idx.get(order.target_id)
+            # PERF v0.69.3: Use cached indices
+            target_idx = (
+                order.target_idx if order.target_idx >= 0
+                else self.state.node_id_to_idx.get(order.target_id)
+            )
             if target_idx is None:
                 continue
             for line in order.lines:
-                p_idx = self.state.product_id_to_idx.get(line.product_id)
-                if p_idx is not None:
+                p_idx = (
+                    line.product_idx if line.product_idx >= 0
+                    else self.state.product_id_to_idx.get(line.product_id)
+                )
+                if p_idx is not None and p_idx >= 0:
                     self.state.update_inventory(
                         order.target_id, line.product_id, line.quantity
                     )
@@ -2335,7 +2354,7 @@ class Orchestrator:
                     qty = dc_push_qty[p_idx]
                     if qty >= 10:  # noqa: PLR2004 (Min 10 cases)
                         p_id = self.state.product_idx_to_id[p_idx]
-                        lines.append(OrderLine(p_id, qty))
+                        lines.append(OrderLine(p_id, qty, product_idx=p_idx))
 
                 if not lines:
                     continue
@@ -2347,6 +2366,8 @@ class Orchestrator:
                 )
 
                 shipment_counter += 1
+                _push_rdc_idx = self.state.node_id_to_idx.get(rdc_id, -1)
+                _push_dc_idx = self.state.node_id_to_idx.get(dc_id, -1)
                 shipment = Shipment(
                     id=f"PUSH-{day:03d}-{rdc_id}-{shipment_counter:04d}",
                     source_id=rdc_id,
@@ -2355,13 +2376,19 @@ class Orchestrator:
                     arrival_day=day + int(lead_time),
                     lines=lines,
                     status=ShipmentStatus.IN_TRANSIT,
+                    source_idx=_push_rdc_idx,
+                    target_idx=_push_dc_idx,
                 )
 
                 # Deduct from RDC inventory with FIFO age reduction
                 rdc_idx = self.state.node_id_to_idx.get(rdc_id)
                 for line in lines:
-                    p_idx = self.state.product_id_to_idx.get(line.product_id)
-                    if rdc_idx is not None and p_idx is not None:
+                    # PERF v0.69.3: Use cached indices
+                    p_idx = (
+                        line.product_idx if line.product_idx >= 0
+                        else self.state.product_id_to_idx.get(line.product_id)
+                    )
+                    if rdc_idx is not None and p_idx is not None and p_idx >= 0:
                         old_qty = max(
                             0.0,
                             float(self.state.actual_inventory[rdc_idx, p_idx]),

@@ -206,11 +206,18 @@ class StateManager:
         self.active_shipments.append(shipment)
 
         # Update in-transit tensor
-        target_idx = self.node_id_to_idx.get(shipment.target_id)
+        # PERF v0.69.3: Use cached indices from shipment/line objects
+        target_idx = (
+            shipment.target_idx if shipment.target_idx >= 0
+            else self.node_id_to_idx.get(shipment.target_id)
+        )
         if target_idx is not None:
             for line in shipment.lines:
-                p_idx = self.product_id_to_idx.get(line.product_id)
-                if p_idx is not None:
+                p_idx = (
+                    line.product_idx if line.product_idx >= 0
+                    else self.product_id_to_idx.get(line.product_id)
+                )
+                if p_idx is not None and p_idx >= 0:
                     self._in_transit_tensor[target_idx, p_idx] += line.quantity
 
     def remove_shipment(self, shipment: Shipment) -> None:
@@ -219,11 +226,18 @@ class StateManager:
         Use this when shipments arrive instead of filtering active_shipments.
         """
         # Update in-transit tensor (subtract quantities)
-        target_idx = self.node_id_to_idx.get(shipment.target_id)
+        # PERF v0.69.3: Use cached indices
+        target_idx = (
+            shipment.target_idx if shipment.target_idx >= 0
+            else self.node_id_to_idx.get(shipment.target_id)
+        )
         if target_idx is not None:
             for line in shipment.lines:
-                p_idx = self.product_id_to_idx.get(line.product_id)
-                if p_idx is not None:
+                p_idx = (
+                    line.product_idx if line.product_idx >= 0
+                    else self.product_id_to_idx.get(line.product_id)
+                )
+                if p_idx is not None and p_idx >= 0:
                     self._in_transit_tensor[target_idx, p_idx] -= line.quantity
 
         # Remove from active list (O(n) but unavoidable for list)
@@ -243,11 +257,18 @@ class StateManager:
 
         for shipment in shipments:
             self.active_shipments.append(shipment)
-            target_idx = self.node_id_to_idx.get(shipment.target_id)
+            # PERF v0.69.3: Use cached indices
+            target_idx = (
+                shipment.target_idx if shipment.target_idx >= 0
+                else self.node_id_to_idx.get(shipment.target_id)
+            )
             if target_idx is not None:
                 for line in shipment.lines:
-                    p_idx = self.product_id_to_idx.get(line.product_id)
-                    if p_idx is not None:
+                    p_idx = (
+                        line.product_idx if line.product_idx >= 0
+                        else self.product_id_to_idx.get(line.product_id)
+                    )
+                    if p_idx is not None and p_idx >= 0:
                         delta[target_idx, p_idx] += line.quantity
 
         self._in_transit_tensor += delta
@@ -265,11 +286,18 @@ class StateManager:
         arrived_set = set(id(s) for s in arrived)
 
         for shipment in arrived:
-            target_idx = self.node_id_to_idx.get(shipment.target_id)
+            # PERF v0.69.3: Use cached indices
+            target_idx = (
+                shipment.target_idx if shipment.target_idx >= 0
+                else self.node_id_to_idx.get(shipment.target_id)
+            )
             if target_idx is not None:
                 for line in shipment.lines:
-                    p_idx = self.product_id_to_idx.get(line.product_id)
-                    if p_idx is not None:
+                    p_idx = (
+                        line.product_idx if line.product_idx >= 0
+                        else self.product_id_to_idx.get(line.product_id)
+                    )
+                    if p_idx is not None and p_idx >= 0:
                         delta[target_idx, p_idx] += line.quantity
 
         self._in_transit_tensor -= delta

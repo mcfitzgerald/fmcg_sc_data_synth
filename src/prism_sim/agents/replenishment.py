@@ -212,6 +212,11 @@ class MinMaxReplenisher:
         )
         self.history_idx = 0  # Circular buffer index
 
+        # PERF v0.69.3: Day-level cache for get_demand_std
+        # (invalidated in record_demand)
+        self._demand_std_cache: np.ndarray | None = None
+        self._min_history_days = int(params.get("min_history_days", 7))
+
         # Physics Overhaul: Lead Time Tracking (v0.17.0+)
         # PERF: Sparse lead time storage (replaces dense 6126x6126x20 tensor)
         # Only ~6000 links exist in network - 99.99% of dense tensor is zeros.
@@ -643,6 +648,8 @@ class MinMaxReplenisher:
         idx = self.history_idx % self.variance_lookback
         self.demand_history_buffer[idx] = daily_demand
         self.history_idx += 1
+        # PERF v0.69.3: Invalidate demand std cache
+        self._demand_std_cache = None
 
         # Physics Overhaul Phase 3: Update volume history
         # Sum demand across all nodes for network-wide popularity
@@ -660,30 +667,35 @@ class MinMaxReplenisher:
         """
         Calculate demand standard deviation per node-product.
 
+        PERF v0.69.3: Day-level cache invalidated by record_demand().
+        Removed np.array() wrapper (np.std already returns ndarray).
+
         Returns:
             Shape [n_nodes, n_products] - Standard deviation of demand
         """
+        # Return cached value if available (invalidated in record_demand)
+        if self._demand_std_cache is not None:
+            return self._demand_std_cache
+
         # Need minimum history to calculate meaningful variance
-        repl_config = (
-            self.config.get("simulation_parameters", {})
-            .get("agents", {})
-            .get("replenishment", {})
-        )
-        min_history = int(repl_config.get("min_history_days", 7))
+        min_history = self._min_history_days
         if self.history_idx < min_history:
             # Fallback for cold start: assume zero std until we have history
-            return np.zeros((self.state.n_nodes, self.state.n_products))
+            result = np.zeros((self.state.n_nodes, self.state.n_products))
+            self._demand_std_cache = result
+            return result
 
         n_samples = min(self.history_idx, self.variance_lookback)
         # Calculate std along time axis (axis 0)
         # Use ddof=1 for sample standard deviation
-        return np.array(
-            np.std(
-                self.demand_history_buffer[:n_samples],
-                axis=0,
-                ddof=1,
-            )
+        # PERF v0.69.3: np.std already returns ndarray — removed np.array() wrapper
+        result = np.std(
+            self.demand_history_buffer[:n_samples],
+            axis=0,
+            ddof=1,
         )
+        self._demand_std_cache = result
+        return result
 
     def record_outflow(self, allocation_matrix: np.ndarray) -> None:
         """
@@ -749,30 +761,45 @@ class MinMaxReplenisher:
         # Reset current day's slot before accumulating
         self.inflow_history[self._inflow_ptr] = 0
 
-        # PERF: Pre-build coordinate arrays for scatter-add
-        source_indices: list[int] = []
-        product_indices: list[int] = []
-        quantities: list[float] = []
+        # PERF v0.69.3: Pre-allocate arrays for scatter-add, use cached indices
+        # Estimate upper bound: ~30 lines per order on average
+        n_est = len(orders) * 30
+        src_arr = np.empty(n_est, dtype=np.intp)
+        prod_arr = np.empty(n_est, dtype=np.intp)
+        qty_arr = np.empty(n_est, dtype=np.float64)
+        n = 0
 
         for order in orders:
-            source_idx = self.state.node_id_to_idx.get(order.source_id)
+            source_idx = (
+                order.source_idx if order.source_idx >= 0
+                else self.state.node_id_to_idx.get(order.source_id)
+            )
             if source_idx is None:
                 continue
 
             for line in order.lines:
-                p_idx = self.state.product_id_to_idx.get(line.product_id)
-                if p_idx is not None:
-                    source_indices.append(source_idx)
-                    product_indices.append(p_idx)
-                    quantities.append(line.quantity)
+                p_idx = (
+                    line.product_idx if line.product_idx >= 0
+                    else self.state.product_id_to_idx.get(line.product_id)
+                )
+                if p_idx is not None and p_idx >= 0:
+                    if n >= n_est:
+                        # Rare: grow arrays
+                        n_est *= 2
+                        src_arr = np.resize(src_arr, n_est)
+                        prod_arr = np.resize(prod_arr, n_est)
+                        qty_arr = np.resize(qty_arr, n_est)
+                    src_arr[n] = source_idx
+                    prod_arr[n] = p_idx
+                    qty_arr[n] = line.quantity
+                    n += 1
 
         # PERF: Single scatter-add operation instead of N individual updates
-        if source_indices:
+        if n > 0:
             np.add.at(
                 self.inflow_history[self._inflow_ptr],
-                (np.array(source_indices, dtype=np.intp),
-                 np.array(product_indices, dtype=np.intp)),
-                np.array(quantities, dtype=np.float64),
+                (src_arr[:n], prod_arr[:n]),
+                qty_arr[:n],
             )
 
         # Advance pointer for circular buffer
@@ -1320,14 +1347,18 @@ class MinMaxReplenisher:
         on_hand_inv: np.ndarray
     ) -> list[Order]:
         week = (day // 7) + 1
-        active_promos = []
+        active_promos: list[dict[str, Any]] = []
         promotions = self.config.get("promotions", [])
         for p in promotions:
             if p["start_week"] <= week <= p["end_week"]:
                 active_promos.append(p)
 
         rows, cols = np.nonzero(batched_qty)
-        orders_by_target: dict[int, dict[str, Any]] = {}
+
+        # PERF v0.69.3: Use parallel dicts instead of dict-of-dicts
+        # Eliminates string key hashing ("lines", "days_supply_min") per inner iteration
+        ot_lines: dict[int, list[OrderLine]] = {}
+        ot_min_dos: dict[int, float] = {}
 
         for r, c in zip(rows, cols, strict=True):
             qty = batched_qty[r, c]
@@ -1339,14 +1370,13 @@ class MinMaxReplenisher:
             # PERF: Use cached array instead of dict lookup
             p_id = self._product_id_arr[p_idx]
 
-            if t_idx not in orders_by_target:
-                orders_by_target[t_idx] = {
-                    "lines": [],
-                    "days_supply_min": float("inf"),
-                    "promo_id": None
-                }
+            entry = ot_lines.get(t_idx)
+            if entry is None:
+                entry = []
+                ot_lines[t_idx] = entry
+                ot_min_dos[t_idx] = float("inf")
 
-            orders_by_target[t_idx]["lines"].append(OrderLine(p_id, qty))
+            entry.append(OrderLine(p_id, qty, product_idx=p_idx))
 
             # Days Supply Check
             if avg_demand[r, c] > 0:
@@ -1354,35 +1384,13 @@ class MinMaxReplenisher:
             else:
                 d_supply = float("inf")
 
-            orders_by_target[t_idx]["days_supply_min"] = min(
-                orders_by_target[t_idx]["days_supply_min"], d_supply
-            )
+            cur_min = ot_min_dos[t_idx]
+            if d_supply < cur_min:
+                ot_min_dos[t_idx] = d_supply
 
-            # Promo Logic
-            target_node = self.world.nodes.get(target_ids[r])
-            if target_node and not orders_by_target[t_idx]["promo_id"]:
-                for promo in active_promos:
-                    affected_cats = promo.get("affected_categories", ["all"])
-                    # PERF: Use cached array instead of dict lookup
-                    cat_match = (
-                        "all" in affected_cats
-                        or self._product_category_arr[p_idx] in affected_cats
-                    )
-                    affected_chans = promo.get("affected_channels")
-                    chan_match = (
-                        not affected_chans
-                        or (
-                            target_node.channel
-                            and target_node.channel.name in affected_chans
-                        )
-                    )
-                    if cat_match and chan_match:
-                        orders_by_target[t_idx]["promo_id"] = promo["code"]
-                        break
-
-        orders = []
+        orders: list[Order] = []
         order_count = 0
-        for t_idx, data in orders_by_target.items():
+        for t_idx, t_lines in ot_lines.items():
             # PERF: Use cached array instead of dict lookup
             target_id = self._node_id_arr[t_idx]
             source_id = self.store_supplier_map.get(target_id)
@@ -1391,13 +1399,39 @@ class MinMaxReplenisher:
 
             target_node = self.world.nodes.get(target_id)
 
+            # PERF v0.69.3: Promo check moved from inner loop to finalization.
+            # Promos apply per-target, not per-line. O(6500 targets) vs O(205K cells).
+            promo_id: str | None = None
+            if active_promos and target_node:
+                for promo in active_promos:
+                    affected_cats = promo.get("affected_categories", ["all"])
+                    affected_chans = promo.get("affected_channels")
+                    chan_match = (
+                        not affected_chans
+                        or (
+                            target_node.channel
+                            and target_node.channel.name in affected_chans
+                        )
+                    )
+                    if chan_match:
+                        if "all" in affected_cats:
+                            promo_id = promo["code"]
+                            break
+                        for line in t_lines:
+                            if (self._product_category_arr[line.product_idx]
+                                    in affected_cats):
+                                promo_id = promo["code"]
+                                break
+                        if promo_id:
+                            break
+
             o_type = OrderType.STANDARD
             priority = OrderPriority.STANDARD
 
-            if data["promo_id"]:
+            if promo_id:
                 o_type = OrderType.PROMOTIONAL
                 priority = OrderPriority.HIGH
-            elif data["days_supply_min"] < self.rush_threshold_days:
+            elif ot_min_dos[t_idx] < self.rush_threshold_days:
                 o_type = OrderType.RUSH
                 priority = OrderPriority.RUSH
 
@@ -1408,11 +1442,13 @@ class MinMaxReplenisher:
                 source_id=source_id,
                 target_id=target_id,
                 creation_day=day,
-                lines=data["lines"],
+                lines=t_lines,
                 order_type=o_type,
-                promo_id=data["promo_id"],
+                promo_id=promo_id,
                 priority=priority,
                 requested_date=day + int(lead_time),
+                source_idx=self.state.node_id_to_idx.get(source_id, -1),
+                target_idx=t_idx,
             ))
 
         return orders

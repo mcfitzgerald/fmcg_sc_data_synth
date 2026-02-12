@@ -1440,8 +1440,12 @@ class MRPEngine:
         daily_vol = np.zeros(self.state.n_products)
         for shipment in shipments:
             for line in shipment.lines:
-                p_idx = self.state.product_id_to_idx.get(line.product_id)
-                if p_idx is not None:
+                # PERF v0.69.3: Use cached indices
+                p_idx = (
+                    line.product_idx if line.product_idx >= 0
+                    else self.state.product_id_to_idx.get(line.product_id)
+                )
+                if p_idx is not None and p_idx >= 0:
                     daily_vol[p_idx] += line.quantity
 
         self.demand_history[self._history_ptr] = daily_vol
@@ -1466,8 +1470,12 @@ class MRPEngine:
         daily_vol = np.zeros(self.state.n_products)
         for order in orders:
             for line in order.lines:
-                p_idx = self.state.product_id_to_idx.get(line.product_id)
-                if p_idx is not None:
+                # PERF v0.69.3: Use cached indices
+                p_idx = (
+                    line.product_idx if line.product_idx >= 0
+                    else self.state.product_id_to_idx.get(line.product_id)
+                )
+                if p_idx is not None and p_idx >= 0:
                     daily_vol[p_idx] += line.quantity
 
         # v0.19.8: Clamp demand signal to prevent panic-order poisoning
@@ -1630,11 +1638,18 @@ class MRPEngine:
             (self.state.n_nodes, self.state.n_products), dtype=np.float64
         )
         for shipment in self.state.active_shipments:
-            target_idx = self.state.node_id_to_idx.get(shipment.target_id)
+            # PERF v0.69.3: Use cached indices
+            target_idx = (
+                shipment.target_idx if shipment.target_idx >= 0
+                else self.state.node_id_to_idx.get(shipment.target_id)
+            )
             if target_idx is not None and shipment.target_id in self._plant_ids:
                 for line in shipment.lines:
-                    p_idx = self.state.product_id_to_idx.get(line.product_id)
-                    if p_idx is not None:
+                    p_idx = (
+                        line.product_idx if line.product_idx >= 0
+                        else self.state.product_id_to_idx.get(line.product_id)
+                    )
+                    if p_idx is not None and p_idx >= 0:
                         pipeline[target_idx, p_idx] += line.quantity
 
         # 5. Process Plants - collect candidate order lines
@@ -1735,7 +1750,10 @@ class MRPEngine:
                 self._po_window_start[supplier_key] = current_day
 
             self._pending_po_lines[supplier_key].append(
-                OrderLine(ing_id, qty)
+                OrderLine(
+                    ing_id, qty,
+                    product_idx=self.state.product_id_to_idx.get(ing_id, -1),
+                )
             )
 
         # Check release criteria for each supplier
@@ -1793,7 +1811,10 @@ class MRPEngine:
                 source_id=supplier_id,
                 target_id=plant_id,
                 creation_day=current_day,
-                lines=[OrderLine(ing_id, qty)],
+                lines=[OrderLine(
+                    ing_id, qty,
+                    product_idx=self.state.product_id_to_idx.get(ing_id, -1),
+                )],
                 status="OPEN",
             )
             purchase_orders.append(purchase_order)
@@ -1814,7 +1835,11 @@ class MRPEngine:
             merged[line.product_id] = merged.get(line.product_id, 0.0) + line.quantity
 
         consolidated_lines = [
-            OrderLine(prod_id, qty) for prod_id, qty in merged.items()
+            OrderLine(
+                prod_id, qty,
+                product_idx=self.state.product_id_to_idx.get(prod_id, -1),
+            )
+            for prod_id, qty in merged.items()
         ]
 
         order_id = f"PO-CONS-{current_day:03d}-{supplier_id[-3:]}"
