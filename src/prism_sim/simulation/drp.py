@@ -133,6 +133,7 @@ class DRPPlanner:
         day: int,
         abc_class: np.ndarray,
         active_production_orders: list[Any],
+        plant_in_transit_qty: dict[str, float] | None = None,
     ) -> np.ndarray:
         """Calculate daily production targets via forward inventory netting.
 
@@ -148,6 +149,7 @@ class DRPPlanner:
             day: Current simulation day.
             abc_class: Per-product ABC classification (0=A, 1=B, 2=C).
             active_production_orders: Currently active production orders.
+            plant_in_transit_qty: Pre-computed plant-sourced in-transit dict.
 
         Returns:
             [n_products] array of daily production targets.
@@ -176,17 +178,22 @@ class DRPPlanner:
                 )
 
         # 3. Scheduled arrivals: in-transit (plant-sourced) + in-production
-        # v0.55.0: Include all plant-sourced in-transit (to RDCs and DCs).
-        # Deployment sends to both; DRP needs the full pipeline picture.
+        # v0.69.2 PERF: Use pre-computed dict from orchestrator when available
         scheduled = np.zeros(n_products, dtype=np.float64)
 
-        plant_id_set = set(self._plant_ids)
-        for shipment in self.state.active_shipments:
-            if shipment.source_id in plant_id_set:
-                for line in shipment.lines:
-                    p_idx = self.state.product_id_to_idx.get(line.product_id)
-                    if p_idx is not None:
-                        scheduled[p_idx] += line.quantity
+        if plant_in_transit_qty is not None:
+            for product_id, qty in plant_in_transit_qty.items():
+                p_idx = self.state.product_id_to_idx.get(product_id)
+                if p_idx is not None:
+                    scheduled[p_idx] += qty
+        else:
+            plant_id_set = set(self._plant_ids)
+            for shipment in self.state.active_shipments:
+                if shipment.source_id in plant_id_set:
+                    for line in shipment.lines:
+                        p_idx = self.state.product_id_to_idx.get(line.product_id)
+                        if p_idx is not None:
+                            scheduled[p_idx] += line.quantity
 
         # In-production (not yet complete)
         for po in active_production_orders:

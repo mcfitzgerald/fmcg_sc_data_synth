@@ -233,6 +233,27 @@ class Orchestrator:
 
         # v0.47.0: Diagnostic counter for push suppression (Fix 3 + Fix 5)
         self._push_suppression_count = 0
+
+        # v0.69.2 PERF: Pre-build topology maps for push allocation
+        # Avoids per-day full link scans in _push_excess_rdc_inventory
+        self._rdc_downstream_dcs: dict[str, list[str]] = {}
+        self._dc_downstream_stores: dict[str, list[str]] = {}
+        for link in self.world.links.values():
+            src_node = self.world.nodes.get(link.source_id)
+            tgt_node = self.world.nodes.get(link.target_id)
+            if src_node and tgt_node:
+                if (
+                    src_node.type == NodeType.DC
+                    and link.source_id.startswith("RDC-")
+                    and tgt_node.type == NodeType.DC
+                ):
+                    self._rdc_downstream_dcs.setdefault(
+                        link.source_id, []
+                    ).append(link.target_id)
+                if tgt_node.type == NodeType.STORE:
+                    self._dc_downstream_stores.setdefault(
+                        link.source_id, []
+                    ).append(link.target_id)
         # v0.55.0: Diagnostic counters for need-based deployment
         self._deployment_total_need = 0.0
         self._deployment_total_deployed = 0.0
@@ -1148,10 +1169,26 @@ class Orchestrator:
             and self.world.nodes[s.target_id].type == NodeType.STORE
         ]
 
+        # v0.69.2 PERF: Compute plant-sourced in-transit dict ONCE per day
+        # instead of separately in MRP and DRP (was a triple scan)
+        plant_id_set = set(self.mrp_engine._plant_ids)
+        plant_in_transit_qty: dict[str, float] = {}
+        for shipment in self.state.active_shipments:
+            if shipment.source_id in plant_id_set:
+                for line in shipment.lines:
+                    plant_in_transit_qty[line.product_id] = (
+                        plant_in_transit_qty.get(line.product_id, 0.0)
+                        + line.quantity
+                    )
+
         # v0.19.1: Pass POS demand to MRP as signal floor
         # This prevents demand signal collapse when orders decline
         new_production_orders = self.mrp_engine.generate_production_orders(
-            day, rdc_store_shipments, self.active_production_orders, daily_demand
+            day,
+            rdc_store_shipments,
+            self.active_production_orders,
+            daily_demand,
+            plant_in_transit_qty=plant_in_transit_qty,
         )
         self.active_production_orders.extend(new_production_orders)
 
@@ -2131,11 +2168,8 @@ class Orchestrator:
         return best_plant
 
     def _find_link(self, source_id: str, target_id: str) -> Link | None:
-        """Find the link between two nodes."""
-        for link in self.world.links.values():
-            if link.source_id == source_id and link.target_id == target_id:
-                return link
-        return None
+        """Find the link between two nodes. O(1) via logistics route_map."""
+        return self.logistics.route_map.get((source_id, target_id))
 
     def _magic_fulfillment(self, orders: list[Order]) -> None:
         """Immediately fulfills orders for testing purposes."""
@@ -2177,26 +2211,11 @@ class Orchestrator:
             sim_params.get("logistics", {}).get("default_lead_time_days", 3.0)
         )
 
-        # Get RDC IDs (manufacturer RDCs only)
-        rdc_ids = [
-            n_id
-            for n_id, n in self.world.nodes.items()
-            if n.type == NodeType.DC and n_id.startswith("RDC-")
-        ]
+        # v0.69.2 PERF: Use pre-built topology maps instead of per-day link scans
+        rdc_ids = list(self._rdc_downstream_dcs.keys())
 
         if not rdc_ids:
             return push_shipments
-
-        # Build downstream map: RDC -> list of Customer DC IDs
-        downstream_map: dict[str, list[str]] = {}
-        for link in self.world.links.values():
-            if link.source_id in rdc_ids:
-                target_node = self.world.nodes.get(link.target_id)
-                # Only push to Customer DCs (not stores directly)
-                if target_node and target_node.type == NodeType.DC:
-                    downstream_map.setdefault(link.source_id, []).append(
-                        link.target_id
-                    )
 
         # Use POS-based demand (stable signal) instead of outflow demand
         # (which collapses)
@@ -2213,7 +2232,7 @@ class Orchestrator:
             if rdc_idx is None:
                 continue
 
-            downstream_dcs = downstream_map.get(rdc_id, [])
+            downstream_dcs = self._rdc_downstream_dcs.get(rdc_id, [])
             if not downstream_dcs:
                 continue
 
@@ -2221,23 +2240,13 @@ class Orchestrator:
             rdc_inventory = self.state.actual_inventory[rdc_idx, :]
 
             # Calculate expected daily demand for this RDC based on downstream POS
-            # This is a stable signal that doesn't collapse with the spiral
+            # v0.69.2 PERF: Use pre-built _dc_downstream_stores map
             rdc_expected_demand = np.zeros(self.state.n_products)
             for dc_id in downstream_dcs:
-                dc_idx = self.state.node_id_to_idx.get(dc_id)
-                if dc_idx is not None:
-                    # Get downstream stores for this DC and sum their base demand
-                    for link in self.world.links.values():
-                        if link.source_id == dc_id:
-                            store_node = self.world.nodes.get(link.target_id)
-                            if store_node and store_node.type == NodeType.STORE:
-                                store_idx = self.state.node_id_to_idx.get(
-                                    link.target_id
-                                )
-                                if store_idx is not None:
-                                    rdc_expected_demand += base_demand_matrix[
-                                        store_idx, :
-                                    ]
+                for store_id in self._dc_downstream_stores.get(dc_id, []):
+                    store_idx = self.state.node_id_to_idx.get(store_id)
+                    if store_idx is not None:
+                        rdc_expected_demand += base_demand_matrix[store_idx, :]
 
             # v0.61.0: Seasonal scaling
             rdc_expected_demand *= seasonal_factor
@@ -2270,18 +2279,15 @@ class Orchestrator:
             # Distribute excess proportionally to downstream DCs based on their
             # POS demand
             # Calculate each DC's share of downstream demand (using stable POS signal)
+            # v0.69.2 PERF: Use pre-built _dc_downstream_stores map
             dc_demands: dict[str, np.ndarray] = {}
             total_dc_demand = np.zeros(self.state.n_products)
             for dc_id in downstream_dcs:
-                # Calculate POS-based demand for this DC's downstream stores
                 dc_pos_demand = np.zeros(self.state.n_products)
-                for link in self.world.links.values():
-                    if link.source_id == dc_id:
-                        store_node = self.world.nodes.get(link.target_id)
-                        if store_node and store_node.type == NodeType.STORE:
-                            store_idx = self.state.node_id_to_idx.get(link.target_id)
-                            if store_idx is not None:
-                                dc_pos_demand += base_demand_matrix[store_idx, :]
+                for store_id in self._dc_downstream_stores.get(dc_id, []):
+                    store_idx = self.state.node_id_to_idx.get(store_id)
+                    if store_idx is not None:
+                        dc_pos_demand += base_demand_matrix[store_idx, :]
                 dc_demands[dc_id] = dc_pos_demand
                 total_dc_demand += dc_pos_demand
 

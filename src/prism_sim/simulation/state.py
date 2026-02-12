@@ -296,7 +296,9 @@ class StateManager:
         Returns:
             np.ndarray: Shape [n_nodes, n_products] - in-transit qty per target
         """
-        return self._in_transit_tensor.copy()
+        view = self._in_transit_tensor.view()
+        view.flags.writeable = False
+        return view
 
     # =========================================================================
     # v0.38.0: Unmet Demand Tracking

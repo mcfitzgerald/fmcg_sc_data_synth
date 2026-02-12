@@ -522,7 +522,9 @@ class POSEngine:
         Returns:
             np.ndarray: Shape [n_nodes, n_products] - base daily demand per cell
         """
-        return self.base_demand.copy()
+        view = self.base_demand.view()
+        view.flags.writeable = False
+        return view
 
     def get_deterministic_forecast(
         self,

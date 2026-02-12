@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.69.2] - 2026-02-12
+
+### Performance: Hot-Path Optimizations
+
+Profile-guided optimizations based on cProfile analysis of a 50-day warm-start run.
+
+#### O(1) Route Lookups
+- `orchestrator._find_link()`: Replaced O(L) link scan with O(1) `logistics.route_map` dict lookup
+
+#### Topology Pre-Computation
+- `orchestrator.__init__()`: Pre-build `_rdc_downstream_dcs` and `_dc_downstream_stores` maps at init
+- `_push_excess_rdc_inventory()`: Use pre-built maps instead of scanning all links per RDC/DC per day
+
+#### Read-Only NumPy Views (Zero-Copy)
+- `state.get_in_transit_by_target()`: Returns read-only view instead of `.copy()` (callers verified read-only)
+- `demand.get_base_demand_matrix()`: Returns read-only view instead of `.copy()` (callers verified read-only)
+
+#### Cached Config Lookups
+- `mrp.b_production_buffer`: Cached at init (was re-reading nested config dict every call)
+
+#### Stagger Short-Circuit
+- `replenishment._identify_target_nodes()`: Check stagger day BEFORE computing emergency DOS (avoids numpy ops for ~2/3 of stores each day)
+
+#### Single In-Transit Scan
+- `orchestrator._step()`: Compute plant-sourced in-transit dict once per day
+- Pass pre-computed dict to `MRPEngine.generate_production_orders()` and `DRPPlanner.plan_requirements()` (was scanned independently by each)
+
 ## [0.69.1] - 2026-02-12
 
 ### Diagnostic Housekeeping

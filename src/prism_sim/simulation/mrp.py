@@ -251,6 +251,13 @@ class MRPEngine:
         # v0.39.3: c_production_factor removed - C-items use longer horizons instead
         # of smaller batches (see production_horizon_days_c config)
         self.c_production_factor = mrp_thresholds.get("c_production_factor", 0.6)
+        # v0.69.2: Cache b_production_buffer at init (was re-read every call)
+        self.b_production_buffer = float(
+            self.config.get("simulation_parameters", {})
+            .get("manufacturing", {})
+            .get("mrp_thresholds", {})
+            .get("b_production_buffer", 1.1)
+        )
         # v0.42.0: A-item capacity share for Phase 4 ABC-aware clipping
         self.a_capacity_share = mrp_thresholds.get("a_capacity_share", 0.65)
         # v0.39.3: c_demand_factor removed - was dead code (never used in calculations)
@@ -727,6 +734,7 @@ class MRPEngine:
         rdc_shipments: list[Shipment],  # FIX 3: Accept Shipments instead of Orders
         active_production_orders: list[ProductionOrder],
         pos_demand: np.ndarray | None = None,  # v0.19.1: POS demand floor
+        plant_in_transit_qty: dict[str, float] | None = None,  # v0.69.2 PERF
     ) -> list[ProductionOrder]:
         """
         Generate Production Orders based on RDC inventory and demand signals.
@@ -805,16 +813,19 @@ class MRPEngine:
 
         # Calculate In-Transit qty per product (to RDCs)
         # v0.55.0: Include all plant-sourced in-transit (RDCs + DCs).
-        # Deployment sends to both; MRP needs the full pipeline picture.
-        # Combined with plant FG in IP, this gives accurate backpressure.
-        in_transit_qty: dict[str, float] = {}
-        plant_id_set = set(self._plant_ids)
-        for shipment in self.state.active_shipments:
-            if shipment.source_id in plant_id_set:
-                for line in shipment.lines:
-                    in_transit_qty[line.product_id] = (
-                        in_transit_qty.get(line.product_id, 0.0) + line.quantity
-                    )
+        # v0.69.2 PERF: Use pre-computed dict from orchestrator when available
+        if plant_in_transit_qty is not None:
+            in_transit_qty = plant_in_transit_qty
+        else:
+            in_transit_qty = {}
+            plant_id_set = set(self._plant_ids)
+            for shipment in self.state.active_shipments:
+                if shipment.source_id in plant_id_set:
+                    for line in shipment.lines:
+                        in_transit_qty[line.product_id] = (
+                            in_transit_qty.get(line.product_id, 0.0)
+                            + line.quantity
+                        )
 
         # Collect inventory diagnostics
         total_rdc_inv = 0.0
@@ -1037,6 +1048,7 @@ class MRPEngine:
                 current_day,
                 self.abc_class,
                 self._active_production_orders_cache,
+                plant_in_transit_qty=in_transit_qty,
             )
 
         # v0.46.0: Pre-compute weighted inventory ages for SLOB dampening
@@ -1168,12 +1180,7 @@ class MRPEngine:
                 # that integrates naturally with the slot allocation system
                 batch_qty = drp_daily * abc_horizon
 
-                b_production_buffer = float(
-                    self.config.get("simulation_parameters", {})
-                    .get("manufacturing", {})
-                    .get("mrp_thresholds", {})
-                    .get("b_production_buffer", 1.1)
-                )
+                b_production_buffer = self.b_production_buffer
 
                 if abc == 1:  # B-item
                     batch_qty *= b_production_buffer
@@ -1199,12 +1206,7 @@ class MRPEngine:
                 # --------------------------------------------------------
                 batch_qty = batch_qty_base
 
-                b_production_buffer = float(
-                    self.config.get("simulation_parameters", {})
-                    .get("manufacturing", {})
-                    .get("mrp_thresholds", {})
-                    .get("b_production_buffer", 1.1)
-                )
+                b_production_buffer = self.b_production_buffer
 
                 if abc == 1:  # B-item
                     batch_qty *= b_production_buffer

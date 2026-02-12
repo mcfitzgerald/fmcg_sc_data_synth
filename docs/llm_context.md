@@ -255,6 +255,8 @@ product_id_to_idx: dict[str, int]
 
 **Critical:** Always use `state.update_inventory(node_id, product_id, delta)` for simple changes. For inventory receipt (production output, arrivals), use `state.receive_inventory(node_idx, product_idx, qty)` which handles age blending. When deducting inventory, apply FIFO age reduction: `age *= (old_qty - shipped) / old_qty`.
 
+**Read-only views (v0.69.2):** `state.get_in_transit_by_target()` and `demand.get_base_demand_matrix()` return read-only NumPy views (not copies). Do NOT mutate the returned arrays — use `.copy()` first if mutation is needed.
+
 ### Inventory Age Tracking (v0.39.2, fixed v0.59.0)
 Used for industry-standard SLOB calculation (age-based, not DOS-based):
 - `age_inventory(days)` - Age all positive inventory by N days (called daily)
