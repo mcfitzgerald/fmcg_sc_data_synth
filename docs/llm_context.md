@@ -51,7 +51,7 @@ The simulation enforces these constraints - violations indicate bugs:
 | Concept | File | Key Classes/Functions |
 |---------|------|----------------------|
 | **Production planning** | `simulation/mrp.py` | `MRPEngine.generate_production_orders()` |
-| **DRP-Lite (B/C production)** | `simulation/drp.py` | `DRPPlanner.plan_requirements()` — forward-netting daily targets for B/C items (v0.48.0) |
+| **DRP-Lite (B/C production)** | `simulation/drp.py` | `DRPPlanner.plan_requirements()` — forward-netting daily targets for B/C items |
 | **Ingredient procurement** | `simulation/mrp.py` | `MRPEngine.generate_purchase_orders()` |
 | **Recipe matrix (BOM)** | `network/recipe_matrix.py` | `RecipeMatrixBuilder` |
 | **Production execution** | `simulation/transform.py` | `TransformEngine.execute_production()` |
@@ -79,9 +79,9 @@ The simulation enforces these constraints - violations indicate bugs:
 | **Packaging enums** | `product/core.py` | `PackagingType`, `ContainerType`, `ValueSegment` |
 | **Promo calendar** | `simulation/demand.py` | `PromoCalendar`, `PromoEffect` |
 
-#### PERF v0.69.3: Cached Integer Indices
+#### Cached Integer Indices
 
-`OrderLine`, `Order`, and `Shipment` carry cached integer indices to avoid repeated `dict.get()` lookups in inner loops (~100M calls eliminated per 50-day run):
+`OrderLine`, `Order`, and `Shipment` carry cached integer indices to avoid repeated `dict.get()` lookups in inner loops:
 
 - `OrderLine.product_idx: int = -1` — maps to `state.product_id_to_idx[line.product_id]`
 - `Order.source_idx: int = -1` / `Order.target_idx: int = -1` — maps to `state.node_id_to_idx`
@@ -107,13 +107,12 @@ Sentinel `-1` means "not populated" — all consumer sites use `x.product_idx if
 ### Validation & Planning Documents
 | Document | Purpose |
 |----------|---------|
-| `docs/planning/spec.md` | Project status, validated metrics (v0.56.1), remaining work, document map |
+| `docs/planning/spec.md` | Project status, remaining work, document map |
 | `docs/planning/physics.md` | Supply chain physics theory (Little's Law, VUT, Mass Balance) — timeless reference |
 | `docs/planning/triangle.md` | Desmet's SC Triangle (Service/Cost/Cash) — timeless reference |
 | `docs/planning/archive/` | Historical: `intent.md`, `roadmap.md`, investigation docs (Dec 2024 – Jan 2025) |
-| `V046_VALIDATION_STATE.md` | Historical: v0.46.0 365-day validation results. Superseded by v0.56.1 diagnostic suite and CHANGELOG. |
 
-### Diagnostic Suite (v0.66.0 — `scripts/analysis/diagnostics/`)
+### Diagnostic Suite (`scripts/analysis/diagnostics/`)
 
 Shared modular backend used by Tier 1 diagnostics:
 
@@ -156,7 +155,7 @@ Shared modular backend used by Tier 1 diagnostics:
 |--------|---------|
 | `slice_data.py` | Create small data subset (first N days) for fast diagnostic iteration |
 
-**Shared infrastructure:** `diagnostics/loader.py` is the canonical source for `classify_node()`, `classify_abc()`, `DataBundle`, `load_all_data()`, `SeasonalityConfig`. Used by Tier 1 scripts. Standalone scripts (Tier 2) have local copies of classification functions — acceptable for isolation, but `loader.py` is the source of truth. `SeasonalityConfig.factor(day)` is used by stability and backpressure analyses for seasonal detrending (v0.69.4).
+**Shared infrastructure:** `diagnostics/loader.py` is the canonical source for `classify_node()`, `classify_abc()`, `DataBundle`, `load_all_data()`, `SeasonalityConfig`. Used by Tier 1 scripts. Standalone scripts (Tier 2) have local copies of classification functions — acceptable for isolation, but `loader.py` is the source of truth. `SeasonalityConfig.factor(day)` is used by stability and backpressure analyses for seasonal detrending.
 
 **Archived scripts:** `scripts/analysis/archive/` contains 9 legacy scripts (CSV-based, shell subprocess, or version-specific) superseded by the diagnostic suite above.
 
@@ -166,14 +165,14 @@ Shared modular backend used by Tier 1 diagnostics:
 | **Buffered mode** | `SimulationWriter` — accumulates dicts, writes at end (short runs) |
 | **Streaming CSV** | `StreamingCSVWriter` — incremental row-by-row CSV output |
 | **Streaming Parquet** | `StreamingParquetWriter` — batched row-group Parquet output |
-| **Threaded inventory Parquet** | `ThreadedParquetWriter` — background-thread writer with `DictionaryArray` columns (v0.39.8) |
+| **Threaded inventory Parquet** | `ThreadedParquetWriter` — background-thread writer with `DictionaryArray` columns |
 
 ### Simulation Output Files
 All files are `.csv` by default or `.parquet` with `--format parquet`. Parquet uses dictionary-encoded string columns and float32 for inventory.
 
 | File | Contents |
 |------|----------|
-| `orders` | Replenishment orders (header + lines flattened). Includes `requested_date` (v0.69.0) for OTIF measurement. |
+| `orders` | Replenishment orders (header + lines flattened). Includes `requested_date` for OTIF measurement. |
 | `shipments` | Logistics shipments with `emissions_kg` for Scope 3 tracking |
 | `batches` | Production batches (Work Order execution) |
 | `batch_ingredients` | Ingredient consumption per batch (BOM traceability) |
@@ -265,16 +264,16 @@ product_id_to_idx: dict[str, int]
 
 **Critical:** Always use `state.update_inventory(node_id, product_id, delta)` for simple changes. For inventory receipt (production output, arrivals), use `state.receive_inventory(node_idx, product_idx, qty)` which handles age blending. When deducting inventory, apply FIFO age reduction: `age *= (old_qty - shipped) / old_qty`.
 
-**Read-only views (v0.69.2):** `state.get_in_transit_by_target()` and `demand.get_base_demand_matrix()` return read-only NumPy views (not copies). Do NOT mutate the returned arrays — use `.copy()` first if mutation is needed.
+**Read-only views:** `state.get_in_transit_by_target()` and `demand.get_base_demand_matrix()` return read-only NumPy views (not copies). Do NOT mutate the returned arrays — use `.copy()` first if mutation is needed.
 
-### Inventory Age Tracking (v0.39.2, fixed v0.59.0)
+### Inventory Age Tracking
 Used for industry-standard SLOB calculation (age-based, not DOS-based):
 - `age_inventory(days)` - Age all positive inventory by N days (called daily)
 - `receive_inventory(node_idx, product_idx, qty)` - Receive fresh inventory with weighted average age blending
 - `receive_inventory_batch(delta)` - Batch receive with age blending
 - `get_weighted_age_by_product()` - Get inventory-weighted average age per SKU
 
-**FIFO Age Pattern (v0.59.0):** Every inventory deduction must reduce age proportionally:
+**FIFO Age Pattern:** Every inventory deduction must reduce age proportionally:
 ```python
 old_qty = max(0.0, float(state.actual_inventory[node_idx, prod_idx]))
 if old_qty > 0:
@@ -316,53 +315,48 @@ Every `tick()` (1 day) in `Orchestrator._run_day()`:
 
 The simulation has multiple safeguards to prevent feedback loops that collapse production:
 
-### Demand Signal (v0.54.0 — Direct POS)
+### Demand Signal (Direct POS)
 MRP uses raw POS demand directly — no blending or floor:
 ```python
-# v0.54.0: Direct POS demand, floor disabled
 demand_for_dos = pos_demand  # demand_floor_weight=0.0, mrp_floor_gating_enabled=false
 ```
 - **Config:** `demand_floor_weight=0.0`, `mrp_floor_gating_enabled=false`
-- **History:** v0.39.3 introduced demand floor; v0.46.0 made it seasonal-aware (0.65 blend); v0.54.0 disabled it entirely. Floor code still exists but is inactive.
+- Demand floor code exists but is disabled.
 
-### Demand Smoothing (v0.56.0)
+### Demand Smoothing
 DOS calculation uses smoothed demand to reduce noise-driven overproduction:
 ```python
 demand_for_dos = demand_smoothing_weight * expected + (1.0 - demand_smoothing_weight) * pos_today
 # 70% expected + 30% POS
 ```
 - **Config:** `demand_smoothing_weight=0.70`
-- **Purpose:** Stabilizes DOS calculation without interfering with the raw POS production signal
+- Stabilizes DOS calculation without interfering with the raw POS production signal
 
-### DOS Cap Guard (v0.46.0, updated v0.56.0)
+### DOS Cap Guard
 Skip production when a product already has sufficient inventory:
 ```python
-# Skip production if DOS exceeds ABC-class cap
 if dos_position > cap_dos:  # A=22d, B=25d, C=25d
     continue
 ```
 - **Config:** `inventory_cap_dos_a=22`, `inventory_cap_dos_b=25`, `inventory_cap_dos_c=25`
-- **v0.61.0 change:** Tightened from A=30/B=35/C=35. A:22 (5d above ~17d IP), B/C:25 (8d above ~17d post-batch IP). Seasonal deployment reduces FG variance so caps can be tighter.
-- **Effect:** Self-regulating negative feedback — production stops when inventory is sufficient, resumes when consumed
+- These are emergency brakes (~5-8d headroom above operating point), not continuous feedback
+- Self-regulating negative feedback — production stops when inventory is sufficient, resumes when consumed
 
-### SLOB Production Dampening — **DISABLED** (v0.56.1)
+### SLOB Production Dampening — **DISABLED**
 ```python
-# v0.56.1: Disabled (floor=1.0 means dampening factor is always 1.0)
-# Graduated ramp code exists but is inactive
 slob_dampening_floor = 1.0  # No production reduction for aged inventory
 ```
 - **Config:** `slob_dampening_floor=1.0`, `slob_dampening_ramp_multiplier=1.0`
 - **Rationale:** Production should follow demand. Aged stock is a logistics/disposition concern, not a production throttling trigger. Real FMCG handles SLOB via markdown/donation, not by cutting supply.
-- **History:** v0.46.0 introduced binary 0.5× dampening; v0.56.0 added graduated ramp; v0.56.1 disabled entirely.
+- Graduated ramp code exists but is inactive (floor=1.0 means factor always 1.0).
 
-### ABC Production Buffers (v0.39.3, updated v0.42.0)
-- **A-Items:** `a_production_buffer` = 1.22x (raised from 1.15 in v0.42.0 — safe with ABC-aware Phase 4 clipping)
+### ABC Production Buffers
+- **A-Items:** `a_production_buffer` = 1.22x (safe with ABC-aware Phase 4 clipping)
 - **B-Items:** `b_production_buffer` = 1.1x (modest buffer, applied to batch qty)
-- **C-Items:** `c_production_factor` = 1.05x (v0.68.0, was 1.0) — applied as buffer multiplier on C-item DRP batches in `mrp.py`
+- **C-Items:** `c_production_factor` = 1.05x — applied as buffer multiplier on C-item DRP batches in `mrp.py`
 
-### Emergency Replenishment (v0.39.3, updated v0.42.0)
+### Emergency Replenishment
 Bypass order staggering when any product DOS < `emergency_dos_threshold` (default 3.0):
-- Raised from 2.0 to 3.0 in v0.42.0 for 1-day earlier stockout prevention
 - Prevents stores with empty shelves from waiting for scheduled order day
 - Critical stockouts trigger immediate action regardless of schedule
 
@@ -372,24 +366,24 @@ Bypass order staggering when any product DOS < `emergency_dos_threshold` (defaul
 - **Pending Replenishment Orders:** 14-day timeout (allows retry)
 - **Completed Batches:** 30-day retention (memory cleanup)
 
-### Stockout Demand Tracking (v0.39.3)
+### Stockout Demand Tracking
 Unmet demand from stockouts (`daily_demand - actual_sales`) is recorded and flows upstream to MRP:
 - Prevents "demand signal collapse" where stockouts hide true demand
 - C-items get proper production priority when shelves are empty
 
 ---
 
-## 8a. Need-Based Deployment (v0.55.0)
+## 8a. Need-Based Deployment
 
-Finished goods flow from plants to downstream nodes via need-based deployment (replaced fixed-share push in v0.55.0):
+Finished goods flow from plants to downstream nodes via need-based deployment:
 
 ### `_create_plant_shipments()` — Core Deployment
 ```python
 need = max(0, target_dos × expected_demand × seasonal_factor - current_position)
 # current_position = on_hand + in_transit_to_target
-# seasonal_factor = MRPEngine._get_seasonal_factor(day)  # v0.61.0
+# seasonal_factor = MRPEngine._get_seasonal_factor(day)
 ```
-1. `_compute_deployment_needs()` calculates per-target, per-product need vectors (seasonally adjusted since v0.61.0)
+1. `_compute_deployment_needs()` calculates per-target, per-product need vectors (seasonally adjusted)
 2. Available FG per product summed across all plants
 3. Fair-share allocation when constrained: `fill_ratio = min(available / total_need, 1.0)`
 4. Share ceiling headroom: 1.5× prevents any single target from consuming all supply
@@ -402,14 +396,14 @@ need = max(0, target_dos × expected_demand × seasonal_factor - current_positio
 | **RDCs** | 9.0d | 9.0d | 9.0d | Flat `_rdc_target_dos` (flow-through cross-dock, actual DOS ≈8.4) |
 
 ### `_push_excess_rdc_inventory()` — RDC→DC Overflow
-Active as secondary overflow valve: pushes excess RDC inventory to customer DCs when RDC DOS exceeds threshold (`push_threshold_dos=12.0`, ~1.33× the 9 DOS target). Activates at 12 DOS to prevent accumulation in the RDC dead zone. v0.61.0: DOS calculations use seasonally-adjusted demand (same factor as deployment). v0.64.0: Push receive cap is ABC-differentiated — `dc_buffer_days × ABC_mult × push_receive_headroom(1.15)` → A≈12.1, B≈16.1, C≈20.1 DOS. Replaces the scalar `push_receive_dos_cap=12.0` which blocked B/C items below their deployment targets.
+Active as secondary overflow valve: pushes excess RDC inventory to customer DCs when RDC DOS exceeds threshold (`push_threshold_dos=12.0`, ~1.33× the 9 DOS target). DOS calculations use seasonally-adjusted demand (same factor as deployment). Push receive cap is ABC-differentiated — `dc_buffer_days × ABC_mult × push_receive_headroom(1.15)` → A≈12.1, B≈16.1, C≈20.1 DOS.
 
 ### Key Design: Plant FG as Natural Backpressure
 Unneeded FG stays at the plant and enters MRP's inventory position calculation (`_calculate_inventory_position()` includes plant FG in pipeline IP). This creates a natural negative feedback loop: high plant FG → high IP → MRP reduces production → equilibrium.
 
-**Design decision (v0.63.0):** Production backpressure is handled entirely by MRP DOS caps + plant FG in IP — not by physical storage constraints. `Node.storage_capacity` was removed as dead code (all nodes had `inf`, never enforced). This matches real FMCG operations where MRP prevents overproduction at the planning level; plants don't physically block production lines due to warehouse capacity.
+Production backpressure is handled entirely by MRP DOS caps + plant FG in IP — not by physical storage constraints. `Node.storage_capacity` does not exist (all nodes have infinite capacity). This matches real FMCG operations where MRP prevents overproduction at the planning level; plants don't physically block production lines due to warehouse capacity.
 
-**v0.68.0:** MRP backpressure (diagnostic Q12) and B/C underproduction (diagnostic Q10) are formally closed. RDC flow-through redesign (`rdc_target_dos` 15 to 9) combined with `c_production_factor=1.05` resolved the structural imbalances.
+**Status:** MRP backpressure and B/C underproduction are resolved. Diagnostic Q12 detrended correlation is +0.14 (near-zero after removing seasonal confound); DOS caps are emergency brakes that correctly don't fire during normal operation (~17 DOS vs 22d cap).
 
 ---
 
@@ -439,9 +433,9 @@ $SS = z \sqrt{\bar{L}\sigma_D^2 + \bar{D}^2\sigma_L^2}$
 Products are dynamically classified every 7 days based on cumulative sales volume:
 - **A-Items (Top 80%):** High service level target ($z=2.33$)
 - **B-Items (Next 15%):** Medium service level target ($z=1.65$)
-- **C-Items (Bottom 5%):** Medium service level target ($z=1.65$, raised from 1.28 in v0.39.5)
+- **C-Items (Bottom 5%):** Medium service level target ($z=1.65$)
 
-### Throughput-Based DC Ordering (v0.52.0)
+### Throughput-Based DC Ordering
 Customer DCs use throughput-based ordering instead of echelon-demand:
 ```python
 dc_order_rate = outflow + correction
@@ -453,7 +447,7 @@ dc_order_rate = outflow + correction
 - **Physics-derived DC DOS caps:** `dc_buffer_days × mult` → A≈10.5, B=14, C=17.5
 - **Effect:** DC ordering tracks actual outflow rather than upstream demand signal, reducing bullwhip
 
-### Anti-Windup Floor Gating (v0.51.0)
+### Anti-Windup Floor Gating
 All demand floors are conditional on inventory state to prevent accumulation:
 ```python
 floor_weight = clip((target_dos - local_dos) / target_dos, 0, 1)
@@ -467,9 +461,9 @@ floor_weight = clip((target_dos - local_dos) / target_dos, 0, 1)
 
 ## 11. Production Scheduling (ABC-Branched)
 
-Production uses ABC-branched scheduling (v0.40.0): A-items use net-requirement (MPS-style), B/C items use DRP-Lite with campaign triggers (v0.48.0). All ABC classes equalized at 14-day production horizon (v0.51.0).
+Production uses ABC-branched scheduling: A-items use net-requirement (MPS-style), B/C items use DRP-Lite with campaign triggers. All ABC classes use a 14-day production horizon.
 
-### A-Items: Net-Requirement Scheduling (v0.40.0)
+### A-Items: Net-Requirement Scheduling
 
 Instead of trigger-based feast/famine, A-items compute the gap between target inventory and current position:
 
@@ -484,7 +478,7 @@ batch_qty        = max(net_requirement, 0)           # Skip if at/above target
 - **Smooth loading:** 310 A-items across 240 A-slots (100 SKUs × 0.60 × 4 plants) → each item produced every ~1.3 days
 - **No trigger gate:** Eliminates idle capacity between trigger firings
 
-### B/C Items: DRP-Lite + Campaign Triggers (v0.48.0)
+### B/C Items: DRP-Lite + Campaign Triggers
 
 B/C items use DRP for forward-netting production targets, with campaign triggers as fallback:
 
@@ -493,23 +487,23 @@ B/C items use DRP for forward-netting production targets, with campaign triggers
    - Campaign triggers still gate when production fires, but DRP modulates batch size
 
 2. **Campaign Trigger Fallback:** When DRP planner is absent, pure trigger-based:
-   - `trigger_dos_b`=7, `trigger_dos_c`=6 (v0.51.0, was 5/4)
+   - `trigger_dos_b`=7, `trigger_dos_c`=6
    - Batch sizing: `production_horizon_days` worth per SKU
 
 ### Common Phases (All ABC Classes)
 
 3. **Priority Sorting:** Critical Ratio (`DOS/Trigger`) with shuffle tie-breaker
 4. **ABC Slot Reservation:** 60/25/15 split (A/B/C, config-driven) with overflow redistribution
-5. **Capacity Cap:** 98% with ABC-aware clipping — A-items protected up to 65% of capacity, B/C absorb clipping first (v0.42.0)
-6. **SKU Limit:** 100 SKUs/plant/day to cap changeover overhead (v0.43.0, raised from 80)
+5. **Capacity Cap:** 98% with ABC-aware clipping — A-items protected up to 65% of capacity, B/C absorb clipping first
+6. **SKU Limit:** 100 SKUs/plant/day to cap changeover overhead
 
 **Configuration:** `simulation_config.json` → `manufacturing.mrp_thresholds.campaign_batching`
 
-### Capacity Planning (v0.36.3)
+### Capacity Planning
 
 The `--derive-lines` calibration uses physics-based efficiency decomposition:
 
-1. **DOS Cycling Factor:** For B/C items, lines sit idle when DOS > trigger. A-items produce continuously via net-requirement, improving utilization. DRP (v0.48.0) level-loads B/C production, further improving utilization.
+1. **DOS Cycling Factor:** For B/C items, lines sit idle when DOS > trigger. A-items produce continuously via net-requirement, improving utilization. DRP level-loads B/C production, further improving utilization.
    - Formula (B/C): `dos_coverage = horizon / (horizon + avg_trigger) × stagger_benefit`
 
 2. **Variability Buffer (~1.25x):** Reserve capacity for demand peaks (seasonality + noise).
@@ -536,7 +530,7 @@ The `--derive-lines` calibration uses physics-based efficiency decomposition:
 ### Store Formats (`StoreFormat` enum)
 `RETAILER_DC`, `HYPERMARKET`, `SUPERMARKET`, `CLUB`, `CONVENIENCE`, `PHARMACY`, `DISTRIBUTOR_DC`, `ECOM_FC`, `DTC_FC`
 
-### Network Topology (v0.45.0)
+### Network Topology
 | Echelon | Count | Routing |
 |---------|-------|---------|
 | Plants | 4 | — |
@@ -660,6 +654,7 @@ poetry run python run_simulation.py --days 50 --no-logging
 | `--no-logging` | Skip data export (fastest, Triangle Report metrics only) |
 | `--snapshot` | Write final-day state to `{output_dir}/snapshot/` for warm-start |
 | `--warm-start DIR` | Load converged state from prior run's parquet output |
+| `--no-stabilization` | Skip stabilization burn-in (0 days). Use with warm-start from fully converged state |
 
 ### Post-Run Diagnostics
 ```bash
@@ -727,8 +722,7 @@ When simulation behaves unexpectedly:
    - **SLOB drift:** C-items accumulating (slow movers don't sell)
    - **Key diagnostic:** Compare ABC class inventory at day 30 vs day 365
    - Run `diagnose_365day.py` for comprehensive 3-layer diagnostic
-   - **v0.59.0 validated results:** Fill 98.5%, Turns 10.31×, OEE 54.3%, SLOB 0.0%, Prod/Demand 0.98, C2C 20.6d
-   - **v0.60.0 fixes:** Priming mismatches (DC/store over-primed, RDC push dead zone) — expect more stable echelon trends
+   - Note: Stability analysis uses seasonal detrending — ensure drift isn't just seasonal oscillation
 
 8. **Inventory turns low but production/demand ratio near 1.0?**
    - This is a **distribution-level problem**, not a production problem
@@ -878,6 +872,6 @@ The following values are hardcoded but working correctly. They should be migrate
 | `agents/replenishment.py` | ~956 | `forecast_horizon=14` | Proactive demand sensing lookahead (days) |
 | `simulation/orchestrator.py` | ~1627 | `min_fg_inventory_threshold=100.0` | Inventory turns divide-by-zero guard |
 
-**v0.64.0 migrated:** MRP history buffer (14d), demand-based min batch (7d), production smoothing cap (1.5×), perfect order default lead time (3.0d), demand segment weight (0.5), push receive DOS cap (→ABC-differentiated headroom). `changeover_time_multiplier=0.1` is intentional (SMED-optimized lines), not a hardcode.
+**Note:** `changeover_time_multiplier=0.1` is intentional (SMED-optimized lines), not a hardcode.
 
 **Priority:** The `logistics.py` returns subsystem has the most values (4) with zero config coverage. The `mrp.py` B-item throttling thresholds are in a fallback code path (only active when DRP planner is absent).
