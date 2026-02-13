@@ -101,8 +101,8 @@ Sentinel `-1` means "not populated" — all consumer sites use `x.product_idx if
 | `scripts/generate_static_world.py` | Generate static world data (products, recipes, nodes, links) |
 | `scripts/calibrate_config.py` | Physics-based config calibration (capacity, safety stock, DOS targets) |
 | `scripts/run_standard_sim.py` | Standard workflow runner (priming + stabilization + data run) |
-| `scripts/export_erp_format.py` | **ETL:** Transform sim output to normalized ERP tables (SQL-ready) |
-| `scripts/erp_schema.sql` | ERP-style relational schema (SQL DDL) for normalized export |
+| `scripts/erp/` | **Enterprise Data Generator:** DuckDB-based ETL, sim parquet → 36 normalized CSV tables (329.8M rows) |
+| `scripts/erp_schema.sql` | ERP relational schema (PostgreSQL DDL, 36 tables + 13 indexes) |
 
 ### Validation & Planning Documents
 | Document | Purpose |
@@ -162,6 +162,29 @@ Shared modular backend used by diagnostics:
 **Shared infrastructure:** `diagnostics/loader.py` is the canonical source for `classify_node()`, `classify_abc()`, `DataBundle`, `load_all_data()`, `SeasonalityConfig`. Used by all diagnostic scripts. Standalone scripts (Tier 2) have local copies of classification functions — acceptable for isolation, but `loader.py` is the source of truth. `SeasonalityConfig.factor(day)` is used by stability and backpressure analyses for seasonal detrending.
 
 **Archived scripts:** `scripts/analysis/archive/` contains 9 legacy scripts (CSV-based, shell subprocess, or version-specific) superseded by the diagnostic suite above.
+
+### Enterprise Data Generator (`scripts/erp/`)
+
+DuckDB-based ETL that transforms sim parquet output into 36 normalized ERP CSV tables (329.8M rows). Loadable into PostgreSQL and Neo4j.
+
+**Entry point:** `poetry run python -m scripts.erp --input-dir data/output --output-dir data/output/erp`
+
+| Module | Purpose |
+|--------|---------|
+| `config.py` | ErpConfig: loads cost_master.json, world_def, sim_config; 12-account Chart of Accounts |
+| `id_mapper.py` | Bidirectional sim string ID ↔ integer PK mapping (JSON serializable) |
+| `sequence.py` | Deterministic `transaction_sequence_id`: `day × 10M + category × 1M + counter` |
+| `master_tables.py` | DuckDB SQL: 14 master CSVs from static world files + config |
+| `transactional.py` | DuckDB-native large tables (orders 60.9M, shipments 69.9M, inventory 99.2M); Python for small tables |
+| `gl_journal.py` | Pure DuckDB SQL: 6 event types × DR/CR pairs → 8.5M balanced GL entries |
+| `invoices.py` | DuckDB-native AP invoices (5.4M) and AR invoices (1.5M headers, 57.7M lines) |
+| `verify.py` | Post-gen: GL balance, COGS/Revenue ratio, FK integrity, sequence monotonicity |
+| `neo4j_headers.py` | Neo4j-admin import header files |
+
+**Schema:** `scripts/erp_schema.sql` — 36 tables (8 domains), 13 indexes, PostgreSQL DDL.
+**Load scripts:** `data/output/erp/load_postgres.sh`, `data/output/erp/load_neo4j.cypher`
+
+**Performance:** ~4.4 min end-to-end for 230M+ source rows (Phase 1: 0.1s, Phase 2: 44s, Phase 3: 15s, Phase 4: 5s + verify).
 
 ### Data Export (`simulation/writer.py`)
 | Concept | Key Classes |

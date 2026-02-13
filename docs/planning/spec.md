@@ -94,6 +94,8 @@ The simulation is in an iterative shake-out phase. The core engine is complete; 
 
 **Cost Model Enrichment (v0.71.0):** Post-sim enrichment only — no simulation physics changes. `cost_master.json` expanded with per-route FTL/LTL logistics, echelon-specific warehouse rates, category-specific manufacturing cost structure, channel DSO. `diagnose_cost.py` upgraded from 6 to 8 sections: per-SKU COGS (was flat-category), per-echelon logistics with distance, bottom-up mfg COGS from batch_ingredients, revenue & margin by channel, channel-weighted DSO. `export_erp_format.py` cost splits now config-driven (was hardcoded 60/20/20).
 
+**Enterprise Data Generator (v0.73.0):** Replaced stale `export_erp_format.py` with DuckDB-based `scripts/erp/` package. Uses DuckDB's native parquet reader + SQL transforms + COPY TO for CSV export — processes 230M+ source rows in ~4.4 min without OOM. Financial layer adds double-entry GL journal (8.5M entries, 6 event types, balanced to <$0.01), AP/AR invoices (5.4M AP + 1.5M AR headers), and deterministic transaction sequencing (`day × 10M + cat × 1M + counter`). Output: 36 tables, 329.8M total rows. Load scripts for PostgreSQL and Neo4j.
+
 ---
 
 ## 4. Likely Areas of Future Code Change
@@ -112,21 +114,28 @@ As validation iterates, these areas are probable touchpoints:
 
 ---
 
-## 5. ERP Export Completion
+## 5. Enterprise Data Generator (v0.73.0)
 
-**Status:** 35/36 tables operational.
+**Status:** Complete. 36 tables, 329.8M rows, GL balanced, 100% FK integrity.
 
-**Missing table:** `products` master (1/36) — parent entity for `skus`.
+**Package:** `scripts/erp/` — DuckDB-based ETL, replaces old `scripts/export_erp_format.py`.
 
-**Data quality refinements:**
-- `production_lines` OEE: currently hardcoded defaults, should derive from sim
-- Promotion dates: "Week X" format → ISO dates
-- Inventory normalization: consistent UoM across echelons
-- Plant capacity: derive from config rather than static values
+**Run:** `poetry run python -m scripts.erp --input-dir data/output --output-dir data/output/erp`
 
-**Optional enhancements:**
-- `SQLWriter` for `seed.sql` (direct Postgres import)
-- Referential integrity validation script
+**Output:** `data/output/erp/` — master/ (14 CSVs), transactional/ (22 CSVs), reference/, neo4j_headers/
+
+**Load scripts:** `load_postgres.sh` (\\copy), `load_neo4j.cypher` (LOAD CSV)
+
+**Verification (automated):**
+- GL balanced: DR=CR=$719.4B (diff < $0.01)
+- COGS/Revenue: 67.5%
+- FK integrity: 100% on 5 spot checks
+- Per-day GL balance: all 368 days balanced
+
+**Deferred to v0.74.0:**
+- Friction layer: invoice lag, price errors, qty discrepancies, duplicates, null FKs
+- Per-shipment GL detail (currently aggregated at day × node level)
+- Neo4j graph optimization (relationship property enrichment)
 
 **Reference files:**
 - `scripts/export_erp_format.py` (35-table ETL)

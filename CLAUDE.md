@@ -43,9 +43,11 @@ poetry run python run_simulation.py --days 365 --streaming --format parquet --wa
 poetry run python run_simulation.py --days 365 --no-logging --snapshot
 
 # Diagnostics (run on parquet output)
-poetry run python scripts/analysis/diagnose_365day.py          # Three-layer pyramid report
-poetry run python scripts/analysis/diagnose_flow_deep.py       # Deep flow & MRP analysis
-poetry run python scripts/analysis/diagnose_cost.py            # Cost analytics
+poetry run python scripts/analysis/diagnose_supply_chain.py    # Unified 35-question diagnostic
+poetry run python scripts/analysis/diagnose_supply_chain.py --full  # + inventory deep-dive
+
+# ERP export (run on parquet output → 36 normalized CSV tables)
+poetry run python -m scripts.erp --input-dir data/output --output-dir data/output/erp
 
 # Linting and type checking
 poetry run ruff check .

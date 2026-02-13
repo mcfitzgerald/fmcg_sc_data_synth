@@ -51,6 +51,7 @@ Thumbs.db
 
 # Project specific
 seed.sql
+.tmp/
 .specstory/
 # reference/
 data/

@@ -5,6 +5,48 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.73.0] - 2026-02-13
+
+### Feature: Enterprise Data Generator (ERP Export v2)
+
+Replaces the stale `scripts/export_erp_format.py` with a new DuckDB-based ETL package (`scripts/erp/`) that transforms simulation parquet output (~230M source rows) into 36 normalized ERP CSV tables (329.8M total rows) loadable into both PostgreSQL and Neo4j.
+
+#### New Package: `scripts/erp/`
+- **`__main__.py`** — CLI entry point: `poetry run python -m scripts.erp --input-dir data/output --output-dir data/output/erp`
+- **`config.py`** — ErpConfig dataclass, loads cost_master.json + world_definition.json + simulation_config.json; 12-account Chart of Accounts
+- **`id_mapper.py`** — Bidirectional sim string ID ↔ integer PK mapping, JSON serializable
+- **`sequence.py`** — Deterministic transaction sequencing: `day × 10M + category × 1M + counter` (8 causal-order categories)
+- **`master_tables.py`** — DuckDB SQL: 14 master CSVs from static world files + config (suppliers, plants, DCs, stores, SKUs, bulk intermediates, ingredients, formulas, formula_ingredients, production_lines, channels, chart_of_accounts, route_segments, supplier_ingredients)
+- **`transactional.py`** — DuckDB-native for large tables (orders 60.9M lines, shipments 69.9M lines, inventory 99.2M), Python for small tables (<200K rows); classifies routes, computes freight costs
+- **`gl_journal.py`** — Pure DuckDB SQL: 6 event types × DR/CR pairs → 8.5M GL entries, per-day aggregated, balanced to <$0.01
+- **`invoices.py`** — DuckDB-native AP invoices (5.4M from goods receipts) and AR invoices (1.5M headers, 57.7M lines from demand-endpoint shipments) with channel-specific DSO/DPO
+- **`verify.py`** — Post-gen validation: GL balance (global + per-day), COGS/Revenue ratio (67.5%), FK integrity (100% on 5 checks), sequence monotonicity
+- **`neo4j_headers.py`** — Neo4j-admin import header files (19 node/relationship CSVs)
+
+#### Financial Layer (New Domain H)
+- **GL Journal**: Double-entry bookkeeping from 6 physical event types: goods receipts, production, ship dispatch, ship arrival, demand sales, returns. Aggregated at (day, node) level. DR=CR=$719.4B.
+- **AP Invoices**: One per goods receipt (supplier→plant), due dates from DPO config. 5.4M invoices.
+- **AR Invoices**: One per demand-endpoint shipment, channel-specific DSO. 1.5M invoices, 57.7M line items.
+- **Chart of Accounts**: 12 accounts (1000 Cash through 5400 Mfg Overhead)
+
+#### Schema Updates (`erp_schema.sql`)
+- Added `transaction_sequence_id BIGINT` to all transactional tables (orders, purchase_orders, goods_receipts, work_orders, batches, shipments, returns)
+- Added `bulk_intermediates` table (bom_level=1 products)
+- Added `chart_of_accounts`, `gl_journal`, `ap_invoices`, `ap_invoice_lines`, `ar_invoices`, `ar_invoice_lines` tables
+- Added `product_type`, `bom_level` to batches; `route_type`, `freight_cost` to shipments
+- 13 indexes on key query patterns
+
+#### Load Scripts
+- **`load_postgres.sh`** — `\copy` commands for all 36 CSVs in FK-safe dependency order
+- **`load_neo4j.cypher`** — LOAD CSV Cypher script: constraints, 14 node types, 12 relationship types
+
+#### Performance
+- End-to-end: ~4.4 minutes (Phase 1: 0.1s, Phase 2: 44s, Phase 3: 15s, Phase 4: 5s + 3.5min verify)
+- DuckDB processes 230M+ source rows in-memory without OOM
+
+#### Deleted
+- `scripts/export_erp_format.py` — replaced by `scripts/erp/` package
+
 ## [0.72.0] - 2026-02-13
 
 ### Feature: Unified Supply Chain Diagnostic
