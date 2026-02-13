@@ -38,6 +38,7 @@ class CategoryProfile:
     dim_ratios: tuple[float, float, float]
     run_rate_cases_per_hour: float
     changeover_time_hours: float
+    specific_gravity: float = 1.0  # Density relative to water
 
 
 # Physical dimension defaults for raw material categories
@@ -267,16 +268,13 @@ class ProductGenerator:
         )
 
         profile = self.profiles[category]
-        specific_gravity = 1.0
-        if category == ProductCategory.ORAL_CARE:
-            specific_gravity = 1.3
-        elif category == ProductCategory.PERSONAL_WASH:
-            specific_gravity = 1.05
+        tare_factor = self.bom_complexity.get("tare_weight_factor", 1.05)
+        vol_overhead = self.bom_complexity.get("volume_overhead_factor", 1.2)
 
-        net_weight_kg = (pkg.size_ml * specific_gravity) / 1000.0
-        case_weight_kg = net_weight_kg * pkg.units_per_case * 1.05
+        net_weight_kg = (pkg.size_ml * profile.specific_gravity) / 1000.0
+        case_weight_kg = net_weight_kg * pkg.units_per_case * tare_factor
 
-        target_vol = pkg.size_ml * pkg.units_per_case * 1.2
+        target_vol = pkg.size_ml * pkg.units_per_case * vol_overhead
 
         r1, r2, r3 = profile.dim_ratios
         x = (target_vol / (r1 * r2 * r3)) ** (1 / 3)
@@ -685,7 +683,7 @@ class ProductGenerator:
         self._add_random_component(bom, sec.get("LABEL", []), 1.0)
 
         # 4. Tertiary packaging (fractional — shared across cases)
-        cases_per_shipper = 12.0
+        cases_per_shipper = self.bom_complexity.get("cases_per_shipper", 12.0)
         self._add_random_component(
             bom,
             ter.get("SHIPPER", []),

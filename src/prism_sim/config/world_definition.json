@@ -284,7 +284,10 @@
     "sku_packaging_components_min": 4,
     "sku_packaging_components_max": 6,
     "bulk_raw_materials_min": 8,
-    "bulk_raw_materials_max": 12
+    "bulk_raw_materials_max": 12,
+    "cases_per_shipper": 12.0,
+    "tare_weight_factor": 1.05,
+    "volume_overhead_factor": 1.2
   },
   "generation_profiles": {
     "variant_palettes": {
@@ -300,7 +303,8 @@
         "cost_range": [20.0, 40.0],
         "dim_ratios": [2.0, 1.5, 1.0],
         "run_rate_cases_per_hour": 20000,
-        "changeover_time_hours": 0.5
+        "changeover_time_hours": 0.5,
+        "specific_gravity": 1.3
       },
       "PERSONAL_WASH": {
         "avg_weight_kg": 8.5,
@@ -309,7 +313,8 @@
         "cost_range": [15.0, 25.0],
         "dim_ratios": [2.0, 1.3, 1.0],
         "run_rate_cases_per_hour": 18000,
-        "changeover_time_hours": 1.0
+        "changeover_time_hours": 1.0,
+        "specific_gravity": 1.05
       },
       "HOME_CARE": {
         "avg_weight_kg": 6.0,
@@ -318,7 +323,8 @@
         "cost_range": [10.0, 18.0],
         "dim_ratios": [1.2, 0.8, 1.0],
         "run_rate_cases_per_hour": 15000,
-        "changeover_time_hours": 1.5
+        "changeover_time_hours": 1.5,
+        "specific_gravity": 1.0
       }
     }
   }
