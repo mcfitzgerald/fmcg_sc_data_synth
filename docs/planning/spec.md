@@ -85,6 +85,8 @@ The simulation is in an iterative shake-out phase. The core engine is complete; 
 
 **ABC-differentiated push receive cap (v0.64.0):** `push_receive_dos_cap=12.0` (scalar) replaced with `push_receive_headroom=1.15` (multiplier on ABC deployment targets). The scalar cap blocked B/C items below their deployment targets (B=14, C=17.5 DOS vs cap=12). New caps: A≈12.1, B≈16.1, C≈20.1 DOS — derived from `dc_buffer_days × ABC_mult × headroom`.
 
+**3-Level BOM (v0.70.0):** Replaced flat single-level BOM with 3-level structure: Level 2 (78 raw materials) → Level 1 (45 bulk intermediates) → Level 0 (500 finished SKUs). Bulk intermediates are produced at plants via dependent demand explosion from SKU production orders, same-plant assignment. TransformEngine two-pass ordering ensures bulk is produced before SKUs within each daily cycle. MRP PO generation uses two-step matrix explosion to reach leaf materials. Recipe matrix stays 2D `[n_products, n_products]`. Deployment, demand, DRP, allocation, replenishment unchanged (SKUs only).
+
 ---
 
 ## 4. Likely Areas of Future Code Change

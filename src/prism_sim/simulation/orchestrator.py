@@ -979,11 +979,25 @@ class Orchestrator:
                     # Calculate global demand per product
                     global_product_demand = np.sum(base_demand_matrix, axis=0)
 
-                    # Derived ingredient demand: Product Demand @ Recipe Matrix
-                    # How much of each ingredient needed globally per day
-                    ingredient_demand = (
-                        global_product_demand @ self.state.recipe_matrix
-                    )
+                    # Derived ingredient demand via two-step BOM explosion.
+                    # With 3-level BOM: SKU → bulk + pkg, bulk → raw materials.
+                    recipe_matrix = self.state.recipe_matrix
+                    direct_demand = global_product_demand @ recipe_matrix
+                    # Build bulk mask aligned to state product indices
+                    bulk_mask = np.zeros(self.state.n_products, dtype=bool)
+                    for p_id, p in self.world.products.items():
+                        if p.category == ProductCategory.BULK_INTERMEDIATE:
+                            p_idx = self.state.product_id_to_idx.get(p_id)
+                            if p_idx is not None:
+                                bulk_mask[p_idx] = True
+                    if np.any(bulk_mask):
+                        bulk_demand = direct_demand * bulk_mask
+                        raw_material_demand = bulk_demand @ recipe_matrix
+                        ingredient_demand = direct_demand + raw_material_demand
+                        # Don't prime bulk intermediates as "ingredients"
+                        ingredient_demand[bulk_mask] = 0.0
+                    else:
+                        ingredient_demand = direct_demand
 
                     # Target days supply for ingredients (default 14 from policy)
                     target_days = 14.0
@@ -1010,14 +1024,15 @@ class Orchestrator:
 
     def _build_finished_goods_mask(self) -> np.ndarray:
         """
-        Build a boolean mask for finished goods products (excludes ingredients).
+        Build a boolean mask for finished goods products.
 
-        Used to calculate inventory turns only on sellable products, not raw materials.
-        Returns shape [n_products] where True = finished good, False = ingredient.
+        Excludes raw materials AND bulk intermediates. Used to calculate
+        inventory turns only on sellable SKUs.
+        Returns shape [n_products] where True = finished good, False = non-FG.
         """
         mask = np.zeros(self.state.n_products, dtype=bool)
         for p_id, product in self.world.products.items():
-            if product.category != ProductCategory.INGREDIENT:
+            if product.is_finished_good:
                 p_idx = self.state.product_id_to_idx.get(p_id)
                 if p_idx is not None:
                     mask[p_idx] = True

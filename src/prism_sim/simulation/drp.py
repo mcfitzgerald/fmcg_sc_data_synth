@@ -19,7 +19,6 @@ from typing import Any
 import numpy as np
 
 from prism_sim.network.core import NodeType, ProductionOrderStatus
-from prism_sim.product.core import ProductCategory
 from prism_sim.simulation.state import StateManager
 from prism_sim.simulation.world import World
 
@@ -106,7 +105,7 @@ class DRPPlanner:
                 self._plant_ids.append(node_id)
 
         for p_id, product in world.products.items():
-            if product.category != ProductCategory.INGREDIENT:
+            if product.is_finished_good:
                 self._finished_product_ids.append(p_id)
 
         # Build expected demand vector (same as MRP uses)

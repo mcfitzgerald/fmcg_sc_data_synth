@@ -6,7 +6,8 @@ class ProductCategory(enum.Enum):
     ORAL_CARE = "oral_care"  # High value-density, cubes out
     PERSONAL_WASH = "personal_wash"  # The Brick, weighs out
     HOME_CARE = "home_care"  # Fluid Heavyweight, damage risk
-    INGREDIENT = "ingredient"  # Raw material
+    INGREDIENT = "ingredient"  # Raw material (leaf node)
+    BULK_INTERMEDIATE = "bulk_intermediate"  # Semi-finished (compounded bulk)
 
 
 class ContainerType(enum.Enum):
@@ -73,8 +74,24 @@ class Product:
     recyclable: bool = False
     material: str | None = None
 
+    # BOM hierarchy level (0=finished SKU, 1=bulk intermediate, 2=raw material)
+    bom_level: int = 0
+
     # PERF: Cached volume calculation (was 6M property calls)
     _volume_m3_cached: float | None = None
+
+    @property
+    def is_finished_good(self) -> bool:
+        """True if this is a sellable SKU (has consumer demand, flows to stores)."""
+        return self.category not in (
+            ProductCategory.INGREDIENT,
+            ProductCategory.BULK_INTERMEDIATE,
+        )
+
+    @property
+    def is_manufacturable(self) -> bool:
+        """True if this product is produced at plants (SKUs and bulk intermediates)."""
+        return self.category != ProductCategory.INGREDIENT
 
     @property
     def volume_m3(self) -> float:

@@ -179,12 +179,20 @@ class MRPEngine:
         self._rdc_ids: list[str] = []
         self._plant_ids: list[str] = []
         self._finished_product_ids: list[str] = []
+        self._bulk_product_ids: list[str] = []
 
         # Map of plant_id -> list of supported category names
         self.plant_capabilities: dict[str, list[str]] = {}
         self._load_plant_capabilities(mrp_config)
 
         self._cache_node_info()
+
+        # Boolean mask for bulk intermediate product indices (for BOM explosion)
+        self._bulk_product_mask = np.zeros(self.state.n_products, dtype=bool)
+        for p_id in self._bulk_product_ids:
+            p_idx = self.state.product_id_to_idx.get(p_id)
+            if p_idx is not None:
+                self._bulk_product_mask[p_idx] = True
 
         # v0.19.8: Cache max daily plant capacity for ingredient ordering
         # Must be after _cache_node_info() to have _plant_ids populated
@@ -354,9 +362,9 @@ class MRPEngine:
             key = "DEFAULT"
             if p_id == spof_id:
                 key = "SPOF"
-            elif "ACT-CHEM" in p_id:
+            elif p_id.startswith("ACT-"):
                 key = "ACTIVE_CHEM"
-            elif "PKG" in p_id:
+            elif p_id.startswith("PKG-"):
                 key = "PACKAGING"
             elif p.category == ProductCategory.INGREDIENT:
                 key = "INGREDIENT"
@@ -402,8 +410,8 @@ class MRPEngine:
             if p_idx is None:
                 continue
 
-            # Skip ingredients - they don't have consumer demand
-            if product.category == ProductCategory.INGREDIENT:
+            # Skip non-FG products (no consumer demand)
+            if not product.is_finished_good:
                 continue
 
             # Get category profile
@@ -491,7 +499,10 @@ class MRPEngine:
         total_a, total_b, total_c = 0, 0, 0
 
         for category in categories:
-            if category == ProductCategory.INGREDIENT:
+            if category in (
+                ProductCategory.INGREDIENT,
+                ProductCategory.BULK_INTERMEDIATE,
+            ):
                 continue
 
             # Find all products in this category
@@ -640,10 +651,13 @@ class MRPEngine:
             elif node.type == NodeType.PLANT:
                 self._plant_ids.append(node_id)
 
-        # Cache finished product IDs (non-ingredients)
+        # Cache finished product IDs (sellable SKUs only)
+        # and bulk intermediate IDs (dependent demand products)
         for product_id, product in self.world.products.items():
-            if product.category != ProductCategory.INGREDIENT:
+            if product.is_finished_good:
                 self._finished_product_ids.append(product_id)
+            elif product.category == ProductCategory.BULK_INTERMEDIATE:
+                self._bulk_product_ids.append(product_id)
 
     def _calculate_inventory_position(
         self,
@@ -960,8 +974,18 @@ class MRPEngine:
             for po in production_orders:
                 po.quantity_cases = float(po.quantity_cases * scale_factor)
 
-        # Update production history
-        actual_total = sum(po.quantity_cases for po in production_orders)
+        # v0.70.0: Generate dependent demand orders for bulk intermediates
+        # Must run after SKU smoothing so bulk quantities match final SKU output
+        bulk_orders = self._generate_dependent_bulk_orders(
+            current_day, production_orders, active_production_orders
+        )
+        production_orders.extend(bulk_orders)
+
+        # Update production history (SKU orders only — bulk is derived)
+        actual_total = sum(
+            po.quantity_cases for po in production_orders
+            if po.product_id not in self._bulk_product_ids
+        )
         self.production_order_history[self._prod_hist_ptr] = actual_total
         self._prod_hist_ptr = (self._prod_hist_ptr + 1) % self._history_days
 
@@ -1360,6 +1384,103 @@ class MRPEngine:
         """Return the most recent diagnostics snapshot."""
         return self._diagnostics
 
+    def _generate_dependent_bulk_orders(
+        self,
+        current_day: int,
+        sku_production_orders: list[ProductionOrder],
+        active_production_orders: list[ProductionOrder],
+    ) -> list[ProductionOrder]:
+        """Generate production orders for bulk intermediates (dependent demand).
+
+        Bulk intermediates have no independent demand — their requirements are
+        derived from planned SKU production via the recipe matrix. This method:
+        1. Groups SKU production by plant
+        2. Explodes each plant's SKU production to get per-plant bulk needs
+        3. Checks plant-local inventory for each bulk intermediate
+        4. Creates production orders at the SAME plant that needs them
+
+        Bulk must be produced at the same plant as the SKU consuming it,
+        because TransformEngine checks material availability per-plant.
+
+        v0.70.0: 3-level BOM dependent demand explosion.
+        """
+        if not self._bulk_product_ids:
+            return []
+
+        recipe_matrix = self.state.recipe_matrix
+        bulk_id_set = set(self._bulk_product_ids)
+
+        # 1. Group SKU production by plant
+        plant_sku_vecs: dict[str, np.ndarray] = {}
+        for po in sku_production_orders:
+            p_idx = self.state.product_id_to_idx.get(po.product_id)
+            if p_idx is None:
+                continue
+            if po.plant_id not in plant_sku_vecs:
+                plant_sku_vecs[po.plant_id] = np.zeros(
+                    self.state.n_products, dtype=np.float64
+                )
+            plant_sku_vecs[po.plant_id][p_idx] += po.quantity_cases
+
+        if not plant_sku_vecs:
+            return []
+
+        # 2. Pre-compute active bulk production by (plant, product)
+        bulk_in_prod: dict[tuple[str, str], float] = {}
+        for po in active_production_orders:
+            if (
+                po.status != ProductionOrderStatus.COMPLETE
+                and po.product_id in bulk_id_set
+            ):
+                key = (po.plant_id, po.product_id)
+                remaining = po.quantity_cases - po.produced_quantity
+                bulk_in_prod[key] = bulk_in_prod.get(key, 0.0) + remaining
+
+        # 3. For each plant, compute bulk needs and create shortfall orders
+        bulk_orders: list[ProductionOrder] = []
+        for plant_id, sku_vec in plant_sku_vecs.items():
+            # Explode SKU production → direct requirements
+            direct_reqs = sku_vec @ recipe_matrix
+            # Extract only bulk intermediate needs
+            bulk_reqs = direct_reqs * self._bulk_product_mask
+
+            plant_idx = self.state.node_id_to_idx.get(plant_id)
+            if plant_idx is None:
+                continue
+
+            for bulk_id in self._bulk_product_ids:
+                p_idx = self.state.product_id_to_idx.get(bulk_id)
+                if p_idx is None:
+                    continue
+
+                needed = bulk_reqs[p_idx]
+                if needed <= 0:
+                    continue
+
+                on_hand = max(
+                    0.0,
+                    float(self.state.actual_inventory[plant_idx, p_idx]),
+                )
+                in_prod = bulk_in_prod.get((plant_id, bulk_id), 0.0)
+                shortfall = needed - on_hand - in_prod
+
+                if shortfall <= 0:
+                    continue
+
+                po = ProductionOrder(
+                    id=self._generate_po_id(current_day),
+                    plant_id=plant_id,
+                    product_id=bulk_id,
+                    quantity_cases=shortfall,
+                    creation_day=current_day,
+                    due_day=current_day + self.production_lead_time,
+                    status=ProductionOrderStatus.PLANNED,
+                    planned_start_day=current_day + 1,
+                )
+                bulk_orders.append(po)
+
+        return bulk_orders
+
     def _get_abc_class(self, product_id: str) -> int:
         """Return ABC class for a product: 0=A, 1=B, 2=C."""
         p_idx = self.state.product_id_to_idx.get(product_id)
@@ -1618,10 +1739,31 @@ class MRPEngine:
         n_plants = len(self._plant_ids)
         plant_production_share = daily_production / n_plants
 
-        # 2. Calculate Ingredient Requirements Vector
-        # Req[j] = Sum(PlantProduction[i] * R[i, j])
-        # Vector-Matrix multiplication: production @ R
-        ingredient_reqs = plant_production_share @ self.state.recipe_matrix
+        # 2. Calculate Ingredient Requirements Vector (two-step BOM explosion)
+        # With 3-level BOM: SKU → bulk + packaging, bulk → raw materials.
+        # Single multiply only captures one level; we need both.
+        recipe_matrix = self.state.recipe_matrix
+        has_bulk = np.any(self._bulk_product_mask)
+
+        if has_bulk:
+            # Step 1: SKU production → direct requirements (bulk + packaging)
+            sku_only = plant_production_share.copy()
+            sku_only[self._bulk_product_mask] = 0.0
+            sku_direct = sku_only @ recipe_matrix
+
+            # Step 2: Bulk intermediate production → raw material requirements
+            # Use the greater of derived bulk needs vs existing bulk backlog
+            derived_bulk = sku_direct * self._bulk_product_mask
+            existing_bulk = plant_production_share * self._bulk_product_mask
+            effective_bulk = np.maximum(derived_bulk, existing_bulk)
+            bulk_direct = effective_bulk @ recipe_matrix
+
+            # Combine: packaging (from SKU) + raw materials (from bulk)
+            ingredient_reqs = sku_direct + bulk_direct
+            ingredient_reqs[self._bulk_product_mask] = 0.0
+        else:
+            # Flat BOM fallback: single multiply
+            ingredient_reqs = plant_production_share @ recipe_matrix
 
         # 3. Calculate Targets & ROPs
         # Target Inventory = Daily Req * Target Days

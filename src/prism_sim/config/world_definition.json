@@ -198,35 +198,93 @@
     }
   ],
   "ingredient_profiles": {
-    "PACKAGING": {
-      "prefix": "PKG",
-      "types": ["BOTTLE", "CAP", "BOX", "LABEL", "WRAPPER"],
-      "weight_range": [0.01, 0.05],
-      "cost_range": [0.05, 0.20],
-      "sourcing": "REGIONAL"
+    "BASE_BULK": {
+      "prefix": "BLK",
+      "types": ["WATER", "OIL", "SILICATE", "WAX", "THICKENER", "SURF_BASE"],
+      "count_per_type": 3,
+      "weight_range": [100, 1000],
+      "cost_range": [50.0, 150.0],
+      "sourcing": "LOCAL",
+      "bom_level": 2
     },
     "ACTIVE_CHEM": {
       "prefix": "ACT",
+      "types": ["SURFACTANT", "FLUORIDE", "FRAGRANCE", "PRESERVATIVE", "HUMECTANT", "ABRASIVE", "COLORANT", "WHITENING", "ANTIMICROBIAL", "BINDER"],
+      "count_per_type": 2,
       "weight_range": [0.1, 0.5],
       "cost_range": [10.0, 50.0],
-      "sourcing": "GLOBAL"
+      "sourcing": "GLOBAL",
+      "bom_level": 2
     },
-    "BASE_BULK": {
-      "prefix": "BLK",
-      "weight_range": [100, 1000],
-      "cost_range": [50.0, 150.0],
-      "sourcing": "LOCAL"
+    "PKG_PRIMARY": {
+      "prefix": "PKG-PRI",
+      "types": ["TUBE", "BOTTLE", "PUMP", "CAP", "SEAL", "POUCH"],
+      "count_per_type": 3,
+      "weight_range": [0.01, 0.08],
+      "cost_range": [0.03, 0.25],
+      "sourcing": "REGIONAL",
+      "bom_level": 2
+    },
+    "PKG_SECONDARY": {
+      "prefix": "PKG-SEC",
+      "types": ["CARTON", "SLEEVE", "LABEL", "INSERT"],
+      "count_per_type": 3,
+      "weight_range": [0.005, 0.03],
+      "cost_range": [0.02, 0.15],
+      "sourcing": "REGIONAL",
+      "bom_level": 2
+    },
+    "PKG_TERTIARY": {
+      "prefix": "PKG-TER",
+      "types": ["SHIPPER", "SHRINK_WRAP", "CORNER_BOARD", "PALLET_WRAP", "DIVIDER"],
+      "count_per_type": 2,
+      "weight_range": [0.01, 0.10],
+      "cost_range": [0.05, 0.30],
+      "sourcing": "LOCAL",
+      "bom_level": 2
     }
   },
+  "bulk_intermediate_config": {
+    "grouping": "variant",
+    "prefix": "BULK",
+    "base_components_per_formula": [3, 5],
+    "active_components_per_formula": [4, 7],
+    "weight_per_unit_kg": 25.0,
+    "cost_multiplier_range": [0.4, 0.7],
+    "run_rate_multiplier": 1.0,
+    "bom_level": 1
+  },
   "recipe_logic": {
-    "ORAL_CARE": {"base_pct": 0.90, "active_pct": 0.10},
-    "PERSONAL_WASH": {"base_pct": 0.95, "active_pct": 0.05},
-    "HOME_CARE": {"base_pct": 0.85, "active_pct": 0.15},
-    "DEFAULT": {"base_pct": 0.90, "active_pct": 0.10}
+    "ORAL_CARE": {
+      "base_pct": 0.85,
+      "active_pct": 0.15,
+      "preferred_bases": ["WATER", "SILICATE", "THICKENER"],
+      "preferred_actives": ["FLUORIDE", "ABRASIVE", "HUMECTANT", "BINDER"]
+    },
+    "PERSONAL_WASH": {
+      "base_pct": 0.90,
+      "active_pct": 0.10,
+      "preferred_bases": ["WATER", "SURF_BASE", "OIL"],
+      "preferred_actives": ["SURFACTANT", "PRESERVATIVE", "HUMECTANT", "FRAGRANCE"]
+    },
+    "HOME_CARE": {
+      "base_pct": 0.80,
+      "active_pct": 0.20,
+      "preferred_bases": ["WATER", "SURF_BASE"],
+      "preferred_actives": ["SURFACTANT", "FRAGRANCE", "PRESERVATIVE", "COLORANT"]
+    },
+    "DEFAULT": {
+      "base_pct": 0.90,
+      "active_pct": 0.10,
+      "preferred_bases": ["WATER", "OIL"],
+      "preferred_actives": ["FRAGRANCE", "PRESERVATIVE"]
+    }
   },
   "bom_complexity": {
-    "ingredients_per_sku_min": 3,
-    "ingredients_per_sku_max": 8
+    "sku_packaging_components_min": 4,
+    "sku_packaging_components_max": 6,
+    "bulk_raw_materials_min": 8,
+    "bulk_raw_materials_max": 12
   },
   "generation_profiles": {
     "variant_palettes": {

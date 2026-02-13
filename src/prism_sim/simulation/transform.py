@@ -288,6 +288,17 @@ class TransformEngine:
         else:
             return 3
 
+    def _get_bom_level(self, product_id: str) -> int:
+        """Return BOM level for production ordering.
+
+        Bulk intermediates (level 1) must be produced before
+        finished SKUs (level 0) within each daily cycle.
+        """
+        product = self.world.products.get(product_id)
+        if product is None:
+            return 0
+        return product.bom_level
+
     def _select_line(self, plant_id: str, product_id: str) -> LineState | None:
         """
         Select best line for production order.
@@ -358,13 +369,15 @@ class TransformEngine:
 
         # Sort orders by:
         # 1. Plant ID -> Process each plant's orders together
-        # 2. ABC Priority (A=1 first) -> Reserve capacity for high runners
-        # 3. Product ID -> Group same products to minimize changeovers
-        # 4. Due Date (Earliest first)
+        # 2. BOM level (descending) -> Intermediates before SKUs
+        # 3. ABC Priority (A=1 first) -> Reserve capacity for runners
+        # 4. Product ID -> Group same products (minimize changeovers)
+        # 5. Due Date (Earliest first)
         sorted_orders = sorted(
             orders,
             key=lambda o: (
                 o.plant_id,
+                -self._get_bom_level(o.product_id),
                 self._get_abc_priority(o.product_id),
                 o.product_id,
                 o.due_day,
@@ -456,16 +469,23 @@ class TransformEngine:
         if plant_state is None or recipe is None:
             return None
 
-        # Select a line for this order
-        line = self._select_line(order.plant_id, order.product_id)
-        if line is None:
-            # No capacity on any line
-            return None
-
         # Calculate remaining quantity
         remaining_qty = order.quantity_cases - order.produced_quantity
         if remaining_qty <= 0:
             order.status = ProductionOrderStatus.COMPLETE
+            return None
+
+        # Bulk intermediates use separate mixing vessels — no filling line
+        # capacity consumed. Check materials and produce immediately.
+        if self._get_bom_level(order.product_id) > 0:
+            return self._process_bulk_order(order, current_day, remaining_qty)
+
+        # --- SKU production: uses filling line capacity ---
+
+        # Select a line for this order
+        line = self._select_line(order.plant_id, order.product_id)
+        if line is None:
+            # No capacity on any line
             return None
 
         # Use base run rate (rate_multiplier is now 1.0 ideally, but we keep the calc)
@@ -547,6 +567,36 @@ class TransformEngine:
         if order.produced_quantity >= order.quantity_cases:
             order.status = ProductionOrderStatus.COMPLETE
             order.actual_end_day = current_day
+
+        return batch
+
+    def _process_bulk_order(
+        self, order: ProductionOrder, current_day: int, remaining_qty: float
+    ) -> Batch | None:
+        """Process a bulk intermediate production order.
+
+        Bulk intermediates (compounding) use separate mixing vessels that
+        don't compete for filling line capacity. They complete in a single
+        day if raw materials are available — no capacity gating.
+        """
+        material_available, _ = self._check_material_availability(
+            order.plant_id, order.product_id, remaining_qty
+        )
+        if not material_available:
+            return None
+
+        if order.actual_start_day is None:
+            order.actual_start_day = current_day
+        order.status = ProductionOrderStatus.IN_PROGRESS
+
+        self._consume_materials(order.plant_id, order.product_id, remaining_qty)
+        order.produced_quantity += remaining_qty
+
+        batch = self._create_batch(order, current_day, remaining_qty)
+        self._add_to_inventory(order.plant_id, order.product_id, remaining_qty)
+
+        order.status = ProductionOrderStatus.COMPLETE
+        order.actual_end_day = current_day
 
         return batch
 

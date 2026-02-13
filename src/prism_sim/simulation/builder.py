@@ -69,6 +69,7 @@ class WorldBuilder:
                         cases_per_pallet=int(row["cases_per_pallet"]),
                         cost_per_case=float(row["cost_per_case"]),
                         price_per_case=float(row["price_per_case"]),
+                        bom_level=int(row.get("bom_level", 0)),
                     )
                 )
 

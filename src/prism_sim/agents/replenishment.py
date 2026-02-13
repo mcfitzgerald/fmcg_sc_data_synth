@@ -11,7 +11,6 @@ from prism_sim.network.core import (
     OrderType,
     StoreFormat,
 )
-from prism_sim.product.core import ProductCategory
 from prism_sim.simulation.state import StateManager
 from prism_sim.simulation.world import World
 
@@ -247,10 +246,11 @@ class MinMaxReplenisher:
 
         self.z_scores_vec = np.full(self.state.n_products, self.z_score_B)
 
-        # Vectorized Ingredient Mask (True = Ingredient, skip in Replenishment)
+        # Non-FG mask (True = skip in Replenishment)
+        # Includes raw materials AND bulk intermediates
         self.ingredient_mask = np.zeros(self.state.n_products, dtype=bool)
         for p_id, product in self.world.products.items():
-            if product.category == ProductCategory.INGREDIENT:
+            if not product.is_finished_good:
                 p_idx = self.state.product_id_to_idx.get(p_id)
                 if p_idx is not None:
                     self.ingredient_mask[p_idx] = True

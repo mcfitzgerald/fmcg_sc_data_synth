@@ -50,11 +50,11 @@ The simulation enforces these constraints - violations indicate bugs:
 ### Manufacturing & Procurement
 | Concept | File | Key Classes/Functions |
 |---------|------|----------------------|
-| **Production planning** | `simulation/mrp.py` | `MRPEngine.generate_production_orders()` |
+| **Production planning** | `simulation/mrp.py` | `MRPEngine.generate_production_orders()` — SKU + dependent bulk intermediate orders |
 | **DRP-Lite (B/C production)** | `simulation/drp.py` | `DRPPlanner.plan_requirements()` — forward-netting daily targets for B/C items |
-| **Ingredient procurement** | `simulation/mrp.py` | `MRPEngine.generate_purchase_orders()` |
-| **Recipe matrix (BOM)** | `network/recipe_matrix.py` | `RecipeMatrixBuilder` |
-| **Production execution** | `simulation/transform.py` | `TransformEngine.execute_production()` |
+| **Ingredient procurement** | `simulation/mrp.py` | `MRPEngine.generate_purchase_orders()` — two-step BOM explosion for 3-level BOM |
+| **Recipe matrix (BOM)** | `network/recipe_matrix.py` | `RecipeMatrixBuilder` — dense [n_products, n_products] matrix |
+| **Production execution** | `simulation/transform.py` | `TransformEngine` — two-pass: bulk intermediates first, then SKUs |
 
 ### Logistics, Validation & Export
 | Concept | File | Key Classes/Functions |
@@ -75,7 +75,7 @@ The simulation enforces these constraints - violations indicate bugs:
 | **Work Orders** | `network/core.py` | `ProductionOrder` (Status: Planned/Released/Complete) |
 | **Returns** | `network/core.py` | `Return`, `ReturnLine` (Status: Requested/Processed) |
 | **Channel enums** | `network/core.py` | `CustomerChannel`, `StoreFormat`, `OrderType` |
-| **Product definitions** | `product/core.py` | `Product`, `Recipe`, `ProductCategory` |
+| **Product definitions** | `product/core.py` | `Product` (bom_level: 0=SKU,1=bulk,2=RM), `Recipe`, `ProductCategory` |
 | **Packaging enums** | `product/core.py` | `PackagingType`, `ContainerType`, `ValueSegment` |
 | **Promo calendar** | `simulation/demand.py` | `PromoCalendar`, `PromoEffect` |
 
@@ -407,18 +407,31 @@ Production backpressure is handled entirely by MRP DOS caps + plant FG in IP —
 
 ---
 
-## 9. Recipe Matrix: Vectorized BOM
+## 9. Recipe Matrix: 3-Level BOM
 
-The `RecipeMatrixBuilder` creates a dense matrix for instant ingredient calculations:
+The `RecipeMatrixBuilder` creates a dense matrix for BOM calculations:
 
 ```
-Shape: [n_finished_goods, n_ingredients]
-Value R[i,j] = quantity of ingredient j needed to make 1 unit of product i
+Shape: [n_products, n_products]   (products = RM + bulk intermediates + SKUs)
+Value R[i,j] = quantity of product j needed to make 1 unit of product i
 
-Usage: ingredient_requirements = demand_vector @ recipe_matrix
+3-Level BOM Structure:
+  Level 2 (Raw Materials): BLK-*, ACT-*, PKG-*  — purchased leaf nodes
+  Level 1 (Bulk Intermediates): BULK-*  — compounded in-house
+  Level 0 (Finished SKUs): SKU-*  — packed shippable cases
+
+Matrix entries:
+  R[SKU-X, BULK-Y]     = 1.0    (SKU needs 1 bulk intermediate)
+  R[SKU-X, PKG-TUBE-1] = 1.0    (SKU needs packaging)
+  R[BULK-Y, BLK-WATER] = 0.005  (bulk needs raw material)
+  R[BULK-Y, ACT-SLS]   = 3.57   (bulk needs active chemical)
+
+MRP uses two-step explosion:
+  Step 1: sku_production @ R → bulk + packaging needs
+  Step 2: bulk_needs @ R → raw material needs
 ```
 
-This enables O(1) MRP calculations for thousands of SKUs.
+This enables O(1) MRP calculations with dependent demand explosion.
 
 ---
 

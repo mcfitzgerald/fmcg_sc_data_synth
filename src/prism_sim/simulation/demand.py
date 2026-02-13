@@ -348,10 +348,10 @@ class POSEngine:
         )
         alpha = demand_config.get("sku_popularity_alpha", 1.05)
 
-        # Get finished goods only (SKU-* products, not ingredients)
+        # Get finished goods only (SKU-* products, not ingredients or intermediates)
         finished_goods = [
             p for p in self.world.products.values()
-            if p.category.name != "INGREDIENT"
+            if p.is_finished_good
         ]
         n_skus = len(finished_goods)
 

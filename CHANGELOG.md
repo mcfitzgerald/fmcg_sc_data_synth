@@ -5,6 +5,45 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.70.0] - 2026-02-12
+
+### Feature: 3-Level BOM (Bill of Materials) Enrichment
+
+Replaces flat single-level BOM with a realistic 3-level manufacturing structure:
+- **Level 2 (Raw Materials)**: 78 items across 5 tiers — base/bulk (BLK-), active chemicals (ACT-), primary/secondary/tertiary packaging (PKG-PRI/SEC/TER-)
+- **Level 1 (Bulk Intermediates)**: 45 BULK-* products — compounded semi-finished goods grouped by category + variant family
+- **Level 0 (Finished SKUs)**: 500 SKU-* products — packed shippable cases referencing 1 bulk + packaging
+
+#### Product Model (`product/core.py`)
+- New `ProductCategory.BULK_INTERMEDIATE` enum value
+- New `bom_level: int` field (0=SKU, 1=bulk, 2=raw material)
+- New `is_finished_good` and `is_manufacturable` properties
+- Updated all `== INGREDIENT` checks across 7 files to use properties
+
+#### World Generator (`generators/hierarchy.py`)
+- `generate_ingredients()` reads expanded 5-tier taxonomy from config
+- New `generate_bulk_intermediates()` groups SKUs by (category, variant) into formula families
+- New `generate_recipes()` creates two-level recipes (bulk→RM, SKU→bulk+pkg)
+- SPOF fluoride ingredient preserved across oral care bulk intermediates
+
+#### Manufacturing (`transform.py`, `mrp.py`)
+- **Two-pass production**: TransformEngine sorts orders by bom_level — bulk intermediates produced before SKUs within each daily cycle
+- **Dependent demand explosion**: MRP generates bulk intermediate production orders from planned SKU production, per-plant
+- **Two-step PO explosion**: Purchase orders use `sku_prod @ R` then `bulk_needs @ R` to reach leaf materials
+- **Priming fix**: Ingredient priming now uses two-step BOM explosion so raw materials are correctly primed at plants
+
+#### Config (`world_definition.json`, `simulation_config.json`)
+- Expanded `ingredient_profiles` with 5 categories and sub-types
+- New `bulk_intermediate_config` section (grouping, component ranges, cost multiplier)
+- Updated SPOF ingredient ID: `ACT-CHEM-001` → `ACT-FLUORIDE-001`
+- Added `recipe_logic.preferred_bases` and `preferred_actives` per product category
+
+#### What Does NOT Change
+- Inventory tensors `[n_nodes, n_products]` — auto-adapt to more products
+- Deployment logic — only deploys finished SKUs
+- Demand/POS engine — only generates demand for SKUs
+- DRP, allocation, replenishment — only operate on SKUs
+
 ## [0.69.4] - 2026-02-12
 
 ### Fix: Diagnostic False Alarms (diagnostic-only, no simulation changes)
