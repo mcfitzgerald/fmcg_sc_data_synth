@@ -5,6 +5,37 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.72.0] - 2026-02-13
+
+### Feature: Unified Supply Chain Diagnostic
+
+Replaces the 3 Tier-1 diagnostic scripts (`diagnose_365day.py`, `diagnose_flow_deep.py`, `diagnose_cost.py`) with a single comprehensive diagnostic organized around a consultant's mental model: "Can we serve the customer? At what cost? With what risk? Is it getting better or worse?"
+
+#### `diagnose_supply_chain.py` — 35 Questions, 8 Sections
+- **Section 1**: Physics Validation (mass balance, flow conservation, Little's Law) — reuses `first_principles.py`
+- **Section 2**: Executive Scorecard (8 KPIs with traffic-light rendering) — reuses `operational.py`
+- **Section 3**: Service Performance (fill rate by ABC×Channel, stockout waterfall, OTIF, forecast MAPE, lead times)
+- **Section 4**: Inventory Health (DOS matrix, age profile, forward cover, concentration risk, tail SKU drag)
+- **Section 5**: Flow Efficiency (throughput map, deployment effectiveness, push/pull, bullwhip, DC accumulation, E2E cycle time)
+- **Section 6**: Manufacturing Performance (production alignment, MRP backpressure, changeover analysis, BOM cost rollup, upstream availability)
+- **Section 7**: Financial Performance (channel P&L, cost-to-serve, logistics by route, cash-to-cash, margin by ABC)
+- **Section 8**: Inventory Deep-Dive (`--full` only, streams inventory.parquet for carrying cost, convergence, investment profile)
+
+#### New Diagnostic Modules
+- `diagnostics/cost_analysis.py` — COGS, logistics, carrying cost, C2C, OTIF (extracted from `diagnose_cost.py`)
+- `diagnostics/commercial.py` — Channel P&L, cost-to-serve, margins, fill rate cross-tab, concentration risk, tail SKU drag
+- `diagnostics/manufacturing.py` — BOM cost rollup, changeover analysis, upstream availability, stockout waterfall, forward cover
+
+#### Enhanced `diagnostics/loader.py` DataBundle
+- Loads `batch_ingredients.parquet`, `cost_master.json`, channel economics from `world_definition.json`
+- Builds per-SKU cost/price maps, ingredient cost map, channel map, distance map
+- All new data available to downstream modules without additional file I/O
+
+#### Deprecated
+- `diagnose_365day.py` — superseded by Sections 1-2
+- `diagnose_flow_deep.py` — superseded by Sections 3-6
+- `diagnose_cost.py` — superseded by Section 7
+
 ## [0.71.0] - 2026-02-13
 
 ### Feature: Cost Model Enrichment (Phase 2)

@@ -114,32 +114,36 @@ Sentinel `-1` means "not populated" — all consumer sites use `x.product_idx if
 
 ### Diagnostic Suite (`scripts/analysis/diagnostics/`)
 
-Shared modular backend used by Tier 1 diagnostics:
+Shared modular backend used by diagnostics:
 
 | Module | Key Functions | Layer |
 |--------|---------------|-------|
-| `diagnostics/loader.py` | `load_all_data()`, `classify_node()`, `is_demand_endpoint()`, `DOSTargets`, `load_dos_targets()`, `SeasonalityConfig`, `load_seasonality_config()` | Data loading, enrichment, config-derived targets + seasonality |
+| `diagnostics/loader.py` | `load_all_data()`, `classify_node()`, `is_demand_endpoint()`, `DOSTargets`, `load_dos_targets()`, `SeasonalityConfig`, `load_seasonality_config()` | Data loading, enrichment, config-derived targets + seasonality. Also loads cost/price maps, channel map, batch_ingredients, cost_master.json, channel economics. |
 | `diagnostics/first_principles.py` | `analyze_mass_balance()`, `analyze_flow_conservation()`, `analyze_littles_law()` | Layer 1: Physics validation |
 | `diagnostics/operational.py` | `analyze_inventory_positioning()`, `analyze_service_levels()`, `analyze_production_alignment()`, `analyze_slob()` | Layer 2: Operational health |
 | `diagnostics/flow_analysis.py` | `analyze_throughput_map()`, `analyze_deployment_effectiveness()`, `analyze_lead_times()`, `analyze_bullwhip()`, `analyze_control_stability()` | Layer 3: Flow & stability |
+| `diagnostics/cost_analysis.py` | `compute_per_sku_cogs()`, `compute_logistics_by_route()`, `stream_carrying_cost()`, `compute_cash_to_cash()`, `compute_otif()` | Cost & working capital |
+| `diagnostics/commercial.py` | `compute_channel_pnl()`, `compute_cost_to_serve()`, `compute_margin_by_abc()`, `compute_fill_by_abc_channel()`, `compute_concentration_risk()`, `compute_tail_sku_drag()` | Commercial & channel analysis |
+| `diagnostics/manufacturing.py` | `compute_bom_cost_rollup()`, `compute_changeover_analysis()`, `compute_upstream_availability()`, `compute_stockout_waterfall()`, `compute_forward_cover()` | Manufacturing, BOM, upstream |
 
 **DEMAND_PREFIXES** = `("STORE-", "ECOM-FC-", "DTC-FC-")` — NOT `"CLUB-"` (CLUB-DC nodes are intermediate warehouses, not demand endpoints).
 
 ### Diagnostic Playbook (Tiered)
 
 **Standard workflow after a 365d streaming sim:**
-1. Run `diagnose_365day.py` → check all KPIs are GREEN/YELLOW
-2. If any RED items → run `diagnose_flow_deep.py` for root cause
-3. If fill rate issue → run `diagnose_a_item_fill.py`
-4. If cost/OTIF analysis needed → run `diagnose_cost.py`
-5. For specialized investigation → use Tier 2 scripts as needed
+1. Run `diagnose_supply_chain.py` → unified 35-question diagnostic (Sections 1-7, ~60s)
+2. For inventory deep-dive → run with `--full` flag (adds Section 8, streams inventory.parquet, ~8min)
+3. For specialized investigation → use Tier 2 scripts as needed
 
-#### Tier 1: Primary Diagnostics (run after every 365d sim)
+#### Tier 1: Unified Diagnostic (run after every 365d sim)
 | Script | When | What |
 |--------|------|------|
-| `diagnose_365day.py` | **Always first** — executive scorecard | Traffic-light KPIs, 3-layer pyramid (physics → ops → flow), issue detection |
-| `diagnose_flow_deep.py` | **When issues found** — root-cause investigation | 20 structural questions across 7 themes, deep forensic analysis |
-| `diagnose_cost.py` | **For cost analysis** — post-sim enrichment | Per-SKU COGS, per-echelon logistics (FTL/LTL), echelon-specific carrying cost, OTIF, bottom-up mfg COGS (batch_ingredients), revenue & margin by channel, cost-to-serve, channel-weighted C2C |
+| `diagnose_supply_chain.py` | **Always** — comprehensive consultant's checklist | 35 questions across 8 sections: physics, scorecard, service, inventory, flow, manufacturing, financial, inventory deep-dive (--full) |
+
+**Deprecated Tier 1 scripts** (superseded by `diagnose_supply_chain.py` in v0.72.0):
+- `diagnose_365day.py` — executive scorecard (now Sections 1-2)
+- `diagnose_flow_deep.py` — 20-question forensic deep-dive (now Sections 3-6)
+- `diagnose_cost.py` — cost analytics (now Section 7)
 
 #### Tier 2: Specialized Diagnostics (run when investigating specific issues)
 | Script | When | What |
@@ -155,7 +159,7 @@ Shared modular backend used by Tier 1 diagnostics:
 |--------|---------|
 | `slice_data.py` | Create small data subset (first N days) for fast diagnostic iteration |
 
-**Shared infrastructure:** `diagnostics/loader.py` is the canonical source for `classify_node()`, `classify_abc()`, `DataBundle`, `load_all_data()`, `SeasonalityConfig`. Used by Tier 1 scripts. Standalone scripts (Tier 2) have local copies of classification functions — acceptable for isolation, but `loader.py` is the source of truth. `SeasonalityConfig.factor(day)` is used by stability and backpressure analyses for seasonal detrending.
+**Shared infrastructure:** `diagnostics/loader.py` is the canonical source for `classify_node()`, `classify_abc()`, `DataBundle`, `load_all_data()`, `SeasonalityConfig`. Used by all diagnostic scripts. Standalone scripts (Tier 2) have local copies of classification functions — acceptable for isolation, but `loader.py` is the source of truth. `SeasonalityConfig.factor(day)` is used by stability and backpressure analyses for seasonal detrending.
 
 **Archived scripts:** `scripts/analysis/archive/` contains 9 legacy scripts (CSV-based, shell subprocess, or version-specific) superseded by the diagnostic suite above.
 
@@ -671,14 +675,14 @@ poetry run python run_simulation.py --days 50 --no-logging
 
 ### Post-Run Diagnostics
 ```bash
-# Tier 1: Always run first — executive scorecard
-poetry run python scripts/analysis/diagnose_365day.py --data-dir data/output --window 30
+# Tier 1: Unified diagnostic — 35 questions, 8 sections (~60s)
+poetry run python scripts/analysis/diagnose_supply_chain.py --data-dir data/output
 
-# Tier 1: Root cause investigation (when issues found)
-poetry run python scripts/analysis/diagnose_flow_deep.py --data-dir data/output
+# Tier 1: With inventory deep-dive (streams inventory.parquet, ~8min)
+poetry run python scripts/analysis/diagnose_supply_chain.py --data-dir data/output --full
 
-# Tier 1: Cost analytics — per-SKU COGS, FTL/LTL logistics, bottom-up mfg, revenue/margin, C2C
-poetry run python scripts/analysis/diagnose_cost.py --data-dir data/output
+# Tier 1: Single section for dev/debug
+poetry run python scripts/analysis/diagnose_supply_chain.py --section 6
 
 # Tier 2: Specialized diagnostics (as needed)
 poetry run python scripts/analysis/diagnose_a_item_fill.py

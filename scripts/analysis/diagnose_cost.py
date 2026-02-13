@@ -1,5 +1,13 @@
 #!/usr/bin/env python3
 """
+DEPRECATED: Use diagnose_supply_chain.py instead (v0.72.0).
+
+This script is superseded by the unified diagnostic which covers all 35
+questions from a consultant's checklist. Run:
+    poetry run python scripts/analysis/diagnose_supply_chain.py
+
+---
+
 COST ANALYTICS — Post-Simulation Enrichment Diagnostic.
 
 Computes SKU profitability, OTIF, working capital, and cost-to-serve

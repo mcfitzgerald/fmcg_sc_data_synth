@@ -43,7 +43,12 @@ These are observations — not pass/fail grades against fixed targets.
 **v0.69.0: Cost Analytics Layer (post-sim enrichment, no physics changes):**
 - `Order.requested_date` populated from link lead times — enables OTIF measurement
 - `cost_master.json` config for logistics, penalty, working capital, product costs
-- `diagnose_cost.py` — COGS, logistics cost, carrying cost, OTIF, cost-to-serve, C2C
+- `diagnose_cost.py` — COGS, logistics cost, carrying cost, OTIF, cost-to-serve, C2C (now in `diagnostics/cost_analysis.py`)
+
+**v0.72.0: Unified Supply Chain Diagnostic:**
+- `diagnose_supply_chain.py` — 35 questions, 8 sections, replaces 3 Tier-1 scripts
+- New modules: `cost_analysis.py`, `commercial.py`, `manufacturing.py`
+- Enhanced `loader.py` DataBundle with cost/price maps, batch_ingredients, channel map
 
 **Remaining observations** (converged baseline):
 - All echelons draining: P/D=0.993, -65K/day total drain (warm-start Q1 + seasonal lag)
@@ -66,7 +71,7 @@ The simulation is in an iterative shake-out phase. The core engine is complete; 
 
 **Key diagnostic tools:**
 - Triangle Report (end-of-run summary)
-- `scripts/analysis/diagnose_365day.py` (3-layer pyramid: physics → operational → flow)
+- `scripts/analysis/diagnose_supply_chain.py` (unified 35-question diagnostic, 8 sections)
 - Standalone analyzers: `diagnose_slob.py`, `diagnose_a_item_fill.py`, `analyze_bullwhip.py`
 
 **Known observations** (v0.67.0, converged 365-day warm-start):

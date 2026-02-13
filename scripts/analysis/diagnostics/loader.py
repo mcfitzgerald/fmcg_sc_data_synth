@@ -1,3 +1,4 @@
+# ruff: noqa: E501
 """
 Shared data loading, ABC classification, and node helpers.
 
@@ -296,7 +297,7 @@ def _load_fg_parquet(
         vol_agg = vol_tbl.group_by("product_id").aggregate([("quantity", "sum")])
         pid_arr = _decode_dict_column(vol_agg.column("product_id")).to_pylist()
         qty_arr = vol_agg.column("quantity_sum").to_pylist()
-        product_volumes = dict(zip(pid_arr, qty_arr))
+        product_volumes = dict(zip(pid_arr, qty_arr, strict=False))
 
     # Dictionary-encode string columns → pandas Categorical (no 12GB intermediate)
     for col_name in columns:
@@ -486,6 +487,9 @@ def stream_inventory_by_echelon(
 class DataBundle:
     """All data needed by diagnostic modules.
 
+    v0.72.0: Extended with cost/price maps, batch ingredients, channel map,
+    distance map, cost master, and channel economics for unified diagnostics.
+
     v0.66.0: Shipments and orders have precomputed echelon/ABC/demand columns
     (source_echelon, target_echelon, is_demand_endpoint, abc_class).
     fg_batches pre-filtered for finished goods. DOS targets config-derived.
@@ -509,9 +513,47 @@ class DataBundle:
     sim_days: int = 0
     data_dir: Path = field(default_factory=lambda: Path("data/output"))
 
+    # v0.72.0: Cost/commercial enrichment
+    batch_ingredients: pd.DataFrame = field(default_factory=pd.DataFrame)
+    sku_cost_map: dict[str, float] = field(default_factory=dict)
+    sku_price_map: dict[str, float] = field(default_factory=dict)
+    ing_cost_map: dict[str, float] = field(default_factory=dict)
+    sku_cat_map: dict[str, str] = field(default_factory=dict)
+    channel_map: dict[str, str] = field(default_factory=dict)
+    dist_map: dict[tuple[str, str], float] = field(default_factory=dict)
+    cost_master: dict = field(default_factory=dict)
+    channel_econ: dict = field(default_factory=dict)
+
+
+def _load_cost_master() -> dict:
+    """Load cost_master.json from config directory."""
+    path = (
+        Path(__file__).parents[3]
+        / "src" / "prism_sim" / "config" / "cost_master.json"
+    )
+    if path.exists():
+        with open(path) as f:
+            return json.load(f)
+    return {}
+
+
+def _load_world_definition() -> dict:
+    """Load world_definition.json for channel economics."""
+    path = (
+        Path(__file__).parents[3]
+        / "src" / "prism_sim" / "config" / "world_definition.json"
+    )
+    if path.exists():
+        with open(path) as f:
+            return json.load(f)
+    return {}
+
 
 def load_all_data(data_dir: Path) -> DataBundle:
     """Load all parquet + static files into a DataBundle.
+
+    v0.72.0: Extended with cost/price maps, batch ingredients, channel map,
+    distance map, cost master, and channel economics for unified diagnostics.
 
     v0.66.0: Precomputes echelon/ABC/demand columns on shipments and orders
     during load (built ONCE). DOS targets derived from simulation_config.json.
@@ -521,7 +563,8 @@ def load_all_data(data_dir: Path) -> DataBundle:
 
     products = pd.read_csv(
         data_dir / "static_world" / "products.csv",
-        usecols=["id", "name", "category"],
+        usecols=["id", "name", "category", "cost_per_case", "price_per_case",
+                 "weight_kg"],
     )
     products["category"] = products["category"].str.replace(
         "ProductCategory.", "", regex=False
@@ -571,8 +614,60 @@ def load_all_data(data_dir: Path) -> DataBundle:
     returns = pd.read_parquet(data_dir / "returns.parquet")
     print(f"    {len(returns):,} rows")
 
+    # v0.72.0: Batch ingredients (1.1M rows — small enough to load fully)
+    bi_path = data_dir / "batch_ingredients.parquet"
+    if bi_path.exists():
+        print("  Loading batch_ingredients.parquet...")
+        batch_ingredients = pd.read_parquet(bi_path)
+        print(f"    {len(batch_ingredients):,} rows")
+    else:
+        batch_ingredients = pd.DataFrame()
+
     with open(data_dir / "metrics.json") as f:
         metrics = json.load(f)
+
+    # v0.72.0: Build cost/price/ingredient maps from products.csv
+    cost_master = _load_cost_master()
+    product_costs_cfg = cost_master.get("product_costs", {})
+    default_cost = product_costs_cfg.get("default", 9.0)
+
+    sku_cost_map: dict[str, float] = {}
+    sku_price_map: dict[str, float] = {}
+    ing_cost_map: dict[str, float] = {}
+    sku_cat_map: dict[str, str] = {}
+
+    for _, row in products.iterrows():
+        pid = row["id"]
+        cat = row["category"]
+        cost = row.get("cost_per_case", 0)
+        price = row.get("price_per_case", 0)
+        if pid.startswith("SKU-"):
+            sku_cost_map[pid] = (
+                float(cost) if pd.notna(cost) and cost > 0
+                else product_costs_cfg.get(cat, default_cost)
+            )
+            sku_price_map[pid] = float(price) if pd.notna(price) and price > 0 else 0.0
+            sku_cat_map[pid] = cat
+        elif pd.notna(cost) and cost > 0:
+            ing_cost_map[pid] = float(cost)
+
+    # v0.72.0: Channel map from locations.csv
+    channel_map: dict[str, str] = {}
+    if "channel" in locations.columns:
+        for _, row in locations.iterrows():
+            ch = str(row.get("channel", ""))
+            if ch and ch != "nan":
+                channel_map[row["id"]] = ch.replace("CustomerChannel.", "")
+
+    # v0.72.0: Distance map from links.csv
+    dist_map: dict[tuple[str, str], float] = {}
+    if "distance_km" in links.columns:
+        for _, row in links.iterrows():
+            dist_map[(row["source_id"], row["target_id"])] = row["distance_km"]
+
+    # v0.72.0: Channel economics from world_definition.json
+    world_def = _load_world_definition()
+    channel_econ = world_def.get("channel_economics", {})
 
     # ABC classification from product volumes accumulated during streaming
     print("\nClassifying ABC...")
@@ -619,4 +714,13 @@ def load_all_data(data_dir: Path) -> DataBundle:
         seasonality=seasonality,
         sim_days=sim_days,
         data_dir=data_dir,
+        batch_ingredients=batch_ingredients,
+        sku_cost_map=sku_cost_map,
+        sku_price_map=sku_price_map,
+        ing_cost_map=ing_cost_map,
+        sku_cat_map=sku_cat_map,
+        channel_map=channel_map,
+        dist_map=dist_map,
+        cost_master=cost_master,
+        channel_econ=channel_econ,
     )

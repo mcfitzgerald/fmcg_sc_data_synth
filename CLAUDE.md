@@ -140,12 +140,11 @@ The simulation enforces these constraints - violations indicate bugs:
 
 ## Diagnostics & Validation
 
-Post-simulation validation uses a three-layer diagnostic pyramid in `scripts/analysis/`:
+Post-simulation validation uses `scripts/analysis/diagnose_supply_chain.py` — a unified 35-question diagnostic organized as a consultant's checklist (8 sections: physics, scorecard, service, inventory, flow, manufacturing, financial, deep-dive).
 
-- **Entry point:** `diagnose_365day.py` — First Principles → Operational Health → Flow & Stability
-- **Deep analysis:** `diagnose_flow_deep.py` — 14-question flow/MRP/deployment deep-dive
-- **Cost analytics:** `diagnose_cost.py` — COGS, holding costs, transport costs
-- **Shared infra:** `scripts/analysis/diagnostics/` — `loader.py` (DataBundle, PyArrow streaming), `first_principles.py`, `operational.py`, `flow_analysis.py`
+- **Entry point:** `diagnose_supply_chain.py` — 35 questions, Sections 1-7 (~60s), `--full` adds Section 8 (streaming, ~8min)
+- **Shared infra:** `scripts/analysis/diagnostics/` — `loader.py` (DataBundle, PyArrow streaming), `first_principles.py`, `operational.py`, `flow_analysis.py`, `cost_analysis.py`, `commercial.py`, `manufacturing.py`
+- **Deprecated:** `diagnose_365day.py`, `diagnose_flow_deep.py`, `diagnose_cost.py` (superseded by unified script in v0.72.0)
 
 New diagnostic scripts must use `DataBundle` from `loader.py` for column selection, FG filtering, and echelon enrichment. Never use naive `pd.read_parquet()` on large files — the loader's PyArrow row-group streaming prevents memory blowup on 60M+ row datasets.
 
