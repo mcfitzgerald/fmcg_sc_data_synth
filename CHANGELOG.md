@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.71.0] - 2026-02-13
+
+### Feature: Cost Model Enrichment (Phase 2)
+
+Enriches the post-sim cost analytics to use per-SKU data the simulation already produces, replacing flat category-level approximations.
+
+#### `cost_master.json` — Expanded Config
+- **Per-route logistics**: FTL rates (cost_per_km) for plant→RDC/DC, rdc→DC, supplier→plant; LTL flat rate for DC→store
+- **Echelon-specific warehouse costs**: Plant $0.01, RDC $0.015, DC $0.02, Store $0.03 per case/day
+- **Manufacturing cost structure**: category-specific labor/overhead % of material (replaces hardcoded 60/20/20)
+- **Channel DSO**: MASS_RETAIL 45d, ECOMMERCE 15d, DTC 0d (replaces uniform 30d)
+- `product_costs` section deprecated (per-SKU from products.csv preferred)
+
+#### `diagnose_cost.py` — 8-Section Report (was 6)
+- **Section 1**: Per-SKU COGS from products.csv cost_per_case ($10-40/case vs old $6.50-12.50 flat)
+- **Section 2**: Per-echelon FTL/LTL logistics with distance from links.csv, 5-route breakdown with transport/handling split
+- **Section 3**: Echelon-specific warehouse rates (was single $0.02/case/day)
+- **Section 4**: OTIF (unchanged)
+- **Section 5** (NEW): Bottom-up manufacturing COGS — joins batch_ingredients (1.1M rows) → ingredient costs → material + labor + overhead per category
+- **Section 6** (NEW): Revenue & margin by channel with target margin comparison from world_definition.json
+- **Section 7**: Cost-to-serve by channel (was section 5)
+- **Section 8**: Cash-to-cash with channel-weighted DSO (was section 6, used uniform 30d)
+
+#### `export_erp_format.py` — Config-Driven Cost Splits
+- Replaced hardcoded `0.6/0.2/0.2` material/labor/overhead with config-driven ratios from `cost_master.json`
+- Category-specific splits: ORAL_CARE 64.5/19.4/16.1%, PERSONAL_WASH 69.0/17.2/13.8%, HOME_CARE 71.4/14.3/14.3%
+
 ## [0.70.0] - 2026-02-12
 
 ### Feature: 3-Level BOM (Bill of Materials) Enrichment

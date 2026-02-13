@@ -139,7 +139,7 @@ Shared modular backend used by Tier 1 diagnostics:
 |--------|------|------|
 | `diagnose_365day.py` | **Always first** — executive scorecard | Traffic-light KPIs, 3-layer pyramid (physics → ops → flow), issue detection |
 | `diagnose_flow_deep.py` | **When issues found** — root-cause investigation | 20 structural questions across 7 themes, deep forensic analysis |
-| `diagnose_cost.py` | **For cost analysis** — post-sim enrichment | COGS, logistics, carrying cost, OTIF, cost-to-serve, C2C |
+| `diagnose_cost.py` | **For cost analysis** — post-sim enrichment | Per-SKU COGS, per-echelon logistics (FTL/LTL), echelon-specific carrying cost, OTIF, bottom-up mfg COGS (batch_ingredients), revenue & margin by channel, cost-to-serve, channel-weighted C2C |
 
 #### Tier 2: Specialized Diagnostics (run when investigating specific issues)
 | Script | When | What |
@@ -642,7 +642,7 @@ Every decision impacts the balance between:
 | `config/simulation_config.json` | Runtime parameters (MRP, logistics, quirks, initialization) |
 | `config/world_definition.json` | Static world (products, network topology, recipe logic) |
 | `config/benchmark_manifest.json` | Risk scenarios, validation targets |
-| `config/cost_master.json` | Post-sim cost parameters (logistics, penalties, working capital, product costs). Not used by simulation engine. |
+| `config/cost_master.json` | Post-sim cost parameters: per-route logistics (FTL/LTL), echelon warehouse rates, manufacturing cost structure (labor/overhead % of material by category), channel DSO, penalty costs, product_costs (deprecated fallback). Not used by simulation engine. |
 
 ---
 
@@ -677,7 +677,7 @@ poetry run python scripts/analysis/diagnose_365day.py --data-dir data/output --w
 # Tier 1: Root cause investigation (when issues found)
 poetry run python scripts/analysis/diagnose_flow_deep.py --data-dir data/output
 
-# Tier 1: Cost analytics — COGS, OTIF, cost-to-serve, C2C
+# Tier 1: Cost analytics — per-SKU COGS, FTL/LTL logistics, bottom-up mfg, revenue/margin, C2C
 poetry run python scripts/analysis/diagnose_cost.py --data-dir data/output
 
 # Tier 2: Specialized diagnostics (as needed)

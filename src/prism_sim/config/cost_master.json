@@ -1,22 +1,38 @@
 {
-  "_comment": "v0.69.0: Cost parameters for post-sim enrichment (diagnose_cost.py). Not used by simulation engine.",
+  "_comment": "v0.71.0: Cost parameters for post-sim enrichment (diagnose_cost.py, export_erp_format.py). Not used by simulation engine.",
   "logistics_costs": {
-    "ftl_cost_per_km": 1.50,
-    "ltl_cost_per_case": 0.75,
-    "handling_cost_per_case": 0.25,
-    "warehouse_cost_per_case_per_day": 0.02
+    "routes": {
+      "plant_to_rdc":      { "mode": "FTL", "cost_per_km": 1.85, "handling_cost_per_case": 0.15 },
+      "plant_to_dc":       { "mode": "FTL", "cost_per_km": 1.85, "handling_cost_per_case": 0.15 },
+      "rdc_to_dc":         { "mode": "FTL", "cost_per_km": 1.65, "handling_cost_per_case": 0.20 },
+      "dc_to_store":       { "mode": "LTL", "cost_per_case": 0.75, "handling_cost_per_case": 0.30 },
+      "supplier_to_plant": { "mode": "FTL", "cost_per_km": 2.00, "handling_cost_per_case": 0.10 }
+    },
+    "warehouse_cost_per_case_per_day": {
+      "Plant": 0.01,
+      "RDC": 0.015,
+      "Customer DC": 0.02,
+      "Store": 0.03
+    }
+  },
+  "manufacturing_costs": {
+    "labor_pct_of_material": { "ORAL_CARE": 0.30, "PERSONAL_WASH": 0.25, "HOME_CARE": 0.20, "default": 0.25 },
+    "overhead_pct_of_material": { "ORAL_CARE": 0.25, "PERSONAL_WASH": 0.20, "HOME_CARE": 0.20, "default": 0.22 }
   },
   "penalty_costs": {
     "stockout_cost_multiplier": 3.0,
     "late_delivery_penalty_per_case": 0.10
   },
   "working_capital": {
-    "dso_days": 30.0,
+    "dso_days_by_channel": {
+      "MASS_RETAIL": 45, "GROCERY": 30, "CLUB": 30, "PHARMACY": 30,
+      "DISTRIBUTOR": 30, "ECOMMERCE": 15, "DTC": 0
+    },
     "dpo_days": 45.0,
     "annual_carrying_cost_pct": 0.25
   },
   "product_costs": {
-    "_comment": "Cost per case by category. Used for COGS and carrying cost calculations.",
+    "_comment": "DEPRECATED: per-SKU cost_per_case from products.csv is preferred. Kept as fallback.",
     "ORAL_CARE": 12.50,
     "PERSONAL_WASH": 8.75,
     "HOME_CARE": 6.50,

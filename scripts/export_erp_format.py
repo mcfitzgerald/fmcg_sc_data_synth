@@ -773,10 +773,23 @@ def process_reference_data(static_dir: Path, output_dir: Path, mapper: IdMapper)
                         row_id += 1
 
     # --- sku_costs ---
-    # Derived from products.csv cost_per_case
+    # Derived from products.csv cost_per_case with config-driven material/labor/overhead split
     prod_file = static_dir / 'products.csv'
     if prod_file.exists():
         df_prod = pd.read_csv(prod_file)
+
+        # Load manufacturing cost structure from cost_master.json
+        cost_master_path = Path("src/prism_sim/config/cost_master.json")
+        mfg_costs: dict = {}
+        if cost_master_path.exists():
+            with open(cost_master_path) as f_cm:
+                cm = json.load(f_cm)
+                mfg_costs = cm.get("manufacturing_costs", {})
+        labor_pcts = mfg_costs.get("labor_pct_of_material", {"default": 0.25})
+        overhead_pcts = mfg_costs.get("overhead_pct_of_material", {"default": 0.22})
+        default_labor_pct = labor_pcts.get("default", 0.25)
+        default_overhead_pct = overhead_pcts.get("default", 0.22)
+
         with open(output_dir / 'master/sku_costs.csv', 'w', newline='') as f:
             writer = csv.writer(f)
             writer.writerow(['id', 'sku_id', 'cost_type', 'cost_amount', 'effective_from'])
@@ -785,16 +798,19 @@ def process_reference_data(static_dir: Path, output_dir: Path, mapper: IdMapper)
             for _, row in df_prod.iterrows():
                 sim_id = row['id']
                 if sim_id in mapper.maps['products']:
-                    # Only for SKUs (not ingredients, though product file has both)
-                    # We can check category
-                    if 'INGREDIENT' not in str(row['category']):
+                    # Only for SKUs (not ingredients)
+                    cat_str = str(row.get('category', ''))
+                    if 'INGREDIENT' not in cat_str and 'BULK' not in cat_str:
                         sku_id = mapper.maps['products'][sim_id]
                         total_cost = row.get('cost_per_case', 10.0)
 
-                        # Split cost into components (heuristic)
-                        mat_cost = total_cost * 0.6
-                        lab_cost = total_cost * 0.2
-                        oh_cost = total_cost * 0.2
+                        # Config-driven cost split: material / (1 + labor% + overhead%)
+                        cat_key = cat_str.replace('ProductCategory.', '')
+                        labor_pct = labor_pcts.get(cat_key, default_labor_pct)
+                        overhead_pct = overhead_pcts.get(cat_key, default_overhead_pct)
+                        mat_cost = total_cost / (1 + labor_pct + overhead_pct)
+                        lab_cost = mat_cost * labor_pct
+                        oh_cost = mat_cost * overhead_pct
 
                         date_str = '2024-01-01'
 

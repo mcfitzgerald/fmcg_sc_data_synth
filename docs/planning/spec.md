@@ -87,6 +87,8 @@ The simulation is in an iterative shake-out phase. The core engine is complete; 
 
 **3-Level BOM (v0.70.0):** Replaced flat single-level BOM with 3-level structure: Level 2 (78 raw materials) → Level 1 (45 bulk intermediates) → Level 0 (500 finished SKUs). Bulk intermediates are produced at plants via dependent demand explosion from SKU production orders, same-plant assignment. TransformEngine two-pass ordering ensures bulk is produced before SKUs within each daily cycle. MRP PO generation uses two-step matrix explosion to reach leaf materials. Recipe matrix stays 2D `[n_products, n_products]`. Deployment, demand, DRP, allocation, replenishment unchanged (SKUs only).
 
+**Cost Model Enrichment (v0.71.0):** Post-sim enrichment only — no simulation physics changes. `cost_master.json` expanded with per-route FTL/LTL logistics, echelon-specific warehouse rates, category-specific manufacturing cost structure, channel DSO. `diagnose_cost.py` upgraded from 6 to 8 sections: per-SKU COGS (was flat-category), per-echelon logistics with distance, bottom-up mfg COGS from batch_ingredients, revenue & margin by channel, channel-weighted DSO. `export_erp_format.py` cost splits now config-driven (was hardcoded 60/20/20).
+
 ---
 
 ## 4. Likely Areas of Future Code Change
