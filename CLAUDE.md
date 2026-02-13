@@ -35,6 +35,18 @@ poetry run python run_simulation.py --days 50 --no-logging  # Quick sanity check
 poetry run python run_simulation.py --days 365 --streaming --format parquet
 poetry run python run_simulation.py --days 365 --streaming --format parquet --inventory-sample-rate 1
 
+# Warm-start from a converged run (primary operational mode)
+poetry run python run_simulation.py --days 365 --streaming --format parquet --warm-start data/results/source_run
+poetry run python run_simulation.py --days 365 --streaming --format parquet --warm-start data/results/source_run --no-stabilization
+
+# Snapshot for warm-start seeding (works with --no-logging)
+poetry run python run_simulation.py --days 365 --no-logging --snapshot
+
+# Diagnostics (run on parquet output)
+poetry run python scripts/analysis/diagnose_365day.py          # Three-layer pyramid report
+poetry run python scripts/analysis/diagnose_flow_deep.py       # Deep flow & MRP analysis
+poetry run python scripts/analysis/diagnose_cost.py            # Cost analytics
+
 # Linting and type checking
 poetry run ruff check .
 poetry run ruff check . --fix  # Auto-fix
@@ -60,6 +72,7 @@ src/prism_sim/
 │   ├── quirks.py         # QuirkManager - behavioral realism (phantom inventory, bias)
 │   ├── risk_events.py    # RiskEventManager - disruption scenarios (port strikes, cyber)
 │   ├── monitor.py        # RealismMonitor, PhysicsAuditor, ResilienceTracker
+│   ├── warm_start.py     # WarmStartState - load converged state from prior run's parquet
 │   └── writer.py         # SimulationWriter, ThreadedParquetWriter - streaming data export
 ├── agents/
 │   ├── allocation.py     # AllocationAgent - Fair Share allocation, Fill-or-Kill
@@ -70,7 +83,7 @@ src/prism_sim/
 ├── product/core.py       # Product, Recipe, ProductCategory definitions
 ├── config/
 │   ├── loader.py         # Config loading utilities
-│   └── *.json            # simulation_config, world_definition, benchmark_manifest
+│   └── *.json            # simulation_config, world_definition, benchmark_manifest, cost_master, scor_reference
 ├── generators/           # Static world generation (~4,200 nodes)
 │   ├── hierarchy.py      # ProductGenerator - SKUs, ingredients, recipes
 │   ├── network.py        # NetworkGenerator - nodes, links, topology
@@ -99,6 +112,8 @@ All simulation parameters are config-driven (no hardcodes):
 - `src/prism_sim/config/simulation_config.json` - Manufacturing, logistics, quirk parameters
 - `src/prism_sim/config/world_definition.json` - Network topology, products, BOMs
 - `src/prism_sim/config/benchmark_manifest.json` - Risk scenarios, validation targets
+- `src/prism_sim/config/cost_master.json` - Unit costs per echelon (holding, handling, transport)
+- `src/prism_sim/config/scor_reference.json` - SCOR metric definitions and benchmarks
 
 Use `semgrep` to detect hardcoded values.
 
@@ -122,6 +137,17 @@ The simulation enforces these constraints - violations indicate bugs:
 - Update `CHANGELOG.md`, `README.md`, `docs/`, and `pyproject.toml` on changes (semantic versioning)
 - Use Context7 MCP tools for library documentation
 - Unless noted otherwise, do not plan or code for backwards compatibility
+
+## Diagnostics & Validation
+
+Post-simulation validation uses a three-layer diagnostic pyramid in `scripts/analysis/`:
+
+- **Entry point:** `diagnose_365day.py` — First Principles → Operational Health → Flow & Stability
+- **Deep analysis:** `diagnose_flow_deep.py` — 14-question flow/MRP/deployment deep-dive
+- **Cost analytics:** `diagnose_cost.py` — COGS, holding costs, transport costs
+- **Shared infra:** `scripts/analysis/diagnostics/` — `loader.py` (DataBundle, PyArrow streaming), `first_principles.py`, `operational.py`, `flow_analysis.py`
+
+New diagnostic scripts must use `DataBundle` from `loader.py` for column selection, FG filtering, and echelon enrichment. Never use naive `pd.read_parquet()` on large files — the loader's PyArrow row-group streaming prevents memory blowup on 60M+ row datasets.
 
 ## Reference Code
 
