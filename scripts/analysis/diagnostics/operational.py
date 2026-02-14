@@ -142,9 +142,13 @@ def analyze_service_levels(data: DataBundle, window: int = 30) -> dict[str, Any]
     orders = data.orders
     if "status" in orders.columns and len(orders) > 0:
         # Orders already FG-filtered by loader
-        total_by_product = orders.groupby("product_id")["quantity"].sum()
+        total_by_product = (
+            orders.groupby("product_id", observed=True)["quantity"].sum()
+        )
         fulfilled = orders[orders["status"] == "CLOSED"]
-        fulfilled_by_product = fulfilled.groupby("product_id")["quantity"].sum()
+        fulfilled_by_product = (
+            fulfilled.groupby("product_id", observed=True)["quantity"].sum()
+        )
 
         for pid in total_by_product.index:
             total = total_by_product[pid]
@@ -358,8 +362,12 @@ def analyze_slob(data: DataBundle) -> dict[str, Any]:
     risk_products: list[dict[str, Any]] = []
     if len(inv) > 0:
         # Use per-product demand vs production
-        prod_demand = demand_ships.groupby("product_id")["quantity"].sum()
-        prod_production = fg_batches.groupby("product_id")["quantity"].sum()
+        prod_demand = demand_ships.groupby(
+            "product_id", observed=True,
+        )["quantity"].sum()
+        prod_production = fg_batches.groupby(
+            "product_id", observed=True,
+        )["quantity"].sum()
 
         for pid in prod_production.index:
             dem = prod_demand.get(pid, 0)

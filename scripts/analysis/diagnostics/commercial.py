@@ -172,7 +172,7 @@ def compute_margin_by_abc(
     )
     demand_ships["abc"] = demand_ships["abc_class"]
 
-    result = demand_ships.groupby("abc").agg(
+    result = demand_ships.groupby("abc", observed=True).agg(
         revenue=("revenue", "sum"),
         margin=("margin", "sum"),
         cases=("quantity", "sum"),
@@ -201,7 +201,7 @@ def compute_fill_by_abc_channel(bundle: DataBundle) -> pd.DataFrame:
     # Total ordered by (ABC, channel)
     orders_grouped = orders.assign(
         abc=ord_abc, channel=ord_channel
-    ).groupby(["abc", "channel"])["quantity"].sum()
+    ).groupby(["abc", "channel"], observed=True)["quantity"].sum()
 
     # Fulfilled (CLOSED) orders
     closed = orders[orders["status"] == "CLOSED"]
@@ -213,7 +213,7 @@ def compute_fill_by_abc_channel(bundle: DataBundle) -> pd.DataFrame:
 
     closed_grouped = closed.assign(
         abc=closed_abc, channel=closed_channel
-    ).groupby(["abc", "channel"])["quantity"].sum()
+    ).groupby(["abc", "channel"], observed=True)["quantity"].sum()
 
     # Fill rate = fulfilled / ordered
     fill_rate = (closed_grouped / orders_grouped).fillna(0)
@@ -231,7 +231,7 @@ def compute_concentration_risk(bundle: DataBundle) -> dict[str, Any]:
     ships = bundle.shipments
 
     # Volume Pareto
-    vol_by_sku = ships.groupby("product_id")["quantity"].sum().sort_values(ascending=False)
+    vol_by_sku = ships.groupby("product_id", observed=True)["quantity"].sum().sort_values(ascending=False)
     total_vol = vol_by_sku.sum()
     n_skus = len(vol_by_sku)
     top20_n = max(1, int(n_skus * 0.2))
@@ -259,7 +259,7 @@ def compute_concentration_risk(bundle: DataBundle) -> dict[str, Any]:
 
     # Single-source products (made at only 1 plant)
     fg_batches = bundle.fg_batches
-    plants_per_product = fg_batches.groupby("product_id")["plant_id"].nunique()
+    plants_per_product = fg_batches.groupby("product_id", observed=True)["plant_id"].nunique()
     single_source = int((plants_per_product == 1).sum())
 
     return {
@@ -282,7 +282,7 @@ def compute_tail_sku_drag(bundle: DataBundle) -> dict[str, Any]:
     ships = bundle.shipments
     sim_days = bundle.sim_days
 
-    vol_by_sku = ships.groupby("product_id")["quantity"].sum().sort_values(ascending=False)
+    vol_by_sku = ships.groupby("product_id", observed=True)["quantity"].sum().sort_values(ascending=False)
     total_vol = vol_by_sku.sum()
     n_skus = len(vol_by_sku)
     bottom20_n = max(1, int(n_skus * 0.2))
@@ -308,13 +308,13 @@ def compute_tail_sku_drag(bundle: DataBundle) -> dict[str, Any]:
 
     # Changeover frequency for tail SKUs
     fg_batches = bundle.fg_batches
-    tail_batches = fg_batches[fg_batches["product_id"].astype(str).isin(tail_skus)]
+    tail_batches = fg_batches[fg_batches["product_id"].isin(tail_skus)]
     tail_changeovers = len(tail_batches)
     tail_changeovers_year = tail_changeovers * annual_factor
 
     # Compare with A-item changeovers
     a_skus = {p for p, c in bundle.abc_map.items() if c == "A"}
-    a_batches = fg_batches[fg_batches["product_id"].astype(str).isin(a_skus)]
+    a_batches = fg_batches[fg_batches["product_id"].isin(a_skus)]
     a_changeovers_year = len(a_batches) * annual_factor / max(len(a_skus), 1)
     tail_changeovers_per_sku = tail_changeovers_year / max(len(tail_skus), 1)
 

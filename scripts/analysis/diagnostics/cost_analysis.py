@@ -43,25 +43,43 @@ def compute_per_sku_cogs(bundle: DataBundle) -> dict[str, Any]:
     Returns dict with:
         total_cogs, by_abc (DataFrame), by_route (DataFrame)
     """
-    ships = bundle.shipments.copy()
-    ships["cost_per_case"] = ships["product_id"].map(bundle.sku_cost_map).fillna(9.0)
-    ships["cogs"] = ships["quantity"] * ships["cost_per_case"]
-    total_cogs = float(ships["cogs"].sum())
+    ships = bundle.shipments
+    cost_per_case = ships["product_id"].map(bundle.sku_cost_map).fillna(9.0)
+    cogs = ships["quantity"] * cost_per_case
+    total_cogs = float(cogs.sum())
 
-    # By ABC
-    by_abc = ships.groupby("abc_class").agg(
+    # By ABC — minimal temp DataFrame for groupby (no full-frame copy)
+    by_abc = pd.DataFrame({
+        "abc_class": ships["abc_class"],
+        "cogs": cogs,
+        "quantity": ships["quantity"],
+    }).groupby("abc_class", observed=True).agg(
         cogs=("cogs", "sum"),
         cases=("quantity", "sum"),
     )
     by_abc["avg_cost"] = by_abc["cogs"] / by_abc["cases"].clip(lower=1)
     by_abc["share"] = by_abc["cogs"] / total_cogs
 
-    # By route
-    ships["route"] = (
-        ships["source_echelon"].astype(str) + " -> "
-        + ships["target_echelon"].astype(str)
+    # By route — build route at category level (~10 unique pairs, not 58M strings)
+    pairs = (
+        ships[["source_echelon", "target_echelon"]]
+        .drop_duplicates()
+        .reset_index(drop=True)
     )
-    by_route = ships.groupby("route").agg(
+    pairs["route"] = [
+        f"{s} -> {t}"
+        for s, t in zip(pairs["source_echelon"].astype(str),
+                        pairs["target_echelon"].astype(str),
+                        strict=False)
+    ]
+    route = ships[["source_echelon", "target_echelon"]].merge(
+        pairs, on=["source_echelon", "target_echelon"], how="left",
+    )["route"]
+    by_route = pd.DataFrame({
+        "route": route.values,
+        "cogs": cogs.values,
+        "quantity": ships["quantity"].values,
+    }).groupby("route", observed=True).agg(
         cogs=("cogs", "sum"),
         cases=("quantity", "sum"),
     ).sort_values("cogs", ascending=False)
@@ -86,22 +104,38 @@ def compute_logistics_by_route(bundle: DataBundle) -> dict[str, Any]:
                 "by_route": pd.DataFrame()}
 
     ships = bundle.shipments
-    src_ech = ships["source_echelon"].astype(str)
-    tgt_ech = ships["target_echelon"].astype(str)
 
-    # Map route keys
-    route_keys = pd.Series(
-        [ROUTE_KEY_MAP.get((s, t), "") for s, t in zip(src_ech, tgt_ech, strict=False)],
-        index=ships.index,
+    # Map route keys via category-level lookup (~10 unique echelon pairs)
+    ech_pairs = (
+        ships[["source_echelon", "target_echelon"]]
+        .drop_duplicates()
+        .reset_index(drop=True)
     )
+    ech_pairs["route_key"] = [
+        ROUTE_KEY_MAP.get((str(s), str(t)), "")
+        for s, t in zip(ech_pairs["source_echelon"],
+                        ech_pairs["target_echelon"], strict=False)
+    ]
+    rk_merged = ships[["source_echelon", "target_echelon"]].merge(
+        ech_pairs, on=["source_echelon", "target_echelon"], how="left",
+    )
+    route_keys = pd.Series(rk_merged["route_key"].values, index=ships.index)
 
-    # Distance lookup
-    distances = pd.Series(
-        [bundle.dist_map.get((s, t), np.nan)
-         for s, t in zip(ships["source_id"].astype(str),
-                         ships["target_id"].astype(str), strict=False)],
-        index=ships.index,
+    # Distance lookup via link-level merge (~8000 unique link pairs)
+    link_pairs = (
+        ships[["source_id", "target_id"]]
+        .drop_duplicates()
+        .reset_index(drop=True)
     )
+    link_pairs["dist"] = [
+        bundle.dist_map.get((str(s), str(t)), np.nan)
+        for s, t in zip(link_pairs["source_id"],
+                        link_pairs["target_id"], strict=False)
+    ]
+    dist_merged = ships[["source_id", "target_id"]].merge(
+        link_pairs, on=["source_id", "target_id"], how="left",
+    )
+    distances = pd.Series(dist_merged["dist"].values, index=ships.index)
 
     # Fill missing distances with route-key average
     route_avg_dist = pd.DataFrame({"rk": route_keys, "d": distances}).groupby("rk")["d"].mean()
@@ -152,7 +186,7 @@ def compute_logistics_by_route(bundle: DataBundle) -> dict[str, Any]:
         "cases": ships["quantity"].values,
         "distance_km": distances.values,
     })
-    by_route = df[df["route_key"] != ""].groupby("route_key").agg(
+    by_route = df[df["route_key"] != ""].groupby("route_key", observed=True).agg(
         transport=("transport", "sum"),
         handling=("handling", "sum"),
         logistics=("logistics", "sum"),
@@ -328,14 +362,14 @@ def compute_otif(bundle: DataBundle) -> dict[str, Any]:
         return {"available": False}
 
     ord_agg = orders.groupby(
-        ["day", "source_id", "target_id", "product_id"]
+        ["day", "source_id", "target_id", "product_id"], observed=True,
     ).agg(
         ordered_qty=("quantity", "sum"),
         requested_date=("requested_date", "first"),
     ).reset_index()
 
     ship_agg = ships.groupby(
-        ["creation_day", "source_id", "target_id", "product_id"]
+        ["creation_day", "source_id", "target_id", "product_id"], observed=True,
     ).agg(
         shipped_qty=("quantity", "sum"),
         arrival_day=("arrival_day", "max"),
@@ -359,7 +393,7 @@ def compute_otif(bundle: DataBundle) -> dict[str, Any]:
     otif_pct = float(merged["otif"].mean())
 
     merged["abc"] = merged["product_id"].map(bundle.abc_map).fillna("C")
-    by_abc = merged.groupby("abc").agg(
+    by_abc = merged.groupby("abc", observed=True).agg(
         in_full=("in_full", "mean"),
         on_time=("on_time", "mean"),
         otif=("otif", "mean"),

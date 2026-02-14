@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.74.0] - 2026-02-14
+
+### Fix: Diagnostic Memory Optimization
+
+Reduces peak memory of `diagnose_supply_chain.py` from ~20 GB to ~8 GB on 16 GB systems, fixing OOM (exit 137) on warm-start output (62M orders, 71M shipments).
+
+#### Root causes fixed:
+- **`compute_per_sku_cogs()` 5.6 GB copy eliminated** — compute COGS as standalone Series without `.copy()` on the entire shipments DataFrame
+- **List comprehensions on 58M rows vectorized** — `compute_logistics_by_route()` route key and distance lookups now use category-level merge (~10 echelon pairs, ~8000 link pairs) instead of 58M Python dict lookups
+- **`.astype(str)` on categoricals removed** — echelon/route string building operates at category level (~10 unique pairs) via merge, not on 58M rows
+- **`observed=True` on all categorical groupby calls** — eliminates FutureWarning spam and avoids including absent category levels in intermediate frames
+- **int16 day columns** — `creation_day`, `arrival_day`, `day` downcast from int32 to int16 (max value 365 fits in int16 range)
+- **Smart order pre-aggregation** — `_pre_aggregate_orders()` checks for duplicates via 100K-row sample; adds `line_count` column (int8) without expensive groupby if orders are already unique
+
+#### Files changed:
+- `scripts/analysis/diagnostics/loader.py` — int16 downcasting, `_pre_aggregate_orders()`, `line_count` column
+- `scripts/analysis/diagnostics/cost_analysis.py` — no-copy COGS, vectorized route/distance lookups
+- `scripts/analysis/diagnostics/operational.py` — `observed=True` on groupby calls
+- `scripts/analysis/diagnostics/manufacturing.py` — `observed=True`, `line_count`-aware stockout waterfall
+- `scripts/analysis/diagnostics/commercial.py` — `observed=True`, removed `.astype(str)` on fg_batches
+
 ## [0.73.0] - 2026-02-13
 
 ### Feature: Enterprise Data Generator (ERP Export v2)

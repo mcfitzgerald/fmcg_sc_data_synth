@@ -118,7 +118,7 @@ Shared modular backend used by diagnostics:
 
 | Module | Key Functions | Layer |
 |--------|---------------|-------|
-| `diagnostics/loader.py` | `load_all_data()`, `classify_node()`, `is_demand_endpoint()`, `DOSTargets`, `load_dos_targets()`, `SeasonalityConfig`, `load_seasonality_config()` | Data loading, enrichment, config-derived targets + seasonality. Also loads cost/price maps, channel map, batch_ingredients, cost_master.json, channel economics. |
+| `diagnostics/loader.py` | `load_all_data()`, `classify_node()`, `is_demand_endpoint()`, `DOSTargets`, `load_dos_targets()`, `SeasonalityConfig`, `load_seasonality_config()`, `_pre_aggregate_orders()` | Data loading, enrichment, config-derived targets + seasonality. Also loads cost/price maps, channel map, batch_ingredients, cost_master.json, channel economics. v0.74.0: int16 day columns, smart order pre-aggregation with `line_count` column, all groupby calls use `observed=True`. |
 | `diagnostics/first_principles.py` | `analyze_mass_balance()`, `analyze_flow_conservation()`, `analyze_littles_law()` | Layer 1: Physics validation |
 | `diagnostics/operational.py` | `analyze_inventory_positioning()`, `analyze_service_levels()`, `analyze_production_alignment()`, `analyze_slob()` | Layer 2: Operational health |
 | `diagnostics/flow_analysis.py` | `analyze_throughput_map()`, `analyze_deployment_effectiveness()`, `analyze_lead_times()`, `analyze_bullwhip()`, `analyze_control_stability()` | Layer 3: Flow & stability |
@@ -160,6 +160,8 @@ Shared modular backend used by diagnostics:
 | `slice_data.py` | Create small data subset (first N days) for fast diagnostic iteration |
 
 **Shared infrastructure:** `diagnostics/loader.py` is the canonical source for `classify_node()`, `classify_abc()`, `DataBundle`, `load_all_data()`, `SeasonalityConfig`. Used by all diagnostic scripts. Standalone scripts (Tier 2) have local copies of classification functions — acceptable for isolation, but `loader.py` is the source of truth. `SeasonalityConfig.factor(day)` is used by stability and backpressure analyses for seasonal detrending.
+
+**Memory optimization (v0.74.0):** Diagnostic modules avoid `.copy()` on large DataFrames, use category-level merge instead of row-level `.astype(str)` for echelon/route lookups, and use `observed=True` on all categorical groupby calls. Day columns use int16 (max 365 fits in [-32768, 32767]). Orders include a `line_count` column (int8, always 1 for unique orders; summed count if pre-aggregated).
 
 **Archived scripts:** `scripts/analysis/archive/` contains 9 legacy scripts (CSV-based, shell subprocess, or version-specific) superseded by the diagnostic suite above.
 

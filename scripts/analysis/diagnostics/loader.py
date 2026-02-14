@@ -313,10 +313,10 @@ def _load_fg_parquet(
     # Arrow dict → pandas Categorical automatically
     df = tbl.to_pandas()
 
-    # Downcast numerics
+    # Downcast numerics (int16 sufficient for day values up to 32767)
     for col_name in ("creation_day", "arrival_day", "day"):
         if col_name in df.columns and df[col_name].dtype in (np.float64, np.int64):
-            df[col_name] = df[col_name].astype(np.int32)
+            df[col_name] = df[col_name].astype(np.int16)
     if "quantity" in df.columns:
         df["quantity"] = df["quantity"].astype(np.float32)
 
@@ -549,6 +549,54 @@ def _load_world_definition() -> dict:
     return {}
 
 
+def _pre_aggregate_orders(orders: pd.DataFrame) -> pd.DataFrame:
+    """Pre-aggregate orders if duplicates exist, else just tag with line_count.
+
+    Groups by (day, source_id, target_id, product_id, status) + enrichment
+    columns, summing quantity and counting original lines.
+    Skips the expensive groupby if orders are already unique (common for DES
+    simulators that create one order per link/product/day).
+    """
+    t0 = time.time()
+    n_raw = len(orders)
+
+    groupby_cols = ["day", "source_id", "target_id", "product_id", "status"]
+    for col in ("source_echelon", "target_echelon"):
+        if col in orders.columns:
+            groupby_cols.append(col)
+
+    # Quick check: sample first 100K rows to estimate compression ratio
+    sample_n = min(100_000, n_raw)
+    n_unique = len(orders.head(sample_n).drop_duplicates(subset=groupby_cols))
+    if n_unique > sample_n * 0.8:
+        # Minimal deduplication — skip expensive groupby
+        orders["line_count"] = np.int8(1)
+        elapsed = time.time() - t0
+        print(f"  Orders already unique ({n_unique}/{sample_n} in sample), "
+              f"added line_count ({elapsed:.1f}s)")
+        return orders
+
+    agg = orders.groupby(groupby_cols, observed=True).agg(
+        quantity=("quantity", "sum"),
+        line_count=("quantity", "size"),
+    ).reset_index()
+
+    # Preserve compact dtypes from loader
+    for col_name in ("day",):
+        if col_name in agg.columns:
+            agg[col_name] = agg[col_name].astype(np.int16)
+    if "quantity" in agg.columns:
+        agg["quantity"] = agg["quantity"].astype(np.float32)
+    if "line_count" in agg.columns:
+        agg["line_count"] = agg["line_count"].astype(np.int32)
+
+    elapsed = time.time() - t0
+    mem_mb = agg.memory_usage(deep=True).sum() / 1e6
+    print(f"  Pre-aggregated orders: {n_raw:,} -> {len(agg):,} rows "
+          f"({mem_mb:.0f} MB, {elapsed:.1f}s)")
+    return agg
+
+
 def load_all_data(data_dir: Path) -> DataBundle:
     """Load all parquet + static files into a DataBundle.
 
@@ -680,6 +728,10 @@ def load_all_data(data_dir: Path) -> DataBundle:
     # v0.66.0: Precompute echelon/ABC/demand columns ONCE
     print("\nEnriching data...")
     _enrich_dataframes(shipments, orders, abc_map)
+
+    # v0.74.0: Pre-aggregate orders to reduce memory (~62M → ~5M rows)
+    print("\nPre-aggregating orders...")
+    orders = _pre_aggregate_orders(orders)
 
     # Stream inventory
     print("\nStreaming inventory by echelon...")

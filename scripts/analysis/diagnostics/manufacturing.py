@@ -247,7 +247,9 @@ def compute_stockout_waterfall(bundle: DataBundle) -> dict[str, Any]:
     orders = bundle.orders
     ships = bundle.shipments
 
-    total_lines = len(orders)
+    # Support pre-aggregated orders (line_count column) or raw orders
+    has_line_count = "line_count" in orders.columns
+    total_lines = int(orders["line_count"].sum()) if has_line_count else len(orders)
     total_qty = float(orders["quantity"].sum())
 
     # Stage 1: Total demand order lines
@@ -257,7 +259,10 @@ def compute_stockout_waterfall(bundle: DataBundle) -> dict[str, Any]:
 
     # Stage 2: Orders that got fulfilled (CLOSED = source had stock & allocated)
     closed_mask = orders["status"] == "CLOSED"
-    closed_lines = int(closed_mask.sum())
+    closed_lines = (
+        int(orders.loc[closed_mask, "line_count"].sum())
+        if has_line_count else int(closed_mask.sum())
+    )
     closed_qty = float(orders[closed_mask]["quantity"].sum())
     no_stock_loss = total_lines - closed_lines
     stages.append({
@@ -271,11 +276,11 @@ def compute_stockout_waterfall(bundle: DataBundle) -> dict[str, Any]:
     # Stage 3: Orders that were actually shipped (matched in shipments)
     # Match by (day, source, target, product)
     ord_keys = orders[closed_mask].groupby(
-        ["day", "source_id", "target_id", "product_id"]
+        ["day", "source_id", "target_id", "product_id"], observed=True,
     ).agg(ordered_qty=("quantity", "sum")).reset_index()
 
     ship_keys = ships.groupby(
-        ["creation_day", "source_id", "target_id", "product_id"]
+        ["creation_day", "source_id", "target_id", "product_id"], observed=True,
     ).agg(shipped_qty=("quantity", "sum")).reset_index()
 
     merged = ord_keys.merge(
@@ -301,7 +306,7 @@ def compute_stockout_waterfall(bundle: DataBundle) -> dict[str, Any]:
     )
     if has_req:
         ship_agg = ships.groupby(
-            ["creation_day", "source_id", "target_id", "product_id"]
+            ["creation_day", "source_id", "target_id", "product_id"], observed=True,
         ).agg(arrival_day=("arrival_day", "max")).reset_index()
 
         merged2 = ord_keys.merge(
@@ -313,7 +318,7 @@ def compute_stockout_waterfall(bundle: DataBundle) -> dict[str, Any]:
         merged2["arrival_day"] = merged2["arrival_day"].fillna(9999)
         # Need requested_date from original orders
         req_date = orders[closed_mask].groupby(
-            ["day", "source_id", "target_id", "product_id"]
+            ["day", "source_id", "target_id", "product_id"], observed=True,
         )["requested_date"].first().reset_index()
         merged2 = merged2.merge(
             req_date, on=["day", "source_id", "target_id", "product_id"], how="left"
