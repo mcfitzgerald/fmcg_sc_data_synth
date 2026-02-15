@@ -107,8 +107,8 @@ def compute_cost_to_serve(
         cases, cogs, logistics, total_cost, cost_per_case, share
     """
     ships = bundle.shipments
-    # Include shipments to stores and customer DCs
-    ech_mask = ships["target_echelon"].isin(["Store", "Customer DC"])
+    # Demand-endpoint shipments only (consistent with compute_channel_pnl)
+    ech_mask = ships["is_demand_endpoint"]
     store_ships = ships[ech_mask].copy()
 
     if bundle.channel_map:

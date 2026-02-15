@@ -118,13 +118,13 @@ Shared modular backend used by diagnostics:
 
 | Module | Key Functions | Layer |
 |--------|---------------|-------|
-| `diagnostics/loader.py` | `load_all_data()`, `classify_node()`, `is_demand_endpoint()`, `DOSTargets`, `load_dos_targets()`, `SeasonalityConfig`, `load_seasonality_config()`, `_pre_aggregate_orders()` | Data loading, enrichment, config-derived targets + seasonality. Also loads cost/price maps, channel map, batch_ingredients, cost_master.json, channel economics. v0.74.0: int16 day columns, smart order pre-aggregation with `line_count` column, all groupby calls use `observed=True`. |
-| `diagnostics/first_principles.py` | `analyze_mass_balance()`, `analyze_flow_conservation()`, `analyze_littles_law()` | Layer 1: Physics validation |
-| `diagnostics/operational.py` | `analyze_inventory_positioning()`, `analyze_service_levels()`, `analyze_production_alignment()`, `analyze_slob()` | Layer 2: Operational health |
-| `diagnostics/flow_analysis.py` | `analyze_throughput_map()`, `analyze_deployment_effectiveness()`, `analyze_lead_times()`, `analyze_bullwhip()`, `analyze_control_stability()` | Layer 3: Flow & stability |
-| `diagnostics/cost_analysis.py` | `compute_per_sku_cogs()`, `compute_logistics_by_route()`, `stream_carrying_cost()`, `compute_cash_to_cash()`, `compute_otif()` | Cost & working capital |
-| `diagnostics/commercial.py` | `compute_channel_pnl()`, `compute_cost_to_serve()`, `compute_margin_by_abc()`, `compute_fill_by_abc_channel()`, `compute_concentration_risk()`, `compute_tail_sku_drag()` | Commercial & channel analysis |
-| `diagnostics/manufacturing.py` | `compute_bom_cost_rollup()`, `compute_changeover_analysis()`, `compute_upstream_availability()`, `compute_stockout_waterfall()`, `compute_forward_cover()` | Manufacturing, BOM, upstream |
+| `diagnostics/loader.py` | `load_all_data()`, `classify_node()`, `is_demand_endpoint()`, `DOSTargets`, `load_dos_targets()`, `SeasonalityConfig`, `load_seasonality_config()`, `_pre_aggregate_orders()` | Data loading, enrichment, config-derived targets + seasonality. Also loads cost/price maps, channel map, batch_ingredients, cost_master.json, channel economics. v0.75.0: loads `requested_date` from orders (with graceful fallback). v0.74.0: int16 day columns, smart order pre-aggregation with `line_count` column, all groupby calls use `observed=True`. |
+| `diagnostics/first_principles.py` | `analyze_mass_balance()`, `analyze_flow_conservation()`, `analyze_littles_law()` | Layer 1: Physics validation. v0.75.0: Little's Law uses outbound LT (source_echelon), includes Store/Club via inbound demand throughput. Customer DC verdict uses adjusted delta. |
+| `diagnostics/operational.py` | `analyze_inventory_positioning()`, `analyze_service_levels()`, `analyze_production_alignment()`, `analyze_slob()` | Layer 2: Operational health. v0.75.0: DOS uses per-echelon throughput (outflow for Plant/RDC/DC, inflow for Store/Club) instead of total POS demand. SLOB reports warm-start baseline. |
+| `diagnostics/flow_analysis.py` | `analyze_throughput_map()`, `analyze_deployment_effectiveness()`, `analyze_lead_times()`, `analyze_bullwhip()`, `analyze_control_stability()` | Layer 3: Flow & stability. v0.75.0: Plant→Store in retention rate, RDC→Store in ASCII diagram. |
+| `diagnostics/cost_analysis.py` | `compute_per_sku_cogs()`, `compute_logistics_by_route()`, `stream_carrying_cost()`, `compute_cash_to_cash()`, `compute_otif()` | Cost & working capital. v0.75.0: `total_cogs` uses demand-endpoint shipments only (landed COGS). `avg_cases` divides by n_days. |
+| `diagnostics/commercial.py` | `compute_channel_pnl()`, `compute_cost_to_serve()`, `compute_margin_by_abc()`, `compute_fill_by_abc_channel()`, `compute_concentration_risk()`, `compute_tail_sku_drag()` | Commercial & channel analysis. v0.75.0: cost-to-serve uses `is_demand_endpoint` (consistent with channel P&L). |
+| `diagnostics/manufacturing.py` | `compute_bom_cost_rollup()`, `compute_changeover_analysis()`, `compute_upstream_availability()`, `compute_stockout_waterfall()`, `compute_forward_cover()` | Manufacturing, BOM, upstream. v0.75.0: waterfall uses grouped order events, BOM cost only for ingredients with valid weight_kg, `current_woc` field name. |
 
 **DEMAND_PREFIXES** = `("STORE-", "ECOM-FC-", "DTC-FC-")` — NOT `"CLUB-"` (CLUB-DC nodes are intermediate warehouses, not demand endpoints).
 
@@ -160,6 +160,8 @@ Shared modular backend used by diagnostics:
 | `slice_data.py` | Create small data subset (first N days) for fast diagnostic iteration |
 
 **Shared infrastructure:** `diagnostics/loader.py` is the canonical source for `classify_node()`, `classify_abc()`, `DataBundle`, `load_all_data()`, `SeasonalityConfig`. Used by all diagnostic scripts. Standalone scripts (Tier 2) have local copies of classification functions — acceptable for isolation, but `loader.py` is the source of truth. `SeasonalityConfig.factor(day)` is used by stability and backpressure analyses for seasonal detrending.
+
+**Bug fix pass (v0.75.0):** 18 bugs fixed across 8 files (3 HIGH, 6 MEDIUM, 9 LOW). Key fixes: COGS uses demand-endpoint only (was 3× inflated), warehouse cost uses n_days denominator (was ~5000× underestimated), DOS uses per-echelon throughput (was using total POS for all), stockout waterfall uses grouped order events (was mixing line counts with tuple counts), `requested_date` now loaded for OTIF.
 
 **Memory optimization (v0.74.0):** Diagnostic modules avoid `.copy()` on large DataFrames, use category-level merge instead of row-level `.astype(str)` for echelon/route lookups, and use `observed=True` on all categorical groupby calls. Day columns use int16 (max 365 fits in [-32768, 32767]). Orders include a `line_count` column (int8, always 1 for unique orders; summed count if pre-aggregated).
 

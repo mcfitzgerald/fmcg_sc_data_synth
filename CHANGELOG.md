@@ -5,6 +5,47 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.75.0] - 2026-02-15
+
+### Fix: Diagnostic Module Bugs — 18 fixes across 8 files
+
+Comprehensive bug fix pass across all diagnostic modules. 3 HIGH, 6 MEDIUM, 9 LOW severity issues resolved.
+
+#### HIGH severity:
+- **H1 — Warehouse cost underestimated ~5000×** (`cost_analysis.py`): `avg_cases` divided by record count (~2.3M) instead of `n_days` (~365)
+- **H2 — COGS counts every network hop (~3× inflation)** (`cost_analysis.py`): `total_cogs` now uses demand-endpoint shipments only (landed COGS); `by_route` still uses all shipments for cost-flow analysis
+- **H3 — Stockout waterfall unit mismatch** (`manufacturing.py`): Stages 1-2 counted raw lines (62M) while Stage 3 used grouped tuples (~3M). All stages now use grouped order events consistently
+
+#### MEDIUM severity:
+- **M1 — DOS by echelon uses wrong denominator** (`operational.py`): Plant DOS used total POS demand rate. Now uses per-echelon throughput (outflow for Plant/RDC/DC, inflow for Store/Club) split by ABC class
+- **M2 — OTIF always unavailable** (`loader.py`): `requested_date` column now loaded from orders.parquet (with graceful fallback if column missing)
+- **M3 — Customer DC verdict uses raw delta** (`first_principles.py`): Flow conservation verdict now uses adjusted delta (excluding ECOM/DTC endpoint consumption)
+- **M4 — Cost-to-serve double-counts hops** (`commercial.py`): Uses `is_demand_endpoint` filter (consistent with `compute_channel_pnl`)
+- **M5 — BOM default weight 1.0 kg inflates costs** (`manufacturing.py`): Only computes `cost_per_kg` for ingredients with valid `weight_kg`; logs count of skipped ingredients
+- **M6 — Inconsistent demand filters** (`commercial.py`): Fixed by M4
+
+#### LOW severity:
+- **L1** — Missing `import pandas as pd` in `first_principles.py` (would crash on empty inventory)
+- **L2** — Little's Law compared inbound LT; now uses outbound LT (`source_echelon` groupby)
+- **L3** — Store/Club silently omitted from Little's Law (0 outflow); now uses inbound demand shipments
+- **L5** — Retention rate missed Plant→Store shipments in `total_deployed`
+- **L6** — `median_woc` field renamed to `current_woc` (it was a ratio, not a median)
+- **L7** — Removed dead "OSCILLATING" verdict check in control stability
+- **L8** — Removed redundant `is_demand_endpoint` filter in `operational.py`
+- **L9** — SLOB formatter now shows warm-start baseline note when `min_day > 0`
+- **B1** — Collapsed identical conditional branches in Little's Law fallback
+- **B4** — Added RDC→Store flow to ASCII throughput diagram
+
+#### Files changed:
+- `scripts/analysis/diagnostics/loader.py` — `requested_date` in order columns, graceful missing-column handling
+- `scripts/analysis/diagnostics/cost_analysis.py` — demand-endpoint COGS, n_days avg_cases, .copy() removal
+- `scripts/analysis/diagnostics/commercial.py` — `is_demand_endpoint` for cost-to-serve
+- `scripts/analysis/diagnostics/manufacturing.py` — grouped event waterfall, weight-aware BOM, `current_woc` rename
+- `scripts/analysis/diagnostics/operational.py` — per-echelon throughput DOS, warm-start SLOB note
+- `scripts/analysis/diagnostics/first_principles.py` — `import pd`, adjusted DC verdict, outbound LT, Store/Club throughput
+- `scripts/analysis/diagnostics/flow_analysis.py` — Plant→Store retention, dead OSCILLATING removal, RDC→Store diagram
+- `scripts/analysis/diagnose_supply_chain.py` — `current_woc` field reference update
+
 ## [0.74.0] - 2026-02-14
 
 ### Fix: Diagnostic Memory Optimization

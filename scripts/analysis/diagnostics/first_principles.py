@@ -14,6 +14,7 @@ from __future__ import annotations
 from typing import Any
 
 import numpy as np
+import pandas as pd
 
 from .loader import (
     ECHELON_ORDER,
@@ -309,12 +310,14 @@ def analyze_flow_conservation(
     verdicts: dict[str, str] = {}
     for ech, flows in echelon_flows.items():
         pct = flows["delta_pct_of_throughput"]
-        # For Customer DC, use adjusted percentage
+        delta = flows["daily_delta"]
+        # For Customer DC, use adjusted percentage and delta
         if ech == "Customer DC":
             pct = dc_adjusted_pct
+            delta = dc_adjusted_delta
         if pct < _FLOW_STABLE_PCT:
             verdicts[ech] = "STABLE"
-        elif flows["daily_delta"] > 0:
+        elif delta > 0:
             verdicts[ech] = "ACCUMULATING"
         else:
             verdicts[ech] = "DRAINING"
@@ -335,20 +338,24 @@ def analyze_littles_law(data: DataBundle) -> dict[str, Any]:
     """Validate L = lambda * W at each echelon.
 
     Compares implied cycle time (inventory / throughput) to configured lead times.
+    Uses outbound LT (source_echelon groupby) for flow echelons and inbound LT
+    for demand endpoints (Store/Club).
     """
     inv = data.inv_by_echelon
     # Shipments already enriched with echelon columns
     ships = data.shipments
+    demand_ships = ships[ships["is_demand_endpoint"]]
 
     fg_batches = data.fg_batches
     links = data.links
     sim_days = data.sim_days
 
-    # Configured lead times by echelon pair
-    links = links.copy()
-    links["source_echelon"] = links["source_id"].map(classify_node)
-    links["target_echelon"] = links["target_id"].map(classify_node)
-    avg_lt_by_target = links.groupby("target_echelon")["lead_time_days"].mean()
+    # Configured lead times by source echelon (outbound LT = time product
+    # spends in transit after leaving this echelon)
+    links_enriched = links.copy()
+    links_enriched["source_echelon"] = links_enriched["source_id"].map(classify_node)
+    links_enriched["target_echelon"] = links_enriched["target_id"].map(classify_node)
+    avg_lt_by_source = links_enriched.groupby("source_echelon")["lead_time_days"].mean()
 
     results: dict[str, dict[str, Any]] = {}
 
@@ -359,9 +366,16 @@ def analyze_littles_law(data: DataBundle) -> dict[str, Any]:
             continue
         avg_inventory = ech_inv.groupby("day")["total"].sum().mean()
 
-        # Throughput = daily outflow
+        # Throughput: outflow for Plant/RDC/DC, inflow for Store/Club
         if ech == "Plant":
             throughput = fg_batches["quantity"].sum() / sim_days if sim_days > 0 else 0
+        elif ech in ("Store", "Club"):
+            # Stores don't ship outbound — use inbound demand-endpoint shipments
+            throughput = (
+                demand_ships[demand_ships["target_echelon"] == ech]["quantity"].sum()
+                / sim_days
+                if sim_days > 0 else 0
+            )
         else:
             throughput = (
                 ships[ships["source_echelon"] == ech]["quantity"].sum() / sim_days
@@ -373,14 +387,10 @@ def analyze_littles_law(data: DataBundle) -> dict[str, Any]:
             continue
 
         implied_ct = avg_inventory / throughput
-        config_lt = avg_lt_by_target.get(ech, np.nan)
+        config_lt = avg_lt_by_source.get(ech, np.nan)
 
         if np.isnan(config_lt) or config_lt <= 0:
-            # Use inbound lead time for plant (production cycle)
-            if ech == "Plant":
-                config_lt = _DEFAULT_LEAD_TIME
-            else:
-                config_lt = _DEFAULT_LEAD_TIME
+            config_lt = _DEFAULT_LEAD_TIME
 
         ratio = implied_ct / config_lt if config_lt > 0 else np.nan
 

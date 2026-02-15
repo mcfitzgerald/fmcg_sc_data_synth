@@ -162,14 +162,17 @@ def analyze_deployment_effectiveness(data: DataBundle) -> dict[str, Any]:
     to_dc = plant_ships[plant_ships["target_echelon"] == "Customer DC"][
         "quantity"
     ].sum()
-    total_deployed = to_rdc + to_dc
+    to_store = plant_ships[plant_ships["target_echelon"] == "Store"]["quantity"].sum()
+    total_deployed = to_rdc + to_dc + to_store
 
     split = {
         "to_rdc": to_rdc,
         "to_dc": to_dc,
+        "to_store": to_store,
         "total_deployed": total_deployed,
         "rdc_pct": to_rdc / total_deployed * 100 if total_deployed > 0 else 0,
         "dc_pct": to_dc / total_deployed * 100 if total_deployed > 0 else 0,
+        "store_pct": to_store / total_deployed * 100 if total_deployed > 0 else 0,
     }
 
     # Plant FG inventory trend
@@ -403,8 +406,6 @@ def analyze_control_stability(
         overall = "STABLE"
     elif any(v == "DIVERGING" for v in verdicts):
         overall = "DIVERGING"
-    elif any(v == "OSCILLATING" for v in verdicts):
-        overall = "OSCILLATING"
     else:
         overall = "MIXED"
 
@@ -495,6 +496,7 @@ def format_throughput_map(results: dict[str, Any], width: int = 78) -> str:
     to_rdc_d = _route_daily("Plant -> RDC")
     to_dc_d = _route_daily("Plant -> Customer DC")
     rdc_to_dc_d = _route_daily("RDC -> Customer DC")
+    rdc_to_store_d = _route_daily("RDC -> Store")
     dc_to_store_d = _route_daily("Customer DC -> Store")
     dc_to_club_d = _route_daily("Customer DC -> Club")
 
@@ -522,10 +524,11 @@ def format_throughput_map(results: dict[str, Any], width: int = 78) -> str:
         f"       {_fmt_inv(inv.get('Customer DC', 0))} inv (total DC)"
     )
     lines.append(
-        "                |"
+        "                |           \\"
     )
     lines.append(
         f"        {_fmt_qty(rdc_to_dc_d)}/d v"
+        f"      {_fmt_qty(rdc_to_store_d)}/d v (direct)"
     )
     lines.append(
         "          [ Customer DC ] <---- (combined)"
@@ -566,6 +569,11 @@ def format_deployment_effectiveness(
     lines.append("  Plant deployment split:")
     lines.append(f"    To RDC:         {s['to_rdc']:>14,.0f}  ({s['rdc_pct']:.1f}%)")
     lines.append(f"    To Customer DC: {s['to_dc']:>14,.0f}  ({s['dc_pct']:.1f}%)")
+    if s.get("to_store", 0) > 0:
+        lines.append(
+            f"    To Store:       {s['to_store']:>14,.0f}"
+            f"  ({s['store_pct']:.1f}%)"
+        )
     lines.append(f"    Total deployed: {s['total_deployed']:>14,.0f}")
 
     gp = results["plant_inv_growth_pct"]

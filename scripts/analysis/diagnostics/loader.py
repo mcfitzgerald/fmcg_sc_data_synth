@@ -282,8 +282,15 @@ def _load_fg_parquet(
     n_rows = pf.metadata.num_rows
     print(f"  Loading {path.name} ({n_rows:,} rows)...")
 
+    # Filter columns to only those present in the parquet schema
+    available = {f.name for f in pf.schema_arrow}
+    load_cols = [c for c in columns if c in available]
+    missing = set(columns) - available
+    if missing:
+        print(f"    Note: columns not in file (skipped): {missing}")
+
     # Bulk read — Arrow handles column projection + predicate pushdown
-    tbl = pq.read_table(path, columns=columns)
+    tbl = pq.read_table(path, columns=load_cols)
 
     # FG filter in Arrow (vectorized C++)
     prod_col = _decode_dict_column(tbl.column("product_id"))
@@ -292,7 +299,7 @@ def _load_fg_parquet(
 
     # Product volumes for ABC classification (Arrow-native groupby)
     product_volumes: dict[str, float] = {}
-    if "quantity" in columns and tbl.num_rows > 0:
+    if "quantity" in load_cols and tbl.num_rows > 0:
         vol_tbl = tbl.select(["product_id", "quantity"])
         vol_agg = vol_tbl.group_by("product_id").aggregate([("quantity", "sum")])
         pid_arr = _decode_dict_column(vol_agg.column("product_id")).to_pylist()
@@ -300,7 +307,7 @@ def _load_fg_parquet(
         product_volumes = dict(zip(pid_arr, qty_arr, strict=False))
 
     # Dictionary-encode string columns → pandas Categorical (no 12GB intermediate)
-    for col_name in columns:
+    for col_name in load_cols:
         col_arr = tbl.column(col_name)
         if col_arr.type == pa.string() or (
             pa.types.is_dictionary(col_arr.type)
@@ -314,9 +321,12 @@ def _load_fg_parquet(
     df = tbl.to_pandas()
 
     # Downcast numerics (int16 sufficient for day values up to 32767)
-    for col_name in ("creation_day", "arrival_day", "day"):
+    for col_name in ("creation_day", "arrival_day", "day", "requested_date"):
         if col_name in df.columns and df[col_name].dtype in (np.float64, np.int64):
-            df[col_name] = df[col_name].astype(np.int16)
+            if df[col_name].isna().any():
+                df[col_name] = df[col_name].astype(np.float32)
+            else:
+                df[col_name] = df[col_name].astype(np.int16)
     if "quantity" in df.columns:
         df["quantity"] = df["quantity"].astype(np.float32)
 
@@ -576,10 +586,13 @@ def _pre_aggregate_orders(orders: pd.DataFrame) -> pd.DataFrame:
               f"added line_count ({elapsed:.1f}s)")
         return orders
 
-    agg = orders.groupby(groupby_cols, observed=True).agg(
-        quantity=("quantity", "sum"),
-        line_count=("quantity", "size"),
-    ).reset_index()
+    agg_spec: dict[str, tuple[str, str]] = {
+        "quantity": ("quantity", "sum"),
+        "line_count": ("quantity", "size"),
+    }
+    if "requested_date" in orders.columns:
+        agg_spec["requested_date"] = ("requested_date", "first")
+    agg = orders.groupby(groupby_cols, observed=True).agg(**agg_spec).reset_index()
 
     # Preserve compact dtypes from loader
     for col_name in ("day",):
@@ -652,7 +665,7 @@ def load_all_data(data_dir: Path) -> DataBundle:
     # v0.60.0: Stream orders with FG filter + categorical dtypes
     order_columns = [
         "product_id", "source_id", "target_id",
-        "day", "quantity", "status",
+        "day", "quantity", "status", "requested_date",
     ]
     orders, _ = _load_fg_parquet(
         data_dir / "orders.parquet", order_columns

@@ -40,12 +40,13 @@ def analyze_inventory_positioning(
         dict with 'matrix' (echelon x ABC DOS), 'targets', 'trend'.
     """
     inv = data.inv_by_echelon
+    ships = data.shipments
     # Shipments already FG-filtered; use precomputed is_demand_endpoint
-    demand_ships = data.shipments[data.shipments["is_demand_endpoint"]]
+    demand_ships = ships[ships["is_demand_endpoint"]]
     sim_days = data.sim_days
 
-    # Daily demand rate by ABC using precomputed abc_class
-    demand_abc = data.shipments[data.shipments["is_demand_endpoint"]]["abc_class"]
+    # Daily demand rate by ABC using precomputed abc_class (for total_dos)
+    demand_abc = demand_ships["abc_class"]
     demand_qty = demand_ships["quantity"]
     demand_by_abc: dict[str, float] = {}
     for cls in ("A", "B", "C"):
@@ -53,6 +54,22 @@ def analyze_inventory_positioning(
         demand_by_abc[cls] = cls_dem / sim_days if sim_days > 0 else 0
 
     total_demand_daily = sum(demand_by_abc.values())
+
+    # Per-echelon throughput by ABC for DOS calculation
+    # Plant/RDC/DC: use outflow (shipments FROM); Store/Club: use inflow (shipments TO)
+    throughput_by_ech_abc: dict[tuple[str, str], float] = {}
+    for ech in ECHELON_ORDER:
+        if ech in ("Store", "Club"):
+            # Stores consume: use demand-endpoint inflow
+            ech_ships = demand_ships[demand_ships["target_echelon"] == ech]
+        else:
+            # Flow echelons: use outflow
+            ech_ships = ships[ships["source_echelon"] == ech]
+        ech_abc = ech_ships["abc_class"]
+        for cls in ("A", "B", "C"):
+            cls_qty = ech_ships.loc[ech_abc == cls, "quantity"].sum()
+            rate = cls_qty / sim_days if sim_days > 0 else 0
+            throughput_by_ech_abc[(ech, cls)] = rate
 
     # v0.66.0: Config-derived targets (replaces hardcoded values)
     targets = data.dos_targets.by_echelon
@@ -73,8 +90,8 @@ def analyze_inventory_positioning(
         row: dict[str, Any] = {"total_inv": ech_total}
         for cls in ("A", "B", "C"):
             cls_inv = float(ech_data[cls].sum())
-            daily_dem = demand_by_abc.get(cls, 0)
-            dos = cls_inv / daily_dem if daily_dem > 0 else np.nan
+            daily_thru = throughput_by_ech_abc.get((ech, cls), 0)
+            dos = cls_inv / daily_thru if daily_thru > 0 else np.nan
             target = targets.get(ech, {}).get(cls, np.nan)
             vs_target = dos / target if target > 0 and not np.isnan(dos) else np.nan
             row[cls] = {
@@ -383,11 +400,14 @@ def analyze_slob(data: DataBundle) -> dict[str, Any]:
 
     risk_products.sort(key=lambda x: x["excess_pct"], reverse=True)
 
+    min_day = int(inv["day"].min()) if len(inv) > 0 else 0
+
     return {
         "headline": headline,
         "by_abc": by_abc,
         "by_echelon": by_echelon,
         "risk_products": risk_products[:15],
+        "min_day": min_day,
     }
 
 
@@ -565,8 +585,13 @@ def format_slob(results: dict[str, Any], width: int = 78) -> str:
     lines = [
         f"\n{'[2.4] SLOB Decomposition':=^{width}}",
         f"  Headline SLOB: {results['headline']:.1%}",
-        "",
     ]
+    min_day = results.get("min_day", 0)
+    if min_day > 0:
+        lines.append(
+            f"  Note: warm-start baseline (first inv snapshot at day {min_day})"
+        )
+    lines.append("")
 
     # By ABC
     lines.append("  SLOB drivers by ABC class:")

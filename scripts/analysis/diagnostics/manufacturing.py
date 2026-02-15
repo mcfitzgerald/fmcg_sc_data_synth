@@ -38,18 +38,25 @@ def compute_bom_cost_rollup(bundle: DataBundle) -> dict[str, Any] | None:
     default_labor = labor_pcts.get("default", 0.25)
     default_overhead = overhead_pcts.get("default", 0.22)
 
-    # Build cost_per_kg for ingredients
+    # Build cost_per_kg for ingredients (only where weight_kg is known)
     products = bundle.products
     wt_map: dict[str, float] = {}
     for _, row in products.iterrows():
-        wt = row.get("weight_kg", 1.0)
+        wt = row.get("weight_kg")
         if pd.notna(wt) and wt > 0:
             wt_map[row["id"]] = float(wt)
 
     ing_cost_per_kg: dict[str, float] = {}
+    skipped_ingredients = 0
     for pid, cost in bundle.ing_cost_map.items():
-        wt = wt_map.get(pid, 1.0)
-        ing_cost_per_kg[pid] = cost / wt if wt > 0 else cost
+        wt = wt_map.get(pid)
+        if wt is not None and wt > 0:
+            ing_cost_per_kg[pid] = cost / wt
+        else:
+            skipped_ingredients += 1
+    if skipped_ingredients > 0:
+        print(f"    Note: {skipped_ingredients} ingredients skipped from cost rollup"
+              f" (no weight_kg)")
 
     batch_ings = bundle.batch_ingredients.copy()
     batch_ings["unit_cost_per_kg"] = batch_ings["ingredient_id"].map(
@@ -235,35 +242,45 @@ def compute_upstream_availability(bundle: DataBundle) -> dict[str, Any]:
 def compute_stockout_waterfall(bundle: DataBundle) -> dict[str, Any]:
     """Stockout root cause waterfall: 4-stage funnel (NEW Q5).
 
+    All stages use grouped order events (day, source, target, product) for
+    consistent counting across the funnel.
+
     Stages:
-      1. Total demand order lines
-      2. Source had inventory (order not unfillable)
-      3. Allocated in full (order CLOSED)
-      4. Shipped same day
-      5. Arrived on time (if requested_date available)
+      1. Total order events
+      2. Allocated in full (CLOSED)
+      3. Shipped in full
+      4. Arrived on time (if requested_date available)
 
     Returns dict with stages list, each having lines, cum_loss, loss_pct.
     """
     orders = bundle.orders
     ships = bundle.shipments
 
-    # Support pre-aggregated orders (line_count column) or raw orders
-    has_line_count = "line_count" in orders.columns
-    total_lines = int(orders["line_count"].sum()) if has_line_count else len(orders)
-    total_qty = float(orders["quantity"].sum())
+    # Group orders into unique events: (day, source, target, product)
+    # This gives consistent "order event" counting across all stages
+    agg_cols: dict[str, tuple[str, str]] = {
+        "ordered_qty": ("quantity", "sum"),
+        "status_closed": ("status", lambda x: (x == "CLOSED").any()),
+    }
+    if "requested_date" in orders.columns:
+        agg_cols["requested_date"] = ("requested_date", "first")
 
-    # Stage 1: Total demand order lines
+    ord_events = orders.groupby(
+        ["day", "source_id", "target_id", "product_id"], observed=True,
+    ).agg(**agg_cols).reset_index()
+
+    total_lines = len(ord_events)
+    total_qty = float(ord_events["ordered_qty"].sum())
+
+    # Stage 1: Total order events
     stages: list[dict[str, Any]] = [
-        {"stage": "Total demand order lines", "lines": total_lines, "qty": total_qty},
+        {"stage": "Total order events", "lines": total_lines, "qty": total_qty},
     ]
 
     # Stage 2: Orders that got fulfilled (CLOSED = source had stock & allocated)
-    closed_mask = orders["status"] == "CLOSED"
-    closed_lines = (
-        int(orders.loc[closed_mask, "line_count"].sum())
-        if has_line_count else int(closed_mask.sum())
-    )
-    closed_qty = float(orders[closed_mask]["quantity"].sum())
+    closed_events = ord_events[ord_events["status_closed"]]
+    closed_lines = len(closed_events)
+    closed_qty = float(closed_events["ordered_qty"].sum())
     no_stock_loss = total_lines - closed_lines
     stages.append({
         "stage": "Source had inventory & allocated",
@@ -273,17 +290,12 @@ def compute_stockout_waterfall(bundle: DataBundle) -> dict[str, Any]:
         "loss_reason": "No Stock / Allocation Miss",
     })
 
-    # Stage 3: Orders that were actually shipped (matched in shipments)
-    # Match by (day, source, target, product)
-    ord_keys = orders[closed_mask].groupby(
-        ["day", "source_id", "target_id", "product_id"], observed=True,
-    ).agg(ordered_qty=("quantity", "sum")).reset_index()
-
+    # Stage 3: Shipped in full
     ship_keys = ships.groupby(
         ["creation_day", "source_id", "target_id", "product_id"], observed=True,
     ).agg(shipped_qty=("quantity", "sum")).reset_index()
 
-    merged = ord_keys.merge(
+    merged = closed_events.merge(
         ship_keys,
         left_on=["day", "source_id", "target_id", "product_id"],
         right_on=["creation_day", "source_id", "target_id", "product_id"],
@@ -295,34 +307,27 @@ def compute_stockout_waterfall(bundle: DataBundle) -> dict[str, Any]:
         "stage": "Shipped in full",
         "lines": shipped_in_full,
         "qty": float(merged["shipped_qty"].sum()),
-        "loss": max(0, len(merged) - shipped_in_full),
+        "loss": max(0, closed_lines - shipped_in_full),
         "loss_reason": "Ship Delay / Partial Ship",
     })
 
     # Stage 4: Arrived on time (if requested_date available)
     has_req = (
-        "requested_date" in orders.columns
-        and orders["requested_date"].notna().any()
+        "requested_date" in ord_events.columns
+        and ord_events["requested_date"].notna().any()
     )
     if has_req:
         ship_agg = ships.groupby(
             ["creation_day", "source_id", "target_id", "product_id"], observed=True,
         ).agg(arrival_day=("arrival_day", "max")).reset_index()
 
-        merged2 = ord_keys.merge(
+        merged2 = closed_events.merge(
             ship_agg,
             left_on=["day", "source_id", "target_id", "product_id"],
             right_on=["creation_day", "source_id", "target_id", "product_id"],
             how="left",
         )
         merged2["arrival_day"] = merged2["arrival_day"].fillna(9999)
-        # Need requested_date from original orders
-        req_date = orders[closed_mask].groupby(
-            ["day", "source_id", "target_id", "product_id"], observed=True,
-        )["requested_date"].first().reset_index()
-        merged2 = merged2.merge(
-            req_date, on=["day", "source_id", "target_id", "product_id"], how="left"
-        )
         merged2["requested_date"] = merged2["requested_date"].fillna(9999)
         on_time = int((merged2["arrival_day"] <= merged2["requested_date"] + 1).sum())
         transit_loss = shipped_in_full - on_time
@@ -396,7 +401,7 @@ def compute_forward_cover(bundle: DataBundle) -> dict[str, Any]:
             "echelon": ech,
             "inventory": total_inv,
             "weekly_throughput": weekly_throughput,
-            "median_woc": woc,
+            "current_woc": woc,
             "target_woc": target_woc,
         })
 

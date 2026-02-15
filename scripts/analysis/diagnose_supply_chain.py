@@ -334,7 +334,7 @@ def run_section4(bundle: DataBundle, results: dict) -> None:
         print(f"  {'─' * 14}  {'─' * 12}  {'─' * 8}  {'─' * 12}")
         for row in fwd["by_echelon"]:
             print(f"  {row['echelon']:<14}  {row['inventory']:>12,.0f}"
-                  f"  {row['median_woc']:>8.1f}  {row['target_woc']:>12.1f}")
+                  f"  {row['current_woc']:>8.1f}  {row['target_woc']:>12.1f}")
     else:
         print("\n  No inventory data available.")
 
@@ -824,7 +824,7 @@ def main() -> int:
     t0 = time.time()
 
     print("=" * WIDTH)
-    print("  UNIFIED SUPPLY CHAIN DIAGNOSTIC (v0.72.0)".center(WIDTH))
+    print("  UNIFIED SUPPLY CHAIN DIAGNOSTIC (v0.75.0)".center(WIDTH))
     print("  35 Questions — A Consultant's Checklist".center(WIDTH))
     print("=" * WIDTH)
     print(f"\n  Data directory: {data_dir}")

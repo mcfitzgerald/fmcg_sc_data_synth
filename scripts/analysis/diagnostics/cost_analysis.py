@@ -40,27 +40,35 @@ ROUTE_KEY_MAP: dict[tuple[str, str], str] = {
 def compute_per_sku_cogs(bundle: DataBundle) -> dict[str, Any]:
     """Compute COGS using per-SKU costs from products.csv.
 
+    total_cogs uses demand-endpoint shipments only (landed COGS — cost of goods
+    actually sold to end customers). by_route uses ALL shipments for logistics
+    cost-flow analysis.
+
     Returns dict with:
         total_cogs, by_abc (DataFrame), by_route (DataFrame)
     """
     ships = bundle.shipments
     cost_per_case = ships["product_id"].map(bundle.sku_cost_map).fillna(9.0)
     cogs = ships["quantity"] * cost_per_case
-    total_cogs = float(cogs.sum())
 
-    # By ABC — minimal temp DataFrame for groupby (no full-frame copy)
+    # Landed COGS: demand-endpoint shipments only (avoids counting Plant→RDC→DC→Store 3x)
+    demand_mask = ships["is_demand_endpoint"]
+    demand_cogs = cogs[demand_mask]
+    total_cogs = float(demand_cogs.sum())
+
+    # By ABC — from demand-endpoint shipments only
     by_abc = pd.DataFrame({
-        "abc_class": ships["abc_class"],
-        "cogs": cogs,
-        "quantity": ships["quantity"],
+        "abc_class": ships.loc[demand_mask, "abc_class"],
+        "cogs": demand_cogs,
+        "quantity": ships.loc[demand_mask, "quantity"],
     }).groupby("abc_class", observed=True).agg(
         cogs=("cogs", "sum"),
         cases=("quantity", "sum"),
     )
     by_abc["avg_cost"] = by_abc["cogs"] / by_abc["cases"].clip(lower=1)
-    by_abc["share"] = by_abc["cogs"] / total_cogs
+    by_abc["share"] = by_abc["cogs"] / total_cogs if total_cogs > 0 else 0
 
-    # By route — build route at category level (~10 unique pairs, not 58M strings)
+    # By route — ALL shipments (cost flow by route, not COGS)
     pairs = (
         ships[["source_echelon", "target_echelon"]]
         .drop_duplicates()
@@ -75,6 +83,7 @@ def compute_per_sku_cogs(bundle: DataBundle) -> dict[str, Any]:
     route = ships[["source_echelon", "target_echelon"]].merge(
         pairs, on=["source_echelon", "target_echelon"], how="left",
     )["route"]
+    total_cost_flow = float(cogs.sum())
     by_route = pd.DataFrame({
         "route": route.values,
         "cogs": cogs.values,
@@ -83,7 +92,7 @@ def compute_per_sku_cogs(bundle: DataBundle) -> dict[str, Any]:
         cogs=("cogs", "sum"),
         cases=("quantity", "sum"),
     ).sort_values("cogs", ascending=False)
-    by_route["share"] = by_route["cogs"] / total_cogs
+    by_route["share"] = by_route["cogs"] / total_cost_flow if total_cost_flow > 0 else 0
 
     return {
         "total_cogs": total_cogs,
@@ -259,8 +268,8 @@ def stream_carrying_cost(bundle: DataBundle) -> dict[str, Any] | None:
 
     n_days = len(all_days)
     rows = []
-    for ech, (total_cases, total_value, count) in accum.items():
-        avg_cases = total_cases / count if count > 0 else 0
+    for ech, (total_cases, total_value, _count) in accum.items():
+        avg_cases = total_cases / n_days if n_days > 0 else 0
         avg_value = total_value / n_days if n_days > 0 else 0
         wh_rate = wh_rates.get(ech, default_wh)
         warehouse_cost = avg_cases * wh_rate * 365
@@ -306,16 +315,19 @@ def compute_cash_to_cash(bundle: DataBundle, inv_value: float = 0.0,
     # Channel-weighted DSO from demand shipment volumes
     ships = bundle.shipments
     demand_mask = ships["is_demand_endpoint"]
-    demand_vols = ships[demand_mask].copy()
 
+    # Build small temp DataFrame with only needed columns (no full-frame copy)
     if bundle.channel_map:
-        demand_vols["channel"] = demand_vols["target_id"].map(
+        channel = ships.loc[demand_mask, "target_id"].map(
             bundle.channel_map
         ).fillna("OTHER")
     else:
-        demand_vols["channel"] = "OTHER"
+        channel = pd.Series("OTHER", index=ships.index[demand_mask])
 
-    chan_vol = demand_vols.groupby("channel")["quantity"].sum()
+    chan_vol = pd.DataFrame({
+        "channel": channel,
+        "quantity": ships.loc[demand_mask, "quantity"],
+    }).groupby("channel")["quantity"].sum()
     total_vol = chan_vol.sum()
 
     weighted_dso = 0.0
