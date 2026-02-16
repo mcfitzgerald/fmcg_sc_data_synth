@@ -13,6 +13,8 @@ Usage:
 
 from __future__ import annotations
 
+import json
+from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -36,7 +38,12 @@ if TYPE_CHECKING:
 
 @dataclass
 class WarmStartState:
-    """Converged state loaded from a prior simulation run's parquet output."""
+    """Converged state loaded from a prior simulation run's parquet output.
+
+    v0.76.0: Extended with agent history buffers to eliminate warm-start transient.
+    All agent state fields default to None for backward compatibility with old
+    snapshots (without agent_state/ directory).
+    """
 
     checkpoint_day: int
     perceived_inventory: np.ndarray  # [n_nodes, n_products]
@@ -46,6 +53,187 @@ class WarmStartState:
     source_dir: str = ""
     n_nodes_loaded: int = 0
     n_products_loaded: int = 0
+
+    # v0.76.0: Agent history buffers (None = not available, use synthetic priming)
+    # MRP history
+    mrp_demand_history: np.ndarray | None = None
+    mrp_consumption_history: np.ndarray | None = None
+    mrp_production_history: np.ndarray | None = None
+    mrp_history_ptr: int = 0
+    mrp_consumption_ptr: int = 0
+    mrp_prod_hist_ptr: int = 0
+
+    # Replenisher history
+    rep_demand_history_buffer: np.ndarray | None = None
+    rep_smoothed_demand: np.ndarray | None = None
+    rep_history_idx: int = 0
+    rep_outflow_history: np.ndarray | None = None
+    rep_inflow_history: np.ndarray | None = None
+    rep_outflow_ptr: int = 0
+    rep_inflow_ptr: int = 0
+
+    # Lead time history
+    lt_history: dict[tuple[int, int], deque[float]] | None = None
+    lt_mu_cache: dict[tuple[int, int], float] | None = None
+    lt_sigma_cache: dict[tuple[int, int], float] | None = None
+
+    # StateManager
+    inventory_age: np.ndarray | None = None
+
+    # Seasonal phase (for alignment validation)
+    seasonal_phase: int = 0
+
+
+def _load_agent_state(
+    source_dir: Path,
+    checkpoint_day: int,
+    state: StateManager,
+) -> dict:
+    """Load agent history buffers from agent_state/ subdirectory.
+
+    Returns dict with agent state fields, or empty dict if agent_state/ doesn't exist
+    (backward compatibility with old snapshots).
+
+    Validates array shapes against current state dimensions and warns on mismatch.
+    """
+    agent_dir = source_dir / "agent_state"
+    if not agent_dir.exists():
+        print("  Agent state: not found (legacy snapshot) — will use synthetic priming")
+        return {}
+
+    result: dict = {}
+
+    # Load metadata
+    meta_path = agent_dir / "metadata.json"
+    if not meta_path.exists():
+        print("  Agent state: metadata.json missing — skipping agent state")
+        return {}
+
+    with open(meta_path) as f:
+        metadata = json.load(f)
+
+    result["seasonal_phase"] = metadata.get("seasonal_phase", 0)
+    cycle_days = metadata.get("cycle_days", 365)
+
+    # Warn about seasonal phase misalignment
+    if result["seasonal_phase"] != 0:
+        print(
+            f"  WARNING: Snapshot has seasonal phase offset "
+            f"{result['seasonal_phase']}/{cycle_days}."
+        )
+        print(
+            f"  Inventory positions are tuned for day {checkpoint_day} seasonality,"
+        )
+        print("  but new sim starts at day 0. This may cause a brief transient.")
+
+    # Load MRP history
+    mrp_path = agent_dir / "mrp_history.npz"
+    if mrp_path.exists():
+        try:
+            mrp_data = np.load(mrp_path)
+            # Validate shapes
+            if mrp_data["demand_history"].shape[1] == state.n_products:
+                result["mrp_demand_history"] = mrp_data["demand_history"]
+                result["mrp_consumption_history"] = mrp_data["consumption_history"]
+                result["mrp_production_history"] = mrp_data["production_history"]
+                result["mrp_history_ptr"] = int(mrp_data["history_ptr"])
+                result["mrp_consumption_ptr"] = int(mrp_data["consumption_ptr"])
+                result["mrp_prod_hist_ptr"] = int(mrp_data["prod_hist_ptr"])
+            else:
+                n_prod_snapshot = mrp_data["demand_history"].shape[1]
+                print(
+                    f"  WARNING: MRP history shape mismatch "
+                    f"({n_prod_snapshot} vs {state.n_products} products) "
+                    f"— skipping MRP history"
+                )
+        except Exception as e:
+            print(f"  WARNING: Failed to load MRP history: {e}")
+
+    # Load replenisher history
+    rep_path = agent_dir / "replenisher_history.npz"
+    if rep_path.exists():
+        try:
+            rep_data = np.load(rep_path)
+            # Validate shapes
+            if (
+                rep_data["demand_history_buffer"].shape[1] == state.n_nodes
+                and rep_data["demand_history_buffer"].shape[2] == state.n_products
+            ):
+                result["rep_demand_history_buffer"] = rep_data["demand_history_buffer"]
+                result["rep_smoothed_demand"] = rep_data["smoothed_demand"]
+                result["rep_history_idx"] = int(rep_data["history_idx"])
+                result["rep_outflow_history"] = rep_data["outflow_history"]
+                result["rep_inflow_history"] = rep_data["inflow_history"]
+                result["rep_outflow_ptr"] = int(rep_data["outflow_ptr"])
+                result["rep_inflow_ptr"] = int(rep_data["inflow_ptr"])
+            else:
+                print(
+                    "  WARNING: Replenisher history shape mismatch — skipping"
+                )
+        except Exception as e:
+            print(f"  WARNING: Failed to load replenisher history: {e}")
+
+    # Load LT history
+    lt_path = agent_dir / "lt_history.npz"
+    if lt_path.exists():
+        try:
+            lt_data = np.load(lt_path)
+            keys_arr = lt_data["keys"]
+            lengths_arr = lt_data["lengths"]
+            values_arr = lt_data["values"]
+            mu_arr = lt_data["mu"]
+            sigma_arr = lt_data["sigma"]
+
+            # Reconstruct dicts
+            lt_history: dict[tuple[int, int], deque[float]] = {}
+            lt_mu_cache: dict[tuple[int, int], float] = {}
+            lt_sigma_cache: dict[tuple[int, int], float] = {}
+
+            for i in range(len(keys_arr)):
+                key = (int(keys_arr[i, 0]), int(keys_arr[i, 1]))
+                length = int(lengths_arr[i])
+                values = values_arr[i, :length]
+                # Filter out NaNs
+                values = values[~np.isnan(values)]
+                lt_history[key] = deque(values.tolist(), maxlen=len(values_arr[i]))
+                lt_mu_cache[key] = float(mu_arr[i])
+                lt_sigma_cache[key] = float(sigma_arr[i])
+
+            result["lt_history"] = lt_history
+            result["lt_mu_cache"] = lt_mu_cache
+            result["lt_sigma_cache"] = lt_sigma_cache
+        except Exception as e:
+            print(f"  WARNING: Failed to load LT history: {e}")
+
+    # Load inventory age
+    age_path = agent_dir / "inventory_age.npy"
+    if age_path.exists():
+        try:
+            age_arr = np.load(age_path)
+            if age_arr.shape == (state.n_nodes, state.n_products):
+                result["inventory_age"] = age_arr
+            else:
+                print(
+                    f"  WARNING: Inventory age shape mismatch "
+                    f"({age_arr.shape} vs ({state.n_nodes}, {state.n_products})) "
+                    f"— skipping"
+                )
+        except Exception as e:
+            print(f"  WARNING: Failed to load inventory age: {e}")
+
+    if result:
+        loaded_components = []
+        if "mrp_demand_history" in result:
+            loaded_components.append("MRP")
+        if "rep_demand_history_buffer" in result:
+            loaded_components.append("Replenisher")
+        if "lt_history" in result:
+            loaded_components.append(f"LT history ({len(result['lt_history'])} links)")
+        if "inventory_age" in result:
+            loaded_components.append("inventory age")
+        print(f"  Agent state: loaded {', '.join(loaded_components)}")
+
+    return result
 
 
 def load_warm_start_state(
@@ -88,6 +276,9 @@ def load_warm_start_state(
     n_nodes = int(np.count_nonzero(np.any(actual > 0, axis=1)))
     n_products = int(np.count_nonzero(np.any(actual > 0, axis=0)))
 
+    # v0.76.0: Load agent history buffers (if available)
+    agent_state = _load_agent_state(src, checkpoint_day, state)
+
     return WarmStartState(
         checkpoint_day=checkpoint_day,
         perceived_inventory=perceived,
@@ -97,6 +288,8 @@ def load_warm_start_state(
         source_dir=source_dir,
         n_nodes_loaded=n_nodes,
         n_products_loaded=n_products,
+        # Agent history (v0.76.0)
+        **agent_state,
     )
 
 

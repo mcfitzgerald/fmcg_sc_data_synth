@@ -5,6 +5,45 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.76.0] - 2026-02-16
+
+### Feat: Seamless Warm-Start — Agent History Persistence + Seasonal Phase Alignment
+
+**Problem:** Warm-start from converged snapshots showed a ~50-day prod/demand ratio transient (dipping to 0.85) caused by:
+1. Agent history buffers (MRP demand_history, replenisher demand_history_buffer, LT history) being cold-started with synthetic priming instead of actual converged values
+2. Seasonal phase discontinuity when snapshot day % cycle_days ≠ 0 (e.g., day 1010 snapshot has phase 280/365, but new sim starts at phase 0/365)
+
+**Solution:** Persist all agent history buffers in a new `agent_state/` subdirectory within snapshots. Warm-start restoration now seamlessly continues from converged agent memory, eliminating the transient.
+
+#### Changes:
+
+**`src/prism_sim/simulation/warm_start.py`:**
+- Extended `WarmStartState` dataclass with agent history fields (all optional, None = use synthetic priming)
+- Added `_load_agent_state()` to load from `agent_state/` subdirectory if present
+- Validates array shapes against current world dimensions; gracefully falls back to synthetic priming on mismatch
+- Warns if seasonal phase offset detected
+
+**`src/prism_sim/simulation/orchestrator.py`:**
+- Added `_save_agent_state()` to persist agent history as compressed NPZ files:
+  - `mrp_history.npz` — 14-day MRP demand/consumption/production buffers + pointers (~100KB)
+  - `replenisher_history.npz` — 28-day demand history, 5-day outflow/inflow, smoothed demand + pointers (~50-100MB compressed)
+  - `lt_history.npz` — lead time history dicts serialized as structured arrays (~1MB)
+  - `inventory_age.npy` — FIFO age matrix (~17MB)
+  - `metadata.json` — checkpoint_day, cycle_days, seasonal_phase
+- Added seasonal phase alignment validation in `save_snapshot()`: warns if `checkpoint_day % cycle_days != 0` and suggests aligned `--days` values
+- Added `_apply_warm_start_agent_state()` to restore agent history buffers from WarmStartState
+- Modified `_prime_synthetic_steady_state()` to conditionally restore agent state instead of synthetic priming when available
+- Inventory age restoration skips `_prime_inventory_age()` when loaded from snapshot
+
+#### Backward Compatibility:
+- Old snapshots without `agent_state/` directory work exactly as before (synthetic priming)
+- No breaking changes to snapshot format or CLI
+
+#### Verification:
+- Phase-aligned snapshot at day 365 (355 + 10 stabilization) eliminates seasonal discontinuity
+- Warm-start with restored agent state shows no prod/demand transient in first 50 days
+- Legacy snapshot compatibility confirmed (falls back to synthetic priming with warning)
+
 ## [0.75.0] - 2026-02-15
 
 ### Fix: Diagnostic Module Bugs — 18 fixes across 8 files

@@ -254,21 +254,39 @@ Loads converged state from a prior run's parquet output, eliminating the synthet
 1. **Inventory**: Reads final-day snapshot from `inventory.parquet` (perceived + actual tensors)
 2. **Pipeline**: Restores in-transit shipments from `shipments.parquet` (`arrival_day > checkpoint_day`)
 3. **WIP**: Restores active production orders from `production_orders.parquet`
-4. **History**: Still synthetically primed (demand/LT buffers not in parquet, settle in ~14d)
-5. **Stabilization**: Reduced to 3 days (`warm_start_stabilization_days` config)
+4. **Agent History** (v0.76.0): Restores agent memory from `agent_state/` subdirectory (if present):
+   - MRP demand/consumption/production history (14-day buffers) + circular buffer pointers
+   - Replenisher demand_history_buffer (28-day), outflow/inflow history (5-day), smoothed demand
+   - Lead time history dicts (~4K links × 20 samples)
+   - Inventory age matrix (FIFO aging by node×product)
+   - **Seamless continuation**: No transient, no 50-day prod/demand ratio dip
+5. **Stabilization**: Reduced to 3 days (`warm_start_stabilization_days` config) — or 0 with `--no-stabilization` when using agent state
 
-Module: `simulation/warm_start.py` — `load_warm_start_state()` returns `WarmStartState` dataclass.
+**Backward Compatibility:** Old snapshots without `agent_state/` fall back to synthetic history priming (~14-28 day settling transient).
+
+Module: `simulation/warm_start.py` — `load_warm_start_state()` returns `WarmStartState` dataclass. `_load_agent_state()` handles optional agent history.
 
 ### Snapshot Mode (`--snapshot`)
-Writes final-day state to `{output_dir}/snapshot/` as 3 parquet files (inventory, shipments, production orders). Works with `--no-logging` for fast convergence chains:
+Writes final-day state to `{output_dir}/snapshot/` as 3 parquet files + agent history:
+- **Parquet files**: `inventory.parquet`, `shipments.parquet`, `production_orders.parquet`
+- **Agent state** (v0.76.0): `agent_state/` subdirectory with 4 NPZ files + metadata:
+  - `mrp_history.npz` (~100KB)
+  - `replenisher_history.npz` (~50-100MB compressed)
+  - `lt_history.npz` (~1MB)
+  - `inventory_age.npy` (~17MB)
+  - `metadata.json` (checkpoint_day, cycle_days, seasonal_phase)
+
+**Seasonal Phase Alignment:** Warns if `checkpoint_day % cycle_days != 0`. For seamless warm-start, use `--days N` where `N + stabilization_days` is a multiple of `cycle_days` (365):
 ```bash
-# Fast 1000-day convergence → snapshot
-poetry run python run_simulation.py --days 1000 --no-logging --snapshot
-# Warm-start from snapshot
-poetry run python run_simulation.py --days 365 --streaming --format parquet --warm-start data/output/snapshot
+# Phase-aligned snapshots (day 365, 730, 1095, ...)
+poetry run python run_simulation.py --days 355 --no-logging --snapshot  # 355+10=365
+poetry run python run_simulation.py --days 720 --no-logging --snapshot  # 720+10=730
+# Warm-start from aligned snapshot (no seasonal discontinuity)
+poetry run python run_simulation.py --days 365 --streaming --format parquet \
+  --warm-start data/output/snapshot --no-stabilization
 ```
 
-Method: `Orchestrator.save_snapshot(output_dir)` — uses PyArrow directly, no SimulationWriter dependency.
+Method: `Orchestrator.save_snapshot(output_dir)` + `_save_agent_state()` — uses PyArrow + numpy, no SimulationWriter dependency.
 
 `--days N` specifies N days of **steady-state data** (after stabilization).
 Total simulated days = stabilization_days + N.

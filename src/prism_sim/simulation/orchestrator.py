@@ -1,8 +1,12 @@
 import logging
 from collections.abc import Callable
-from typing import Any
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
+
+if TYPE_CHECKING:
+    from prism_sim.simulation.warm_start import WarmStartState
 
 from prism_sim.agents.allocation import AllocationAgent
 from prism_sim.agents.replenishment import MinMaxReplenisher
@@ -122,12 +126,15 @@ class Orchestrator:
             self.state.actual_inventory[:] = ws.actual_inventory
             self.state.add_shipments_batch(ws.active_shipments)
             self._warm_start_production_orders = ws.active_production_orders
+            # v0.76.0: Store WarmStartState for agent history restoration
+            self._warm_start_state = ws
             print(
                 f"Warm-start applied (day {ws.checkpoint_day}): "
                 f"{len(ws.active_shipments)} shipments, "
                 f"{len(ws.active_production_orders)} POs"
             )
         else:
+            self._warm_start_state = None
             self._initialize_inventory()
 
         self.replenisher = MinMaxReplenisher(
@@ -417,6 +424,41 @@ class Orchestrator:
     # Synthetic Steady-State Initialization
     # =========================================================================
 
+    def _apply_warm_start_agent_state(self, ws: "WarmStartState") -> None:
+        """Apply agent history buffers from warm-start snapshot (v0.76.0).
+
+        Restores MRP demand history, replenisher buffers, LT history, and inventory
+        age to eliminate the warm-start transient. Skips synthetic priming for these.
+        """
+        # MRP history
+        if ws.mrp_demand_history is not None:
+            self.mrp_engine.demand_history = ws.mrp_demand_history
+            self.mrp_engine._consumption_history = ws.mrp_consumption_history
+            self.mrp_engine.production_order_history = ws.mrp_production_history
+            self.mrp_engine._history_ptr = ws.mrp_history_ptr
+            self.mrp_engine._consumption_ptr = ws.mrp_consumption_ptr
+            self.mrp_engine._prod_hist_ptr = ws.mrp_prod_hist_ptr
+
+        # Replenisher history
+        if ws.rep_demand_history_buffer is not None:
+            self.replenisher.demand_history_buffer = ws.rep_demand_history_buffer
+            self.replenisher.smoothed_demand = ws.rep_smoothed_demand
+            self.replenisher.history_idx = ws.rep_history_idx
+            self.replenisher.outflow_history = ws.rep_outflow_history
+            self.replenisher.inflow_history = ws.rep_inflow_history
+            self.replenisher._outflow_ptr = ws.rep_outflow_ptr
+            self.replenisher._inflow_ptr = ws.rep_inflow_ptr
+
+        # LT history
+        if ws.lt_history is not None:
+            self.replenisher._lt_history = ws.lt_history
+            self.replenisher._lt_mu_cache_sparse = ws.lt_mu_cache
+            self.replenisher._lt_sigma_cache_sparse = ws.lt_sigma_cache
+
+        # Inventory age
+        if ws.inventory_age is not None:
+            self.state.inventory_age[:] = ws.inventory_age
+
     def _prime_synthetic_steady_state(self) -> None:
         """
         Inject synthetic steady-state conditions at day 0.
@@ -438,8 +480,19 @@ class Orchestrator:
                 link.target_id
             )
 
-        # Always prime history buffers (not in parquet, settles in ~14d)
-        self._prime_history_buffers()
+        # v0.76.0: Check if warm-start has agent state
+        has_agent_state = (
+            self._warm_start_state is not None
+            and self._warm_start_state.mrp_demand_history is not None
+        )
+
+        if has_agent_state:
+            # v0.76.0: Restore agent history from snapshot (eliminates transient)
+            self._apply_warm_start_agent_state(self._warm_start_state)
+            print("  History buffers: restored from warm-start snapshot")
+        else:
+            # Synthetic priming (cold-start or legacy warm-start without agent_state/)
+            self._prime_history_buffers()
 
         if self._warm_start_dir:
             # Warm-start: pipeline + WIP loaded from parquet
@@ -454,8 +507,12 @@ class Orchestrator:
             self._prime_pipeline()
             self._prime_production_wip()
 
-        # Always prime inventory age (not in parquet)
-        self._prime_inventory_age()
+        # Inventory age: restore from snapshot or synthetic prime
+        if has_agent_state and self._warm_start_state.inventory_age is not None:
+            # Already applied in _apply_warm_start_agent_state
+            print("  Inventory age: restored from warm-start snapshot")
+        else:
+            self._prime_inventory_age()
 
         # Clean up temporary maps
         del self._upstream_map
@@ -1745,6 +1802,108 @@ class Orchestrator:
         report = self.monitor.get_report()
         self.writer.save(report)
 
+    def _save_agent_state(self, output_dir: Path, checkpoint_day: int) -> None:
+        """Save agent history buffers to agent_state/ subdirectory (v0.76.0).
+
+        Persists MRP demand history, replenisher buffers, LT history, and inventory
+        age to eliminate the warm-start transient. Adds seasonal phase validation.
+        """
+        import json
+
+        agent_dir = output_dir / "agent_state"
+        agent_dir.mkdir(exist_ok=True)
+
+        # Get cycle_days from config for phase alignment validation
+        sim_params = self.config.get("simulation_parameters", {})
+        demand_config = sim_params.get("demand", {})
+        seasonality = demand_config.get("seasonality", {})
+        cycle_days = seasonality.get("cycle_days", 365)
+        seasonal_phase = checkpoint_day % cycle_days
+
+        # Warn if not phase-aligned
+        if seasonal_phase != 0:
+            aligned_days_cold = (
+                ((checkpoint_day // cycle_days) + 1) * cycle_days
+                - self._stabilization_days
+            )
+            aligned_days_warm = (
+                ((checkpoint_day // cycle_days) + 1) * cycle_days - 3
+            )
+            print(
+                f"\n  WARNING: Snapshot at day {checkpoint_day} has seasonal "
+                f"phase offset {seasonal_phase}/{cycle_days}."
+            )
+            print(
+                f"  For seamless warm-start, use --days {aligned_days_cold} "
+                f"(cold-start) or --days {aligned_days_warm} (warm-start)\n"
+            )
+
+        # Save metadata
+        metadata = {
+            "checkpoint_day": checkpoint_day,
+            "cycle_days": cycle_days,
+            "seasonal_phase": seasonal_phase,
+            "version": 1,
+        }
+        with open(agent_dir / "metadata.json", "w") as f:
+            json.dump(metadata, f, indent=2)
+
+        # Save MRP history
+        np.savez_compressed(
+            agent_dir / "mrp_history.npz",
+            demand_history=self.mrp_engine.demand_history,
+            consumption_history=self.mrp_engine._consumption_history,
+            production_history=self.mrp_engine.production_order_history,
+            history_ptr=self.mrp_engine._history_ptr,
+            consumption_ptr=self.mrp_engine._consumption_ptr,
+            prod_hist_ptr=self.mrp_engine._prod_hist_ptr,
+        )
+
+        # Save replenisher history
+        np.savez_compressed(
+            agent_dir / "replenisher_history.npz",
+            demand_history_buffer=self.replenisher.demand_history_buffer,
+            smoothed_demand=self.replenisher.smoothed_demand,
+            history_idx=self.replenisher.history_idx,
+            outflow_history=self.replenisher.outflow_history,
+            inflow_history=self.replenisher.inflow_history,
+            outflow_ptr=self.replenisher._outflow_ptr,
+            inflow_ptr=self.replenisher._inflow_ptr,
+        )
+
+        # Save LT history (dicts → structured arrays)
+        lt_keys = list(self.replenisher._lt_history.keys())
+        if lt_keys:
+            keys_arr = np.array(lt_keys, dtype=np.int32)
+            lt_history_len = self.replenisher.lt_history_len
+            values_arr = np.full(
+                (len(lt_keys), lt_history_len), np.nan, dtype=np.float64
+            )
+            lengths_arr = np.zeros(len(lt_keys), dtype=np.int32)
+            mu_arr = np.zeros(len(lt_keys), dtype=np.float64)
+            sigma_arr = np.zeros(len(lt_keys), dtype=np.float64)
+
+            for i, key in enumerate(lt_keys):
+                deq = self.replenisher._lt_history[key]
+                lengths_arr[i] = len(deq)
+                values_arr[i, : len(deq)] = list(deq)
+                mu_arr[i] = self.replenisher._lt_mu_cache_sparse.get(key, 0.0)
+                sigma_arr[i] = self.replenisher._lt_sigma_cache_sparse.get(key, 0.0)
+
+            np.savez_compressed(
+                agent_dir / "lt_history.npz",
+                keys=keys_arr,
+                lengths=lengths_arr,
+                values=values_arr,
+                mu=mu_arr,
+                sigma=sigma_arr,
+            )
+
+        # Save inventory age
+        np.save(agent_dir / "inventory_age.npy", self.state.inventory_age)
+
+        print(f"  Agent state saved to {agent_dir}/ (day {checkpoint_day})")
+
     def save_snapshot(self, output_dir: str) -> None:
         """Write final-day state snapshot for warm-start consumption.
 
@@ -1820,6 +1979,9 @@ class Orchestrator:
             po_rows["status"].append(po.status.value)
         po_table = pa.table(po_rows)
         pq.write_table(po_table, out / "production_orders.parquet")
+
+        # v0.76.0: Save agent history buffers to eliminate warm-start transient
+        self._save_agent_state(out, day)
 
         print(
             f"Snapshot saved to {output_dir}/ (day {day}): "
