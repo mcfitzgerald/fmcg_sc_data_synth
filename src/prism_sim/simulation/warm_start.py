@@ -80,6 +80,14 @@ class WarmStartState:
     # StateManager
     inventory_age: np.ndarray | None = None
 
+    # ABC classification state
+    rep_product_volume_history: np.ndarray | None = None
+    rep_z_scores_vec: np.ndarray | None = None
+
+    # MRP velocity tracking
+    mrp_week1_demand_sum: float = 0.0
+    mrp_week2_demand_sum: float = 0.0
+
     # Seasonal phase (for alignment validation)
     seasonal_phase: int = 0
 
@@ -139,6 +147,14 @@ def _load_agent_state(
                 result["mrp_history_ptr"] = int(mrp_data["history_ptr"])
                 result["mrp_consumption_ptr"] = int(mrp_data["consumption_ptr"])
                 result["mrp_prod_hist_ptr"] = int(mrp_data["prod_hist_ptr"])
+                # v0.76.0b: MRP velocity tracking
+                if "week1_demand_sum" in mrp_data:
+                    result["mrp_week1_demand_sum"] = float(
+                        mrp_data["week1_demand_sum"]
+                    )
+                    result["mrp_week2_demand_sum"] = float(
+                        mrp_data["week2_demand_sum"]
+                    )
             else:
                 n_prod_snapshot = mrp_data["demand_history"].shape[1]
                 print(
@@ -166,6 +182,12 @@ def _load_agent_state(
                 result["rep_inflow_history"] = rep_data["inflow_history"]
                 result["rep_outflow_ptr"] = int(rep_data["outflow_ptr"])
                 result["rep_inflow_ptr"] = int(rep_data["inflow_ptr"])
+                # v0.76.0b: ABC classification state
+                if "product_volume_history" in rep_data:
+                    pvh = rep_data["product_volume_history"]
+                    if pvh.shape == (state.n_products,):
+                        result["rep_product_volume_history"] = pvh
+                        result["rep_z_scores_vec"] = rep_data["z_scores_vec"]
             else:
                 print(
                     "  WARNING: Replenisher history shape mismatch — skipping"
@@ -226,7 +248,8 @@ def _load_agent_state(
         if "mrp_demand_history" in result:
             loaded_components.append("MRP")
         if "rep_demand_history_buffer" in result:
-            loaded_components.append("Replenisher")
+            abc = "+ABC" if "rep_product_volume_history" in result else ""
+            loaded_components.append(f"Replenisher{abc}")
         if "lt_history" in result:
             loaded_components.append(f"LT history ({len(result['lt_history'])} links)")
         if "inventory_age" in result:

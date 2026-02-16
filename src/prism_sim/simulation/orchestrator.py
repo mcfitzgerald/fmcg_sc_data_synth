@@ -438,6 +438,8 @@ class Orchestrator:
             self.mrp_engine._history_ptr = ws.mrp_history_ptr
             self.mrp_engine._consumption_ptr = ws.mrp_consumption_ptr
             self.mrp_engine._prod_hist_ptr = ws.mrp_prod_hist_ptr
+            self.mrp_engine._week1_demand_sum = ws.mrp_week1_demand_sum
+            self.mrp_engine._week2_demand_sum = ws.mrp_week2_demand_sum
 
         # Replenisher history
         if ws.rep_demand_history_buffer is not None:
@@ -448,6 +450,11 @@ class Orchestrator:
             self.replenisher.inflow_history = ws.rep_inflow_history
             self.replenisher._outflow_ptr = ws.rep_outflow_ptr
             self.replenisher._inflow_ptr = ws.rep_inflow_ptr
+
+        # ABC classification state
+        if ws.rep_product_volume_history is not None:
+            self.replenisher.product_volume_history = ws.rep_product_volume_history
+            self.replenisher.z_scores_vec = ws.rep_z_scores_vec
 
         # LT history
         if ws.lt_history is not None:
@@ -1857,6 +1864,8 @@ class Orchestrator:
             history_ptr=self.mrp_engine._history_ptr,
             consumption_ptr=self.mrp_engine._consumption_ptr,
             prod_hist_ptr=self.mrp_engine._prod_hist_ptr,
+            week1_demand_sum=self.mrp_engine._week1_demand_sum,
+            week2_demand_sum=self.mrp_engine._week2_demand_sum,
         )
 
         # Save replenisher history
@@ -1869,6 +1878,8 @@ class Orchestrator:
             inflow_history=self.replenisher.inflow_history,
             outflow_ptr=self.replenisher._outflow_ptr,
             inflow_ptr=self.replenisher._inflow_ptr,
+            product_volume_history=self.replenisher.product_volume_history,
+            z_scores_vec=self.replenisher.z_scores_vec,
         )
 
         # Save LT history (dicts → structured arrays)
