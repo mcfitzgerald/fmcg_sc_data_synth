@@ -127,8 +127,16 @@ def _generate_locations(
         if echelon == "supplier":
             suppliers.append((pk, sid, name, city, country, lat, lon, 1, True))
         elif echelon == "plant":
+            # DuckDB read_csv_auto can misinterpret 'inf' as date(9999,12,31)
+            cap = capacity
+            try:
+                cap = float(cap)
+                if cap != cap or cap == float("inf"):  # NaN or inf
+                    cap = None
+            except (TypeError, ValueError):
+                cap = None
             plants.append(
-                (pk, sid, name, city, country, lat, lon, capacity or 1000, True)
+                (pk, sid, name, city, country, lat, lon, cap, True)
             )
         elif echelon in ("rdc", "customer_dc"):
             dc_type = "rdc" if echelon == "rdc" else "customer_dc"

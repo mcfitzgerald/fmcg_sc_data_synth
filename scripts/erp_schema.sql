@@ -85,7 +85,7 @@ CREATE TABLE supplier_ingredients (
 
 CREATE TABLE purchase_orders (
     id SERIAL PRIMARY KEY,
-    po_number VARCHAR(30) UNIQUE NOT NULL,
+    po_number VARCHAR(30) NOT NULL,
     supplier_id INTEGER REFERENCES suppliers(id),
     plant_id INTEGER,
     order_date INTEGER NOT NULL,
@@ -105,7 +105,7 @@ CREATE TABLE purchase_order_lines (
 
 CREATE TABLE goods_receipts (
     id SERIAL PRIMARY KEY,
-    gr_number VARCHAR(30) UNIQUE NOT NULL,
+    gr_number VARCHAR(50) UNIQUE NOT NULL,
     shipment_id INTEGER,
     plant_id INTEGER,
     receipt_date INTEGER NOT NULL,
@@ -246,7 +246,7 @@ CREATE TABLE channels (
 
 CREATE TABLE orders (
     id SERIAL PRIMARY KEY,
-    order_number VARCHAR(30) UNIQUE NOT NULL,
+    order_number VARCHAR(50) UNIQUE NOT NULL,
     day INTEGER NOT NULL,
     source_id INTEGER,
     retail_location_id INTEGER,
@@ -332,7 +332,7 @@ CREATE TABLE inventory (
 
 CREATE TABLE route_segments (
     id SERIAL PRIMARY KEY,
-    segment_code VARCHAR(30) UNIQUE NOT NULL,
+    segment_code VARCHAR(50) UNIQUE NOT NULL,
     origin_type VARCHAR(20) NOT NULL,
     origin_id INTEGER NOT NULL,
     destination_type VARCHAR(20) NOT NULL,
