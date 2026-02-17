@@ -475,6 +475,7 @@ CREATE INDEX idx_batches_production_date ON batches(production_date);
 CREATE INDEX idx_gl_journal_entry_date ON gl_journal(entry_date);
 CREATE INDEX idx_gl_journal_account ON gl_journal(account_code);
 CREATE INDEX idx_gl_journal_seq ON gl_journal(transaction_sequence_id);
+CREATE INDEX idx_gl_journal_reference ON gl_journal(reference_id);
 CREATE INDEX idx_ap_invoices_date ON ap_invoices(invoice_date);
 CREATE INDEX idx_ar_invoices_date ON ar_invoices(invoice_date);
 CREATE INDEX idx_ar_invoices_channel ON ar_invoices(channel);

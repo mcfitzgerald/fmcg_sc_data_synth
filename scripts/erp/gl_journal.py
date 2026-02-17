@@ -1,12 +1,15 @@
 """GL Journal generation — double-entry bookkeeping via DuckDB SQL.
 
-Produces per-day aggregated GL entries. Aggregation is at (day, echelon, product)
-level to keep GL volume manageable (~500K rows).
+Produces per-shipment / per-batch GL entries. Each entry carries a
+``reference_id`` linking back to the source document (shipment_id,
+batch_id, or rma_id), enabling full digital-thread traceability from
+financial entries to physical movements.
 
-Six event types generate DR/CR pairs:
+Seven event types generate DR/CR pairs:
   Goods Receipts  → DR 1100 Raw Material Inv / CR 2100 AP
   Production      → DR 1120 WIP / CR 1100 RM; DR 1130 FG / CR 1120 WIP
-  Ship Dispatch   → DR 1140 In-Transit / CR 1130 FG; DR 5300 Freight / CR 1000 Cash
+  Ship Dispatch   → DR 1140 In-Transit / CR 1130 FG
+  Freight         → DR 5300 Freight Expense / CR 1000 Cash
   Ship Arrival    → DR 1130 FG / CR 1140 In-Transit
   Demand Sales    → DR 5100 COGS / CR 1130 FG; DR 1200 AR / CR 4100 Revenue
   Returns         → DR 5200 Returns / CR 1200 AR
@@ -33,19 +36,19 @@ def generate_gl_journal(
     mapper: IdMapper,
     cfg: ErpConfig,
 ) -> None:
-    """Generate gl_journal.csv with per-day aggregate double-entry GL via DuckDB."""
+    """Generate gl_journal.csv with per-shipment/batch double-entry GL via DuckDB."""
     trans_dir = output_dir / "transactional"
 
     # Register cost/price lookup tables
     _register_cost_tables(db, output_dir)
 
-    # Build all GL entries as a UNION ALL of 6 event type queries
+    # Build all GL entries as a UNION ALL of 7 event type queries
     logger.info("  GL: Building journal entries via DuckDB...")
 
     db.execute(f"""
         CREATE OR REPLACE TABLE erp_gl_journal AS
         WITH
-        -- 1. Goods Receipts: DR 1100 RM Inv / CR 2100 AP
+        -- 1. Goods Receipts: DR 1100 RM Inv / CR 2100 AP (per shipment)
         gr_entries AS (
             SELECT
                 s.arrival_day as entry_date,
@@ -54,23 +57,23 @@ def generate_gl_journal(
                 0.0 as credit_amount,
                 'goods_receipt' as reference_type,
                 s.target_id as node_id,
-                '' as product_id,
+                s.shipment_id as reference_id,
                 'RM receipt' as description
             FROM pq_shipments s
             LEFT JOIN ing_cost_tbl ic ON ic.sim_id = s.product_id
             WHERE s.target_id LIKE 'PLANT-%'
-            GROUP BY s.arrival_day, s.target_id
+            GROUP BY s.shipment_id, s.arrival_day, s.target_id
             UNION ALL
             SELECT
                 s.arrival_day, '2100', 0.0,
                 SUM(s.quantity * COALESCE(ic.cost, 5.0)),
-                'goods_receipt', s.target_id, '', 'AP accrual'
+                'goods_receipt', s.target_id, s.shipment_id, 'AP accrual'
             FROM pq_shipments s
             LEFT JOIN ing_cost_tbl ic ON ic.sim_id = s.product_id
             WHERE s.target_id LIKE 'PLANT-%'
-            GROUP BY s.arrival_day, s.target_id
+            GROUP BY s.shipment_id, s.arrival_day, s.target_id
         ),
-        -- 2. Production: DR 1120 WIP / CR 1100 RM, then DR 1130 FG / CR 1120 WIP
+        -- 2. Production: DR 1120 WIP / CR 1100 RM, then DR 1130 FG / CR 1120 WIP (per batch)
         prod_entries AS (
             SELECT b.day_produced as entry_date, '1120' as account_code,
                 SUM(b.quantity * COALESCE(
@@ -78,163 +81,161 @@ def generate_gl_journal(
                          ELSE sc.cost END, 10.0)) as debit_amount,
                 0.0 as credit_amount,
                 'production' as reference_type,
-                b.plant_id as node_id, '' as product_id, 'WIP intake'
+                b.plant_id as node_id, b.batch_id as reference_id, 'WIP intake'
             FROM pq_batches b
             LEFT JOIN ing_cost_tbl ic ON ic.sim_id = b.product_id
             LEFT JOIN sku_cost_tbl sc ON sc.sim_id = b.product_id
-            GROUP BY b.day_produced, b.plant_id
+            GROUP BY b.batch_id, b.day_produced, b.plant_id
             UNION ALL
             SELECT b.day_produced, '1100', 0.0,
                 SUM(b.quantity * COALESCE(
                     CASE WHEN b.product_id LIKE 'BULK-%' THEN ic.cost
                          ELSE sc.cost END, 10.0)),
-                'production', b.plant_id, '', 'RM consumed'
+                'production', b.plant_id, b.batch_id, 'RM consumed'
             FROM pq_batches b
             LEFT JOIN ing_cost_tbl ic ON ic.sim_id = b.product_id
             LEFT JOIN sku_cost_tbl sc ON sc.sim_id = b.product_id
-            GROUP BY b.day_produced, b.plant_id
+            GROUP BY b.batch_id, b.day_produced, b.plant_id
             UNION ALL
             SELECT b.day_produced, '1130',
                 SUM(b.quantity * COALESCE(
                     CASE WHEN b.product_id LIKE 'BULK-%' THEN ic.cost
                          ELSE sc.cost END, 10.0)),
-                0.0, 'production', b.plant_id, '', 'FG completion'
+                0.0, 'production', b.plant_id, b.batch_id, 'FG completion'
             FROM pq_batches b
             LEFT JOIN ing_cost_tbl ic ON ic.sim_id = b.product_id
             LEFT JOIN sku_cost_tbl sc ON sc.sim_id = b.product_id
-            GROUP BY b.day_produced, b.plant_id
+            GROUP BY b.batch_id, b.day_produced, b.plant_id
             UNION ALL
             SELECT b.day_produced, '1120', 0.0,
                 SUM(b.quantity * COALESCE(
                     CASE WHEN b.product_id LIKE 'BULK-%' THEN ic.cost
                          ELSE sc.cost END, 10.0)),
-                'production', b.plant_id, '', 'WIP transfer to FG'
+                'production', b.plant_id, b.batch_id, 'WIP transfer to FG'
             FROM pq_batches b
             LEFT JOIN ing_cost_tbl ic ON ic.sim_id = b.product_id
             LEFT JOIN sku_cost_tbl sc ON sc.sim_id = b.product_id
-            GROUP BY b.day_produced, b.plant_id
+            GROUP BY b.batch_id, b.day_produced, b.plant_id
         ),
-        -- 3. Ship Dispatch: DR 1140 In-Transit / CR 1130 FG
+        -- 3. Ship Dispatch: DR 1140 In-Transit / CR 1130 FG (per shipment)
         dispatch_entries AS (
             SELECT s.creation_day as entry_date, '1140' as account_code,
                 SUM(s.quantity * COALESCE(sc.cost, ic.cost, 10.0)) as debit_amount,
                 0.0 as credit_amount,
                 'shipment' as reference_type, s.source_id as node_id,
-                '' as product_id, 'In-transit dispatch'
+                s.shipment_id as reference_id, 'In-transit dispatch'
             FROM pq_shipments s
             LEFT JOIN sku_cost_tbl sc ON sc.sim_id = s.product_id
             LEFT JOIN ing_cost_tbl ic ON ic.sim_id = s.product_id
             WHERE s.source_id NOT LIKE 'SUP-%'
-            GROUP BY s.creation_day, s.source_id
+            GROUP BY s.shipment_id, s.creation_day, s.source_id
             UNION ALL
             SELECT s.creation_day, '1130', 0.0,
                 SUM(s.quantity * COALESCE(sc.cost, ic.cost, 10.0)),
-                'shipment', s.source_id, '', 'FG shipped out'
+                'shipment', s.source_id, s.shipment_id, 'FG shipped out'
             FROM pq_shipments s
             LEFT JOIN sku_cost_tbl sc ON sc.sim_id = s.product_id
             LEFT JOIN ing_cost_tbl ic ON ic.sim_id = s.product_id
             WHERE s.source_id NOT LIKE 'SUP-%'
-            GROUP BY s.creation_day, s.source_id
+            GROUP BY s.shipment_id, s.creation_day, s.source_id
         ),
-        -- Freight from erp_shipments (already computed)
+        -- 4. Freight from erp_shipments (per shipment, no aggregation)
         freight_entries AS (
             SELECT ship_date as entry_date, '5300' as account_code,
-                SUM(freight_cost) as debit_amount, 0.0 as credit_amount,
+                freight_cost as debit_amount, 0.0 as credit_amount,
                 'shipment' as reference_type, '' as node_id,
-                '' as product_id, 'Freight expense'
+                shipment_number as reference_id, 'Freight expense'
             FROM erp_shipments
-            WHERE freight_cost > 0
-            GROUP BY ship_date
+            WHERE freight_cost > 0.001
             UNION ALL
-            SELECT ship_date, '1000', 0.0, SUM(freight_cost),
-                'shipment', '', '', 'Cash paid for freight'
+            SELECT ship_date, '1000', 0.0, freight_cost,
+                'shipment', '', shipment_number, 'Cash paid for freight'
             FROM erp_shipments
-            WHERE freight_cost > 0
-            GROUP BY ship_date
+            WHERE freight_cost > 0.001
         ),
-        -- 4. Ship Arrival: DR 1130 FG / CR 1140 In-Transit
+        -- 5. Ship Arrival: DR 1130 FG / CR 1140 In-Transit (per shipment)
         arrival_entries AS (
             SELECT s.arrival_day as entry_date, '1130' as account_code,
                 SUM(s.quantity * COALESCE(sc.cost, ic.cost, 10.0)) as debit_amount,
                 0.0 as credit_amount,
                 'shipment' as reference_type, s.target_id as node_id,
-                '' as product_id, 'Received into inventory'
+                s.shipment_id as reference_id, 'Received into inventory'
             FROM pq_shipments s
             LEFT JOIN sku_cost_tbl sc ON sc.sim_id = s.product_id
             LEFT JOIN ing_cost_tbl ic ON ic.sim_id = s.product_id
             WHERE s.source_id NOT LIKE 'SUP-%'
-            GROUP BY s.arrival_day, s.target_id
+            GROUP BY s.shipment_id, s.arrival_day, s.target_id
             UNION ALL
             SELECT s.arrival_day, '1140', 0.0,
                 SUM(s.quantity * COALESCE(sc.cost, ic.cost, 10.0)),
-                'shipment', s.target_id, '', 'In-transit cleared'
+                'shipment', s.target_id, s.shipment_id, 'In-transit cleared'
             FROM pq_shipments s
             LEFT JOIN sku_cost_tbl sc ON sc.sim_id = s.product_id
             LEFT JOIN ing_cost_tbl ic ON ic.sim_id = s.product_id
             WHERE s.source_id NOT LIKE 'SUP-%'
-            GROUP BY s.arrival_day, s.target_id
+            GROUP BY s.shipment_id, s.arrival_day, s.target_id
         ),
-        -- 5. Sales: DR 5100 COGS / CR 1130 FG; DR 1200 AR / CR 4100 Revenue
+        -- 6. Sales: DR 5100 COGS / CR 1130 FG; DR 1200 AR / CR 4100 Revenue (per shipment)
         sale_entries AS (
             SELECT s.arrival_day as entry_date, '5100' as account_code,
                 SUM(s.quantity * COALESCE(sc.cost, 10.0)) as debit_amount,
                 0.0 as credit_amount,
                 'sale' as reference_type, s.target_id as node_id,
-                '' as product_id, 'COGS'
+                s.shipment_id as reference_id, 'COGS'
             FROM pq_shipments s
             LEFT JOIN sku_cost_tbl sc ON sc.sim_id = s.product_id
             WHERE s.target_id LIKE 'STORE-%'
                OR s.target_id LIKE 'ECOM-FC-%'
                OR s.target_id LIKE 'DTC-FC-%'
-            GROUP BY s.arrival_day, s.target_id
+            GROUP BY s.shipment_id, s.arrival_day, s.target_id
             UNION ALL
             SELECT s.arrival_day, '1130', 0.0,
                 SUM(s.quantity * COALESCE(sc.cost, 10.0)),
-                'sale', s.target_id, '', 'FG consumed by sale'
+                'sale', s.target_id, s.shipment_id, 'FG consumed by sale'
             FROM pq_shipments s
             LEFT JOIN sku_cost_tbl sc ON sc.sim_id = s.product_id
             WHERE s.target_id LIKE 'STORE-%'
                OR s.target_id LIKE 'ECOM-FC-%'
                OR s.target_id LIKE 'DTC-FC-%'
-            GROUP BY s.arrival_day, s.target_id
+            GROUP BY s.shipment_id, s.arrival_day, s.target_id
             UNION ALL
             SELECT s.arrival_day, '1200',
                 SUM(s.quantity * COALESCE(sp.cost, 15.0)),
-                0.0, 'sale', s.target_id, '', 'AR for sale'
+                0.0, 'sale', s.target_id, s.shipment_id, 'AR for sale'
             FROM pq_shipments s
             LEFT JOIN sku_price_tbl sp ON sp.sim_id = s.product_id
             WHERE s.target_id LIKE 'STORE-%'
                OR s.target_id LIKE 'ECOM-FC-%'
                OR s.target_id LIKE 'DTC-FC-%'
-            GROUP BY s.arrival_day, s.target_id
+            GROUP BY s.shipment_id, s.arrival_day, s.target_id
             UNION ALL
             SELECT s.arrival_day, '4100', 0.0,
                 SUM(s.quantity * COALESCE(sp.cost, 15.0)),
-                'sale', s.target_id, '', 'Revenue recognized'
+                'sale', s.target_id, s.shipment_id, 'Revenue recognized'
             FROM pq_shipments s
             LEFT JOIN sku_price_tbl sp ON sp.sim_id = s.product_id
             WHERE s.target_id LIKE 'STORE-%'
                OR s.target_id LIKE 'ECOM-FC-%'
                OR s.target_id LIKE 'DTC-FC-%'
-            GROUP BY s.arrival_day, s.target_id
+            GROUP BY s.shipment_id, s.arrival_day, s.target_id
         ),
-        -- 6. Returns: DR 5200 Returns Exp / CR 1200 AR
+        -- 7. Returns: DR 5200 Returns Exp / CR 1200 AR (per RMA)
         return_entries AS (
             SELECT r.day as entry_date, '5200' as account_code,
                 SUM(r.quantity * COALESCE(sp.cost, 15.0)) as debit_amount,
                 0.0 as credit_amount,
                 'return' as reference_type, r.target_id as node_id,
-                '' as product_id, 'Returns expense'
+                r.rma_id as reference_id, 'Returns expense'
             FROM pq_returns r
             LEFT JOIN sku_price_tbl sp ON sp.sim_id = r.product_id
-            GROUP BY r.day, r.target_id
+            GROUP BY r.rma_id, r.day, r.target_id
             UNION ALL
             SELECT r.day, '1200', 0.0,
                 SUM(r.quantity * COALESCE(sp.cost, 15.0)),
-                'return', r.target_id, '', 'AR reversal for return'
+                'return', r.target_id, r.rma_id, 'AR reversal for return'
             FROM pq_returns r
             LEFT JOIN sku_price_tbl sp ON sp.sim_id = r.product_id
-            GROUP BY r.day, r.target_id
+            GROUP BY r.rma_id, r.day, r.target_id
         ),
         -- Combine all entries
         all_entries AS (
@@ -247,18 +248,18 @@ def generate_gl_journal(
             UNION ALL SELECT * FROM return_entries
         )
         SELECT
-            ROW_NUMBER() OVER (ORDER BY entry_date, account_code) as id,
+            ROW_NUMBER() OVER (ORDER BY entry_date, reference_id, account_code) as id,
             CAST(entry_date AS BIGINT) * {DAY_MULTIPLIER} + 6 * {CAT_MULTIPLIER} +
-                CAST(ROW_NUMBER() OVER (ORDER BY entry_date, account_code) AS BIGINT) as transaction_sequence_id,
+                CAST(ROW_NUMBER() OVER (ORDER BY entry_date, reference_id, account_code) AS BIGINT) as transaction_sequence_id,
             entry_date,
             entry_date as posting_date,
             account_code,
             ROUND(debit_amount, 4) as debit_amount,
             ROUND(credit_amount, 4) as credit_amount,
             reference_type,
-            '' as reference_id,
+            reference_id,
             node_id,
-            product_id,
+            '' as product_id,
             description,
             false as is_reversal
         FROM all_entries

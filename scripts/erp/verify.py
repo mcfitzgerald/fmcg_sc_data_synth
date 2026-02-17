@@ -5,14 +5,17 @@
 3. Referential Integrity: all FKs resolve
 4. Row Count Audit: summary of all output tables
 5. Cost Sanity: COGS/Revenue ratio check
+
+GL checks use DuckDB for performance (~47M rows in seconds vs minutes).
 """
 
 from __future__ import annotations
 
 import csv
 import logging
-from collections import defaultdict
 from pathlib import Path
+
+import duckdb
 
 logger = logging.getLogger(__name__)
 
@@ -39,11 +42,19 @@ def run_verification(output_dir: Path) -> None:
             logger.info("  %-40s %10s rows", csv_file.name, f"{count:,}")
     logger.info("  %-40s %10s rows", "TOTAL", f"{total_rows:,}")
 
-    # ── 2. GL Balance ─────────────────────────────────────────
+    # ── 2. GL Balance (DuckDB for speed on ~47M rows) ────────
     gl_path = output_dir / "transactional" / "gl_journal.csv"
     if gl_path.exists():
         logger.info("\n--- GL Balance Check ---")
-        total_dr, total_cr, per_day = _check_gl_balance(gl_path)
+        gl_db = duckdb.connect()
+        gl_db.execute(f"""
+            CREATE TABLE gl AS SELECT * FROM read_csv_auto('{gl_path}')
+        """)
+
+        # Global balance
+        total_dr, total_cr = gl_db.execute("""
+            SELECT SUM(debit_amount), SUM(credit_amount) FROM gl
+        """).fetchone()
         diff = abs(total_dr - total_cr)
         if diff < 0.02:
             logger.info("  PASS: GL balanced (DR=%.2f, CR=%.2f, diff=%.4f)",
@@ -54,23 +65,30 @@ def run_verification(output_dir: Path) -> None:
                          total_dr, total_cr, diff)
             failed += 1
 
-        # Check per-day balance
-        imbalanced_days = sum(1 for d, (dr, cr) in per_day.items()
-                              if abs(dr - cr) > 0.02)
+        # Per-day balance
+        day_count, imbalanced_days = gl_db.execute("""
+            SELECT COUNT(*), SUM(CASE WHEN ABS(dr - cr) > 0.02 THEN 1 ELSE 0 END)
+            FROM (
+                SELECT entry_date, SUM(debit_amount) as dr, SUM(credit_amount) as cr
+                FROM gl GROUP BY entry_date
+            )
+        """).fetchone()
         if imbalanced_days == 0:
-            logger.info("  PASS: All %d days balanced", len(per_day))
+            logger.info("  PASS: All %d days balanced", day_count)
             passed += 1
         else:
             logger.warning("  WARN: %d/%d days have imbalance > $0.02",
-                           imbalanced_days, len(per_day))
+                           imbalanced_days, day_count)
             failed += 1
-    else:
-        logger.warning("  SKIP: gl_journal.csv not found")
 
-    # ── 3. Cost Sanity ────────────────────────────────────────
-    if gl_path.exists():
+        # ── 3. Cost Sanity ────────────────────────────────────
         logger.info("\n--- Cost Sanity ---")
-        cogs, revenue = _extract_cogs_revenue(gl_path)
+        cogs, revenue = gl_db.execute("""
+            SELECT
+                SUM(CASE WHEN account_code = '5100' THEN debit_amount ELSE 0 END),
+                SUM(CASE WHEN account_code = '4100' THEN credit_amount ELSE 0 END)
+            FROM gl
+        """).fetchone()
         if revenue > 0:
             ratio = cogs / revenue
             if 0.40 < ratio < 0.90:
@@ -82,6 +100,24 @@ def run_verification(output_dir: Path) -> None:
                 failed += 1
         else:
             logger.warning("  SKIP: No revenue entries found")
+
+        # Reference ID population check
+        logger.info("\n--- Reference ID Coverage ---")
+        ref_stats = gl_db.execute("""
+            SELECT reference_type,
+                   COUNT(*) as total,
+                   COUNT(CASE WHEN reference_id != '' AND reference_id IS NOT NULL
+                              THEN 1 END) as has_ref
+            FROM gl GROUP BY reference_type ORDER BY reference_type
+        """).fetchall()
+        for ref_type, total, has_ref in ref_stats:
+            pct = (has_ref / total * 100) if total > 0 else 0
+            logger.info("  %-20s %10s rows, %5.1f%% with reference_id",
+                        ref_type, f"{total:,}", pct)
+
+        gl_db.close()
+    else:
+        logger.warning("  SKIP: gl_journal.csv not found")
 
     # ── 4. FK Integrity Spot Check ────────────────────────────
     logger.info("\n--- FK Integrity Spot Checks ---")
@@ -110,7 +146,7 @@ def run_verification(output_dir: Path) -> None:
     # ── 5. Sequence Monotonicity ──────────────────────────────
     logger.info("\n--- Sequence Monotonicity ---")
     seq_files = ["orders.csv", "shipments.csv", "batches.csv",
-                 "gl_journal.csv", "ap_invoices.csv", "ar_invoices.csv"]
+                 "ap_invoices.csv", "ar_invoices.csv"]
     for fname in seq_files:
         fpath = output_dir / "transactional" / fname
         if fpath.exists():
@@ -121,6 +157,16 @@ def run_verification(output_dir: Path) -> None:
             else:
                 logger.warning("  WARN: %s sequence NOT monotonic", fname)
                 failed += 1
+
+    # GL monotonicity via DuckDB (too large for Python row-by-row)
+    if gl_path.exists():
+        is_mono = _check_seq_monotonic_duckdb(gl_path, "transaction_sequence_id")
+        if is_mono:
+            logger.info("  PASS: gl_journal.csv sequence monotonic")
+            passed += 1
+        else:
+            logger.warning("  WARN: gl_journal.csv sequence NOT monotonic")
+            failed += 1
 
     # ── Summary ───────────────────────────────────────────────
     logger.info("\n" + "=" * 60)
@@ -133,40 +179,6 @@ def _count_rows(path: Path) -> int:
     with open(path) as f:
         return sum(1 for _ in f) - 1
 
-
-def _check_gl_balance(
-    gl_path: Path,
-) -> tuple[float, float, dict[int, tuple[float, float]]]:
-    """Check GL debit/credit balance globally and per-day."""
-    total_dr = 0.0
-    total_cr = 0.0
-    per_day: dict[int, list[float]] = defaultdict(lambda: [0.0, 0.0])
-
-    with open(gl_path) as f:
-        for row in csv.DictReader(f):
-            dr = float(row["debit_amount"])
-            cr = float(row["credit_amount"])
-            day = int(row["entry_date"])
-            total_dr += dr
-            total_cr += cr
-            per_day[day][0] += dr
-            per_day[day][1] += cr
-
-    day_tuples = {d: (v[0], v[1]) for d, v in per_day.items()}
-    return total_dr, total_cr, day_tuples
-
-
-def _extract_cogs_revenue(gl_path: Path) -> tuple[float, float]:
-    """Extract total COGS (5100 debit) and Revenue (4100 credit)."""
-    cogs = 0.0
-    revenue = 0.0
-    with open(gl_path) as f:
-        for row in csv.DictReader(f):
-            if row["account_code"] == "5100":
-                cogs += float(row["debit_amount"])
-            elif row["account_code"] == "4100":
-                revenue += float(row["credit_amount"])
-    return cogs, revenue
 
 
 def _check_fk(
@@ -205,3 +217,23 @@ def _check_seq_monotonic(path: Path, col: str) -> bool:
                 return False
             prev = val
     return True
+
+
+def _check_seq_monotonic_duckdb(path: Path, col: str) -> bool:
+    """Check sequence monotonicity via DuckDB (for large CSVs).
+
+    Uses the ``id`` column as physical row ordering proxy since DuckDB's
+    ``read_csv_auto`` doesn't expose a ``rowid`` pseudo-column.
+    """
+    db = duckdb.connect()
+    try:
+        violations = db.execute(f"""
+            SELECT COUNT(*) FROM (
+                SELECT {col},
+                       LAG({col}) OVER (ORDER BY id) as prev_val
+                FROM read_csv_auto('{path}')
+            ) WHERE {col} < prev_val
+        """).fetchone()[0]
+        return violations == 0
+    finally:
+        db.close()

@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.76.1] - 2026-02-16
+
+### Feat: Per-Shipment GL Journal Detail — Digital Thread Traceability
+
+**Problem:** The GL journal aggregated all entries at `(day, node)` level, producing ~8.5M rows with empty `reference_id` fields. This broke VKG digital-thread traceability — financial entries couldn't be linked back to source shipments, batches, or returns. AR/AP invoices already had per-shipment granularity, but the GL was the missing link.
+
+**Solution:** Disaggregate all 7 GL event types from `GROUP BY (day, node)` to `GROUP BY (entity_id, day, node)`, populating `reference_id` with the source document ID (shipment_id, batch_id, or rma_id).
+
+#### Changes:
+
+**`scripts/erp/gl_journal.py`:**
+- All 7 CTEs now GROUP BY entity ID (shipment_id / batch_id / rma_id)
+- `reference_id` column populated with source document IDs (was always empty)
+- Freight entries now per-shipment (no GROUP BY aggregation)
+- Outer SELECT ORDER BY includes `reference_id` for deterministic sequence IDs
+- GL volume: ~8.5M → ~47M rows (~5.5x increase)
+
+**`scripts/erp/verify.py`:**
+- GL balance, COGS/Revenue, and sequence monotonicity checks now use DuckDB instead of Python csv.DictReader (seconds vs 5-10 minutes at 47M rows)
+- Added reference_id coverage report by event type
+- Removed legacy Python-based `_check_gl_balance()` and `_extract_cogs_revenue()`
+
+**`scripts/erp_schema.sql`:**
+- Added `idx_gl_journal_reference` index on `reference_id` for VKG lookups
+
+#### Balance Guarantee:
+Each CTE emits matched DR/CR pairs using identical `SUM(quantity * cost)` expressions. Disaggregating the GROUP BY distributes the same totals across more rows without changing sums.
+
 ## [0.76.0] - 2026-02-16
 
 ### Feat: Seamless Warm-Start — Agent History Persistence + Seasonal Phase Alignment
