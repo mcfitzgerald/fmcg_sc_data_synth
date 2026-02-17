@@ -94,7 +94,7 @@ The simulation is in an iterative shake-out phase. The core engine is complete; 
 
 **Cost Model Enrichment (v0.71.0):** Post-sim enrichment only — no simulation physics changes. `cost_master.json` expanded with per-route FTL/LTL logistics, echelon-specific warehouse rates, category-specific manufacturing cost structure, channel DSO. `diagnose_cost.py` upgraded from 6 to 8 sections: per-SKU COGS (was flat-category), per-echelon logistics with distance, bottom-up mfg COGS from batch_ingredients, revenue & margin by channel, channel-weighted DSO. `export_erp_format.py` cost splits now config-driven (was hardcoded 60/20/20).
 
-**Enterprise Data Generator (v0.73.0):** Replaced stale `export_erp_format.py` with DuckDB-based `scripts/erp/` package. Uses DuckDB's native parquet reader + SQL transforms + COPY TO for CSV export — processes 230M+ source rows in ~4.4 min without OOM. Financial layer adds double-entry GL journal (8.5M entries, 6 event types, balanced to <$0.01), AP/AR invoices (5.4M AP + 1.5M AR headers), and deterministic transaction sequencing (`day × 10M + cat × 1M + counter`). Output: 36 tables, 329.8M total rows. Load scripts for PostgreSQL and Neo4j.
+**Enterprise Data Generator (v0.73.0→v0.76.1):** Replaced stale `export_erp_format.py` with DuckDB-based `scripts/erp/` package. Uses DuckDB's native parquet reader + SQL transforms + COPY TO for CSV export — processes 230M+ source rows in ~2.5 min without OOM. Financial layer adds double-entry GL journal (~47M per-shipment/batch entries, 7 event types, each with `reference_id` traceability, balanced to <$0.01), AP/AR invoices (5.4M AP + 1.5M AR headers), and deterministic transaction sequencing (`day × 10M + cat × 1M + counter`). Output: 36 tables, 368.5M total rows. Load scripts for PostgreSQL and Neo4j.
 
 ---
 
@@ -116,7 +116,7 @@ As validation iterates, these areas are probable touchpoints:
 
 ## 5. Enterprise Data Generator (v0.73.0)
 
-**Status:** Complete. 36 tables, 329.8M rows, GL balanced, 100% FK integrity.
+**Status:** Complete. 36 tables, 368.5M rows, GL balanced (per-shipment detail, 100% reference_id coverage), 100% FK integrity.
 
 **Package:** `scripts/erp/` — DuckDB-based ETL, replaces old `scripts/export_erp_format.py`.
 
@@ -127,14 +127,14 @@ As validation iterates, these areas are probable touchpoints:
 **Load scripts:** `load_postgres.sh` (\\copy), `load_neo4j.cypher` (LOAD CSV)
 
 **Verification (automated):**
-- GL balanced: DR=CR=$719.4B (diff < $0.01)
+- GL balanced: DR=CR=$759.6B (diff < $0.01)
 - COGS/Revenue: 67.5%
 - FK integrity: 100% on 5 spot checks
 - Per-day GL balance: all 368 days balanced
+- Reference ID coverage: 100% across all 5 event types (goods_receipt, production, return, sale, shipment)
 
-**Deferred to v0.74.0:**
+**Deferred:**
 - Friction layer: invoice lag, price errors, qty discrepancies, duplicates, null FKs
-- Per-shipment GL detail (currently aggregated at day × node level)
 - Neo4j graph optimization (relationship property enrichment)
 
 **Reference files:**

@@ -101,8 +101,8 @@ Sentinel `-1` means "not populated" — all consumer sites use `x.product_idx if
 | `scripts/generate_static_world.py` | Generate static world data (products, recipes, nodes, links) |
 | `scripts/calibrate_config.py` | Physics-based config calibration (capacity, safety stock, DOS targets) |
 | `scripts/run_standard_sim.py` | Standard workflow runner (priming + stabilization + data run) |
-| `scripts/erp/` | **Enterprise Data Generator:** DuckDB-based ETL, sim parquet → 36 normalized CSV tables (329.8M rows) |
-| `scripts/erp_schema.sql` | ERP relational schema (PostgreSQL DDL, 36 tables + 13 indexes) |
+| `scripts/erp/` | **Enterprise Data Generator:** DuckDB-based ETL, sim parquet → 36 normalized CSV tables (368.5M rows) |
+| `scripts/erp_schema.sql` | ERP relational schema (PostgreSQL DDL, 36 tables + 14 indexes) |
 
 ### Validation & Planning Documents
 | Document | Purpose |
@@ -169,7 +169,7 @@ Shared modular backend used by diagnostics:
 
 ### Enterprise Data Generator (`scripts/erp/`)
 
-DuckDB-based ETL that transforms sim parquet output into 36 normalized ERP CSV tables (329.8M rows). Loadable into PostgreSQL and Neo4j.
+DuckDB-based ETL that transforms sim parquet output into 36 normalized ERP CSV tables (368.5M rows). Loadable into PostgreSQL and Neo4j.
 
 **Entry point:** `poetry run python -m scripts.erp --input-dir data/output --output-dir data/output/erp`
 
@@ -185,10 +185,10 @@ DuckDB-based ETL that transforms sim parquet output into 36 normalized ERP CSV t
 | `verify.py` | Post-gen: GL balance (DuckDB), COGS/Revenue ratio, reference_id coverage, FK integrity, sequence monotonicity |
 | `neo4j_headers.py` | Neo4j-admin import header files |
 
-**Schema:** `scripts/erp_schema.sql` — 36 tables (8 domains), 13 indexes, PostgreSQL DDL.
+**Schema:** `scripts/erp_schema.sql` — 36 tables (8 domains), 14 indexes, PostgreSQL DDL.
 **Load scripts:** `data/output/erp/load_postgres.sh`, `data/output/erp/load_neo4j.cypher`
 
-**Performance:** ~4.4 min end-to-end for 230M+ source rows (Phase 1: 0.1s, Phase 2: 44s, Phase 3: 15s, Phase 4: 5s + verify).
+**Performance:** ~2.5 min end-to-end for 230M+ source rows (Phase 1: 0.1s, Phase 2: 52s, Phase 3: 61s, Phase 4: 10s + verify). Phase 3 increased due to per-shipment GL detail (~47M rows vs prior ~8.5M).
 
 ### Data Export (`simulation/writer.py`)
 | Concept | Key Classes |
