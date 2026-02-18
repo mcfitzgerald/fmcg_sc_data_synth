@@ -38,7 +38,8 @@ def generate_neo4j_headers(output_dir: Path) -> None:
     _write_header(hdr_dir / "skus_header.csv", [
         "id:ID(SKU)", "sku_code", "name", "category", "brand",
         "units_per_case:int", "weight_kg:double", "cost_per_case:double",
-        "price_per_case:double", "value_segment", "is_active:boolean",
+        "price_per_case:double", "value_segment", "supersedes_sku_id:int",
+        "is_active:boolean",
     ])
     _write_header(hdr_dir / "bulk_intermediates_header.csv", [
         "id:ID(BulkIntermediate)", "bulk_code", "name", "category",
@@ -86,6 +87,21 @@ def generate_neo4j_headers(output_dir: Path) -> None:
     _write_header(hdr_dir / "chart_of_accounts_header.csv", [
         "id:ID(Account)", "account_code", "account_name", "account_type",
         "is_active:boolean",
+    ])
+    # Friction tables (v0.78.0)
+    _write_header(hdr_dir / "invoice_variances_header.csv", [
+        "id:ID(InvoiceVariance)", "invoice_id:int", "line_number:int",
+        "variance_type", "expected_value:double", "actual_value:double",
+        "variance_amount:double", "resolution_status",
+    ])
+    _write_header(hdr_dir / "ap_payments_header.csv", [
+        "id:ID(APPayment)", "transaction_sequence_id:long", "invoice_id:int",
+        "payment_date:int", "amount:double", "discount_amount:double",
+        "net_amount:double", "payment_method", "status",
+    ])
+    _write_header(hdr_dir / "ar_receipts_header.csv", [
+        "id:ID(ARReceipt)", "transaction_sequence_id:long", "invoice_id:int",
+        "receipt_date:int", "amount:double", "status",
     ])
 
     # ── Relationship headers ──────────────────────────────────

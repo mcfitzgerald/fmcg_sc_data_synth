@@ -133,8 +133,13 @@ As validation iterates, these areas are probable touchpoints:
 - Per-day GL balance: all 368 days balanced
 - Reference ID coverage: 100% across all 5 event types (goods_receipt, production, return, sale, shipment)
 
+**v0.78.0 (friction layer):**
+- Friction layer: 4 tiers — entity resolution, 3-way match, data quality, payment timing
+- Config toggle: `cost_master.json` → `friction.enabled`
+- New tables: `invoice_variances`, `ap_payments`, `ar_receipts`
+- New GL accounts: 4200 (Discount Income), 5500 (Bad Debt)
+
 **Deferred:**
-- Friction layer: invoice lag, price errors, qty discrepancies, duplicates, null FKs
 - Neo4j graph optimization (relationship property enrichment)
 
 **Reference files:**

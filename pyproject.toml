@@ -1,6 +1,6 @@
 [project]
 name = "prism-sim"
-version = "0.77.0"
+version = "0.78.0"
 description = ""
 authors = [
     {name = "Your Name",email = "you@example.com"}
@@ -83,6 +83,7 @@ max-returns = 8
 [tool.ruff.lint.per-file-ignores]
 "src/prism_sim/agents/replenishment.py" = ["N806"]  # Math notation (mu_L, sigma_L)
 "src/prism_sim/generators/network.py" = ["N806"]  # Math notation (R = random)
+"scripts/erp/*.py" = ["E501", "PLR2004"]  # Embedded SQL + threshold constants
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"

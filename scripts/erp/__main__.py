@@ -100,6 +100,17 @@ def main() -> None:
     t3 = time.perf_counter()
     logger.info("Phase 3 done in %.1fs", t3 - t2)
 
+    # ── Phase 3.5: Friction Layer (optional) ──────────────────
+    if cfg.friction.enabled:
+        from .friction import generate_friction
+
+        logger.info("Phase 3.5: Friction layer")
+        friction_stats = generate_friction(output_dir, cfg)
+        t35 = time.perf_counter()
+        logger.info("Phase 3.5 done in %.1fs — %s", t35 - t3, friction_stats)
+    else:
+        logger.info("Phase 3.5: Friction disabled, skipping")
+
     # ── Phase 4: Save artifacts ───────────────────────────────
     mapper.save(output_dir / "reference" / "id_mapping.json")
 

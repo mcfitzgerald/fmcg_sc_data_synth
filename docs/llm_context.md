@@ -169,26 +169,29 @@ Shared modular backend used by diagnostics:
 
 ### Enterprise Data Generator (`scripts/erp/`)
 
-DuckDB-based ETL that transforms sim parquet output into 36 normalized ERP CSV tables (368.5M rows). Loadable into PostgreSQL and Neo4j.
+DuckDB-based ETL that transforms sim parquet output into 39 normalized ERP CSV tables. Loadable into PostgreSQL and Neo4j.
 
 **Entry point:** `poetry run python -m scripts.erp --input-dir data/output --output-dir data/output/erp`
 
 | Module | Purpose |
 |--------|---------|
-| `config.py` | ErpConfig: loads cost_master.json, world_def, sim_config; 12-account Chart of Accounts |
+| `config.py` | ErpConfig + FrictionConfig: loads cost_master.json (incl. friction section), world_def, sim_config; 14-account Chart of Accounts |
 | `id_mapper.py` | Bidirectional sim string ID ↔ integer PK mapping (JSON serializable) |
-| `sequence.py` | Deterministic `transaction_sequence_id`: `day × 10M + category × 1M + counter` |
+| `sequence.py` | Deterministic `transaction_sequence_id`: `day × 10M + category × 1M + counter`. Categories 0-7 (core), 8 (friction), 9 (payment) |
 | `master_tables.py` | DuckDB SQL: 14 master CSVs from static world files + config |
 | `transactional.py` | DuckDB-native large tables (orders 60.9M, shipments 69.9M, inventory 99.2M); Python for small tables |
 | `gl_journal.py` | Pure DuckDB SQL: 7 event types × DR/CR pairs → ~47M per-shipment/batch GL entries with `reference_id` traceability. v0.77.0: production cost uses `batch_cost` CTE (ingredient-level rollup from `pq_batch_ingredients` × `ing_cost_tbl`) instead of output_kg × product_cost. |
 | `invoices.py` | DuckDB-native AP invoices (5.4M) and AR invoices (1.5M headers, 57.7M lines) |
-| `verify.py` | Post-gen: GL balance (DuckDB), COGS/Revenue ratio, reference_id coverage, FK integrity, sequence monotonicity |
-| `neo4j_headers.py` | Neo4j-admin import header files |
+| `friction.py` | v0.78.0: Phase 3.5 — controlled data quality friction. 4 tiers: entity resolution (dup suppliers, SKU aliases), 3-way match failures (price/qty variance → `invoice_variances`), data quality (null FKs, dup invoices, status flips), payment timing (`ap_payments`, `ar_receipts`, early discounts, bad debt). All DuckDB SQL, all GL entries balanced. Config: `cost_master.json` → `friction.enabled`. |
+| `verify.py` | Post-gen: GL balance (DuckDB), COGS/Revenue ratio, reference_id coverage, FK integrity, sequence monotonicity, friction table stats |
+| `neo4j_headers.py` | Neo4j-admin import header files (incl. friction tables) |
 
-**Schema:** `scripts/erp_schema.sql` — 36 tables (8 domains), 14 indexes, PostgreSQL DDL.
+**Schema:** `scripts/erp_schema.sql` — 39 tables (9 domains incl. friction), 19 indexes, PostgreSQL DDL.
 **Load scripts:** `data/output/erp/load_postgres.sh`, `data/output/erp/load_neo4j.cypher`
 
-**Performance:** ~2.5 min end-to-end for 230M+ source rows (Phase 1: 0.1s, Phase 2: 52s, Phase 3: 61s, Phase 4: 10s + verify). Phase 3 increased due to per-shipment GL detail (~47M rows vs prior ~8.5M).
+**Friction layer (v0.78.0):** Toggled by `cost_master.json` → `friction.enabled`. When enabled, Phase 3.5 injects controlled noise: duplicate suppliers (variant names, ~10%), SKU old-code aliases (~5%, `supersedes_sku_id`), AP invoice price/qty variances (8%/5%), null FKs, duplicate invoices, AR status flips, AP payments, AR receipts, early payment discounts (2%), bad debt writeoffs (0.5%). New GL accounts: 4200 Discount Income, 5500 Bad Debt Expense.
+
+**Performance:** ~2.5 min end-to-end for 230M+ source rows (Phase 1: 0.1s, Phase 2: 52s, Phase 3: 61s, Phase 3.5: TBD, Phase 4: 10s + verify).
 
 ### Data Export (`simulation/writer.py`)
 | Concept | Key Classes |

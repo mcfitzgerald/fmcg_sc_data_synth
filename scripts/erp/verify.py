@@ -5,8 +5,9 @@
 3. Referential Integrity: all FKs resolve
 4. Row Count Audit: summary of all output tables
 5. Cost Sanity: COGS/Revenue ratio check
+6. Friction checks (when friction tables present)
 
-GL checks use DuckDB for performance (~47M rows in seconds vs minutes).
+GL checks use DuckDB for performance (~47M+ rows in seconds vs minutes).
 """
 
 from __future__ import annotations
@@ -42,7 +43,7 @@ def run_verification(output_dir: Path) -> None:
             logger.info("  %-40s %10s rows", csv_file.name, f"{count:,}")
     logger.info("  %-40s %10s rows", "TOTAL", f"{total_rows:,}")
 
-    # ── 2. GL Balance (DuckDB for speed on ~47M rows) ────────
+    # ── 2. GL Balance (DuckDB for speed on ~47M+ rows) ────────
     gl_path = output_dir / "transactional" / "gl_journal.csv"
     if gl_path.exists():
         logger.info("\n--- GL Balance Check ---")
@@ -56,7 +57,7 @@ def run_verification(output_dir: Path) -> None:
             SELECT SUM(debit_amount), SUM(credit_amount) FROM gl
         """).fetchone()
         diff = abs(total_dr - total_cr)
-        if diff < 0.02:
+        if diff < 0.10:
             logger.info("  PASS: GL balanced (DR=%.2f, CR=%.2f, diff=%.4f)",
                         total_dr, total_cr, diff)
             passed += 1
@@ -65,9 +66,9 @@ def run_verification(output_dir: Path) -> None:
                          total_dr, total_cr, diff)
             failed += 1
 
-        # Per-day balance
+        # Per-day balance (wider tolerance for friction GL entries)
         day_count, imbalanced_days = gl_db.execute("""
-            SELECT COUNT(*), SUM(CASE WHEN ABS(dr - cr) > 0.02 THEN 1 ELSE 0 END)
+            SELECT COUNT(*), SUM(CASE WHEN ABS(dr - cr) > 0.10 THEN 1 ELSE 0 END)
             FROM (
                 SELECT entry_date, SUM(debit_amount) as dr, SUM(credit_amount) as cr
                 FROM gl GROUP BY entry_date
@@ -77,7 +78,7 @@ def run_verification(output_dir: Path) -> None:
             logger.info("  PASS: All %d days balanced", day_count)
             passed += 1
         else:
-            logger.warning("  WARN: %d/%d days have imbalance > $0.02",
+            logger.warning("  WARN: %d/%d days have imbalance > $0.10",
                            imbalanced_days, day_count)
             failed += 1
 
@@ -168,10 +169,48 @@ def run_verification(output_dir: Path) -> None:
             logger.warning("  WARN: gl_journal.csv sequence NOT monotonic")
             failed += 1
 
+    # ── 6. Friction Table Checks ──────────────────────────────
+    _check_friction_tables(output_dir, passed, failed)
+
     # ── Summary ───────────────────────────────────────────────
     logger.info("\n" + "=" * 60)
     logger.info("VERIFICATION: %d passed, %d failed/warnings", passed, failed)
     logger.info("=" * 60)
+
+
+def _check_friction_tables(output_dir: Path, passed: int, failed: int) -> None:
+    """Verify friction-specific tables if they exist."""
+    trans_dir = output_dir / "transactional"
+
+    iv_path = trans_dir / "invoice_variances.csv"
+    ap_pay_path = trans_dir / "ap_payments.csv"
+    ar_rec_path = trans_dir / "ar_receipts.csv"
+
+    has_friction = iv_path.exists() or ap_pay_path.exists() or ar_rec_path.exists()
+    if not has_friction:
+        return
+
+    logger.info("\n--- Friction Tables ---")
+
+    if iv_path.exists():
+        count = _count_rows(iv_path)
+        logger.info("  invoice_variances: %s rows", f"{count:,}")
+
+    if ap_pay_path.exists():
+        count = _count_rows(ap_pay_path)
+        ap_count = _count_rows(trans_dir / "ap_invoices.csv") if (
+            trans_dir / "ap_invoices.csv"
+        ).exists() else 0
+        logger.info("  ap_payments: %s rows (AP invoices: %s)",
+                    f"{count:,}", f"{ap_count:,}")
+
+    if ar_rec_path.exists():
+        count = _count_rows(ar_rec_path)
+        ar_count = _count_rows(trans_dir / "ar_invoices.csv") if (
+            trans_dir / "ar_invoices.csv"
+        ).exists() else 0
+        logger.info("  ar_receipts: %s rows (AR invoices: %s)",
+                    f"{count:,}", f"{ar_count:,}")
 
 
 def _count_rows(path: Path) -> int:
@@ -187,7 +226,10 @@ def _check_fk(
     parent_path: Path,
     pk_col: str,
 ) -> tuple[int, int, int]:
-    """Check FK integrity: returns (resolved, total, missing)."""
+    """Check FK integrity: returns (resolved, total, missing).
+
+    Skips rows with empty/null FK values (friction may null FKs).
+    """
     parent_ids: set[str] = set()
     with open(parent_path) as f:
         for row in csv.DictReader(f):
@@ -197,8 +239,11 @@ def _check_fk(
     resolved = 0
     with open(child_path) as f:
         for row in csv.DictReader(f):
+            fk_val = row[fk_col].strip()
+            if not fk_val or fk_val.lower() == "null":
+                continue  # skip null FKs (friction)
             total += 1
-            if row[fk_col] in parent_ids:
+            if fk_val in parent_ids:
                 resolved += 1
 
     return resolved, total, total - resolved

@@ -27,6 +27,8 @@ CATEGORY_SLOTS = {
     "return": 5,
     "gl_journal": 6,
     "invoice": 7,
+    "friction": 8,
+    "payment": 9,
 }
 
 DAY_MULTIPLIER = 10_000_000

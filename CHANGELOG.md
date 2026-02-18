@@ -5,6 +5,38 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.78.0] - 2026-02-18
+
+### Feat: Friction Layer — Controlled Data Quality Noise for VKG Testing
+
+Adds a configurable friction layer (Phase 3.5 in ERP pipeline) that injects realistic data quality challenges into the clean ERP output. Controlled by `friction.enabled` in `cost_master.json` — when disabled, output is identical to v0.77.0.
+
+#### 4 Friction Tiers:
+
+**Tier 1 — Entity Resolution:** Duplicate suppliers with variant names (e.g., "Acme Corp" → "ACME CORPORATION INC."), SKU code aliases with `supersedes_sku_id` chain. ~10% of suppliers, ~5% of SKUs.
+
+**Tier 2 — 3-Way Match Failures:** Price and quantity variances on AP invoice lines (±2-15% price, ±1-10% qty). New `invoice_variances` table records discrepancies. Balanced GL entries (DR/CR 5400 Price Variance, DR/CR 1100 RM Adj).
+
+**Tier 3 — Data Quality:** Null FKs on AP invoices (`gr_id`) and GL entries (`node_id`). Duplicate AP invoices with "-DUP" suffix. AR invoice status flips to 'disputed'/'partial'.
+
+**Tier 4 — Payment Timing:** New `ap_payments` and `ar_receipts` tables modeling the cash cycle. Early payment discounts (2%, 10-day window). Bad debt writeoffs (~0.5% of AR). Balanced GL entries for all payment events.
+
+#### New Files:
+- `scripts/erp/friction.py` — Core friction module (~500 lines, all DuckDB SQL)
+
+#### Modified Files:
+- `scripts/erp/config.py` — `FrictionConfig` dataclass hierarchy (5 sub-configs)
+- `scripts/erp/__main__.py` — Phase 3.5 integration
+- `scripts/erp/verify.py` — Friction-aware checks (null FK tolerance, friction table stats)
+- `scripts/erp/sequence.py` — New categories: `friction` (8), `payment` (9)
+- `scripts/erp/neo4j_headers.py` — Headers for 3 new tables
+- `scripts/erp_schema.sql` — `invoice_variances`, `ap_payments`, `ar_receipts` tables; `supersedes_sku_id` on `skus`; GL accounts 4200 (Discount Income), 5500 (Bad Debt)
+- `src/prism_sim/config/cost_master.json` — `friction` config section
+
+#### New GL Accounts:
+- `4200` Discount Income (early payment discounts)
+- `5500` Bad Debt Expense (uncollectible AR writeoffs)
+
 ## [0.77.0] - 2026-02-18
 
 ### Fix: GL Production Costing Bug — Ingredient-Level Cost Rollup

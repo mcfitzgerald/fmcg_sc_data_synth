@@ -37,5 +37,36 @@
     "PERSONAL_WASH": 8.75,
     "HOME_CARE": 6.50,
     "default": 9.00
+  },
+  "friction": {
+    "_comment": "v0.78.0: Controlled data quality friction for VKG testing. Set enabled=true to inject realistic messiness.",
+    "enabled": false,
+    "seed": 42,
+    "entity_resolution": {
+      "duplicate_supplier_rate": 0.10,
+      "sku_rename_rate": 0.05
+    },
+    "three_way_match": {
+      "price_variance_rate": 0.08,
+      "price_variance_pct_range": [0.02, 0.15],
+      "qty_variance_rate": 0.05,
+      "qty_variance_pct_range": [0.01, 0.10]
+    },
+    "data_quality": {
+      "null_fk_rate_ap": 0.02,
+      "null_fk_rate_gl": 0.01,
+      "duplicate_invoice_rate": 0.005,
+      "status_inconsistency_rate": 0.03
+    },
+    "payment_timing": {
+      "ap_payment_lag_mean_days": 0,
+      "ap_payment_lag_std_days": 5,
+      "ar_receipt_lag_mean_days": 0,
+      "ar_receipt_lag_std_days": 7,
+      "early_payment_discount_rate": 0.10,
+      "early_payment_discount_pct": 0.02,
+      "early_payment_window_days": 10,
+      "bad_debt_rate": 0.005
+    }
   }
 }
