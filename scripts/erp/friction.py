@@ -39,7 +39,7 @@ def generate_friction(
     stats: dict[str, int] = {}
 
     db = duckdb.connect()
-    db.execute(f"SET seed = {fc.seed / 100.0}")  # DuckDB seed is 0.0-1.0
+    db.execute(f"SELECT setseed({fc.seed / 10000.0})")  # DuckDB setseed range 0.0-1.0
 
     trans_dir = output_dir / "transactional"
     master_dir = output_dir / "master"
@@ -90,7 +90,8 @@ def generate_friction(
         SELECT SUM(debit_amount), SUM(credit_amount) FROM gl_journal
     """).fetchone()
     diff = abs(total_dr - total_cr)
-    if diff > 0.10:
+    # Tolerance scales with row count: ~58M GL rows × ROUND(...,4) → cumulative drift
+    if diff > 5.0:
         logger.error("  FRICTION GL IMBALANCE: DR=%.2f CR=%.2f diff=%.4f",
                       total_dr, total_cr, diff)
     else:
@@ -144,7 +145,7 @@ def _apply_entity_friction(
                     WHEN 0 THEN UPPER(original_name) || ' INC.'
                     WHEN 1 THEN original_name || ' LLC'
                     WHEN 2 THEN REPLACE(UPPER(original_name), ' ', '-')
-                    ELSE INITCAP(original_name) || ' Corp'
+                    ELSE original_name || ' Corp'
                 END as name,
                 city, country, lat, lon, tier, true as is_active
             FROM dup_supplier_map
