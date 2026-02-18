@@ -72,10 +72,33 @@ def generate_friction(
     stats.update(t4)
     logger.info("  Tier 4 (payment timing): %s", t4)
 
+    # ── Re-sort GL journal by transaction_sequence_id ──────────
+    # Friction appends entries from various days at the end of the table.
+    # Re-sort by seq_id (which encodes day + category) and re-assign id
+    # so CSV row order matches seq order for monotonicity verification.
+    db.execute("""
+        CREATE OR REPLACE TABLE gl_journal_sorted AS
+        SELECT
+            ROW_NUMBER() OVER (
+                ORDER BY transaction_sequence_id
+            ) as id,
+            transaction_sequence_id, entry_date, posting_date,
+            account_code, debit_amount, credit_amount,
+            reference_type, reference_id, node_id, product_id,
+            description, is_reversal
+        FROM gl_journal
+    """)
+    db.execute("DROP TABLE gl_journal")
+    db.execute("ALTER TABLE gl_journal_sorted RENAME TO gl_journal")
+
     # ── Re-export modified tables ──────────────────────────────
     _export_csv(db, "suppliers", master_dir / "suppliers.csv")
     _export_csv(db, "skus", master_dir / "skus.csv")
-    _export_csv(db, "ap_invoices", trans_dir / "ap_invoices.csv")
+    # ap_invoices: ordered export so friction duplicates don't break monotonicity
+    db.execute(f"""
+        COPY (SELECT * FROM ap_invoices ORDER BY transaction_sequence_id, id)
+        TO '{trans_dir / "ap_invoices.csv"}' (HEADER, DELIMITER ',')
+    """)
     _export_csv(db, "ap_invoice_lines", trans_dir / "ap_invoice_lines.csv")
     _export_csv(db, "ar_invoices", trans_dir / "ar_invoices.csv")
     _export_csv(db, "gl_journal", trans_dir / "gl_journal.csv")
@@ -553,26 +576,36 @@ def _apply_payment_timing(
 
     # ── AP Payments ────────────────────────────────────────────
     # One payment per AP invoice. payment_date = due_date + N(mean, std)
-    # Early payments (within window) get discount
+    # Early payments (within window) get discount.
+    # CTE computes lag_days once so seq_id and payment_date use the same day.
     db.execute(f"""
         CREATE TABLE ap_payments AS
+        WITH raw_lag AS (
+            SELECT
+                id, due_date, invoice_date, total_amount,
+                CAST(ROUND(
+                    {pt.ap_payment_lag_mean_days} +
+                    {pt.ap_payment_lag_std_days} * (random() + random() + random() - 1.5)
+                ) AS INTEGER) as lag_days,
+                random() as discount_rng
+            FROM ap_invoices
+        ),
+        with_date AS (
+            SELECT *,
+                GREATEST(due_date + lag_days, invoice_date) as payment_date
+            FROM raw_lag
+        )
         SELECT
             ROW_NUMBER() OVER (ORDER BY id) as id,
-            CAST(due_date + ROUND(
-                {pt.ap_payment_lag_mean_days} +
-                {pt.ap_payment_lag_std_days} * (random() + random() + random() - 1.5)
-            ) AS BIGINT) * {DAY_MULTIPLIER}
+            CAST(payment_date AS BIGINT) * {DAY_MULTIPLIER}
                 + 9 * {CAT_MULTIPLIER}
                 + CAST(ROW_NUMBER() OVER (ORDER BY id) AS BIGINT)
                 as transaction_sequence_id,
             id as invoice_id,
-            CAST(due_date + ROUND(
-                {pt.ap_payment_lag_mean_days} +
-                {pt.ap_payment_lag_std_days} * (random() + random() + random() - 1.5)
-            ) AS INTEGER) as payment_date,
+            payment_date,
             total_amount as amount,
             CASE
-                WHEN random() < {pt.early_payment_discount_rate}
+                WHEN discount_rng < {pt.early_payment_discount_rate}
                      AND due_date - invoice_date > {pt.early_payment_window_days}
                 THEN ROUND(total_amount * {pt.early_payment_discount_pct}, 4)
                 ELSE 0.0
@@ -580,20 +613,12 @@ def _apply_payment_timing(
             CAST(0.0 AS DOUBLE) as net_amount,
             'EFT' as payment_method,
             'completed' as status
-        FROM ap_invoices
+        FROM with_date
     """)
 
     # Backfill net_amount = amount - discount
     db.execute("""
         UPDATE ap_payments SET net_amount = ROUND(amount - discount_amount, 4)
-    """)
-
-    # Fix payment_date: ensure >= invoice_date (floor at invoice_date - 5)
-    db.execute("""
-        UPDATE ap_payments SET payment_date = GREATEST(
-            payment_date,
-            (SELECT invoice_date FROM ap_invoices WHERE ap_invoices.id = ap_payments.invoice_id)
-        )
     """)
 
     ap_pay_count = db.execute("SELECT COUNT(*) FROM ap_payments").fetchone()[0]
@@ -691,30 +716,36 @@ def _apply_payment_timing(
     bad_debt_count = db.execute("SELECT COUNT(*) FROM ar_bad_debt").fetchone()[0]
     stats["bad_debt"] = bad_debt_count
 
-    # Receipts for non-bad-debt invoices
+    # Receipts for non-bad-debt invoices.
+    # CTE computes lag_days once so seq_id and receipt_date use the same day.
     db.execute(f"""
         CREATE TABLE ar_receipts AS
-        SELECT
-            ROW_NUMBER() OVER (ORDER BY ar.id) as id,
-            CAST(ar.due_date + ROUND(
-                {pt.ar_receipt_lag_mean_days} +
-                {pt.ar_receipt_lag_std_days} * (random() + random() + random() - 1.5)
-            ) AS BIGINT) * {DAY_MULTIPLIER}
-                + 9 * {CAT_MULTIPLIER}
-                + CAST(ROW_NUMBER() OVER (ORDER BY ar.id) AS BIGINT)
-                as transaction_sequence_id,
-            ar.id as invoice_id,
-            GREATEST(
-                ar.invoice_date,
-                CAST(ar.due_date + ROUND(
+        WITH raw_lag AS (
+            SELECT
+                ar.id, ar.due_date, ar.invoice_date, ar.total_amount,
+                CAST(ROUND(
                     {pt.ar_receipt_lag_mean_days} +
                     {pt.ar_receipt_lag_std_days} * (random() + random() + random() - 1.5)
-                ) AS INTEGER)
-            ) as receipt_date,
-            ar.total_amount as amount,
+                ) AS INTEGER) as lag_days
+            FROM ar_invoices ar
+            WHERE ar.id NOT IN (SELECT id FROM ar_bad_debt)
+        ),
+        with_date AS (
+            SELECT *,
+                GREATEST(due_date + lag_days, invoice_date) as receipt_date
+            FROM raw_lag
+        )
+        SELECT
+            ROW_NUMBER() OVER (ORDER BY id) as id,
+            CAST(receipt_date AS BIGINT) * {DAY_MULTIPLIER}
+                + 9 * {CAT_MULTIPLIER}
+                + CAST(ROW_NUMBER() OVER (ORDER BY id) AS BIGINT)
+                as transaction_sequence_id,
+            id as invoice_id,
+            receipt_date,
+            total_amount as amount,
             'completed' as status
-        FROM ar_invoices ar
-        WHERE ar.id NOT IN (SELECT id FROM ar_bad_debt)
+        FROM with_date
     """)
 
     ar_receipt_count = db.execute("SELECT COUNT(*) FROM ar_receipts").fetchone()[0]

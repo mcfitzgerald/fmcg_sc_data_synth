@@ -145,7 +145,7 @@ def _generate_orders_duckdb(
     db.execute("""
         CREATE OR REPLACE TABLE erp_orders AS
         SELECT
-            ROW_NUMBER() OVER (ORDER BY order_id) as id,
+            ROW_NUMBER() OVER (ORDER BY MIN(day), order_id) as id,
             order_id as order_number,
             MIN(day) as day,
             COALESCE(sm.pk, 0) as source_id,
@@ -153,7 +153,7 @@ def _generate_orders_duckdb(
             FIRST(status) as status,
             CAST(SUM(quantity) AS INTEGER) as total_cases,
             CAST(MIN(day) AS BIGINT) * 10000000 + 4 * 1000000 +
-                CAST(ROW_NUMBER() OVER (ORDER BY order_id) AS BIGINT) as transaction_sequence_id
+                CAST(ROW_NUMBER() OVER (ORDER BY MIN(day), order_id) AS BIGINT) as transaction_sequence_id
         FROM pq_orders o
         LEFT JOIN loc_map sm ON sm.sim_id = o.source_id
         LEFT JOIN loc_map tm ON tm.sim_id = o.target_id
@@ -204,14 +204,14 @@ def _generate_purchase_orders_duckdb(
     db.execute("""
         CREATE OR REPLACE TABLE erp_pos AS
         SELECT
-            ROW_NUMBER() OVER (ORDER BY order_id) as id,
+            ROW_NUMBER() OVER (ORDER BY MIN(day), order_id) as id,
             order_id as po_number,
             COALESCE(sm.pk, 0) as supplier_id,
             COALESCE(tm.pk, 0) as plant_id,
             MIN(day) as order_date,
             FIRST(status) as status,
             CAST(MIN(day) AS BIGINT) * 10000000 + 0 * 1000000 +
-                CAST(ROW_NUMBER() OVER (ORDER BY order_id) AS BIGINT) as transaction_sequence_id
+                CAST(ROW_NUMBER() OVER (ORDER BY MIN(day), order_id) AS BIGINT) as transaction_sequence_id
         FROM pq_orders o
         LEFT JOIN loc_map sm ON sm.sim_id = o.source_id
         LEFT JOIN loc_map tm ON tm.sim_id = o.target_id
@@ -260,7 +260,7 @@ def _generate_shipments_duckdb(
     db.execute("""
         CREATE OR REPLACE TABLE erp_shipments AS
         SELECT
-            ROW_NUMBER() OVER (ORDER BY shipment_id) as id,
+            ROW_NUMBER() OVER (ORDER BY MIN(creation_day), shipment_id) as id,
             shipment_id as shipment_number,
             MIN(creation_day) as ship_date,
             MIN(arrival_day) as arrival_date,
@@ -277,7 +277,7 @@ def _generate_shipments_duckdb(
             END + COALESCE(rc.handling_cost, 0.20) * SUM(quantity) as freight_cost,
             SUM(COALESCE(total_weight_kg, 0)) as total_weight_kg,
             CAST(MIN(creation_day) AS BIGINT) * 10000000 + 2 * 1000000 +
-                CAST(ROW_NUMBER() OVER (ORDER BY shipment_id) AS BIGINT) as transaction_sequence_id
+                CAST(ROW_NUMBER() OVER (ORDER BY MIN(creation_day), shipment_id) AS BIGINT) as transaction_sequence_id
         FROM pq_shipments s
         LEFT JOIN loc_map sm ON sm.sim_id = s.source_id
         LEFT JOIN loc_map tm ON tm.sim_id = s.target_id
@@ -368,14 +368,14 @@ def _generate_goods_receipts_duckdb(
     db.execute("""
         CREATE OR REPLACE TABLE erp_goods_receipts AS
         SELECT
-            ROW_NUMBER() OVER (ORDER BY shipment_id) as id,
+            ROW_NUMBER() OVER (ORDER BY MIN(creation_day), shipment_id) as id,
             'GR-' || shipment_id as gr_number,
             COALESCE(es.id, 0) as shipment_id,
             COALESCE(tm.pk, 0) as plant_id,
             MIN(s.arrival_day) as receipt_date,
             'received' as status,
             CAST(MIN(s.arrival_day) AS BIGINT) * 10000000 + 0 * 1000000 +
-                CAST(ROW_NUMBER() OVER (ORDER BY s.shipment_id) AS BIGINT) as transaction_sequence_id
+                CAST(ROW_NUMBER() OVER (ORDER BY MIN(s.arrival_day), s.shipment_id) AS BIGINT) as transaction_sequence_id
         FROM pq_shipments s
         LEFT JOIN loc_map tm ON tm.sim_id = s.target_id
         LEFT JOIN erp_shipments es ON es.shipment_number = s.shipment_id

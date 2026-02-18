@@ -74,10 +74,10 @@ def _generate_ap_invoices_duckdb(
     db.execute(f"""
         CREATE OR REPLACE TABLE erp_ap_invoices AS
         SELECT
-            ROW_NUMBER() OVER (ORDER BY gr.id) as id,
+            ROW_NUMBER() OVER (ORDER BY gr.receipt_date, gr.id) as id,
             CAST(gr.receipt_date AS BIGINT) * {DAY_MULTIPLIER} + 7 * {CAT_MULTIPLIER} +
-                CAST(ROW_NUMBER() OVER (ORDER BY gr.id) AS BIGINT) as transaction_sequence_id,
-            'AP-' || LPAD(CAST(ROW_NUMBER() OVER (ORDER BY gr.id) AS VARCHAR), 7, '0') as invoice_number,
+                CAST(ROW_NUMBER() OVER (ORDER BY gr.receipt_date, gr.id) AS BIGINT) as transaction_sequence_id,
+            'AP-' || LPAD(CAST(ROW_NUMBER() OVER (ORDER BY gr.receipt_date, gr.id) AS VARCHAR), 7, '0') as invoice_number,
             -- Get supplier from the shipment's source
             COALESCE(sm.pk, 0) as supplier_id,
             gr.id as gr_id,
@@ -149,10 +149,10 @@ def _generate_ar_invoices_duckdb(
     db.execute(f"""
         CREATE OR REPLACE TABLE erp_ar_invoices AS
         SELECT
-            ROW_NUMBER() OVER (ORDER BY es.id) as id,
+            ROW_NUMBER() OVER (ORDER BY es.arrival_date, es.id) as id,
             CAST(es.arrival_date AS BIGINT) * {DAY_MULTIPLIER} + 7 * {CAT_MULTIPLIER} +
-                CAST(ROW_NUMBER() OVER (ORDER BY es.id) AS BIGINT) as transaction_sequence_id,
-            'AR-' || LPAD(CAST(ROW_NUMBER() OVER (ORDER BY es.id) AS VARCHAR), 7, '0') as invoice_number,
+                CAST(ROW_NUMBER() OVER (ORDER BY es.arrival_date, es.id) AS BIGINT) as transaction_sequence_id,
+            'AR-' || LPAD(CAST(ROW_NUMBER() OVER (ORDER BY es.arrival_date, es.id) AS VARCHAR), 7, '0') as invoice_number,
             COALESCE(tm.pk, 0) as customer_location_id,
             es.id as shipment_id,
             es.arrival_date as invoice_date,
