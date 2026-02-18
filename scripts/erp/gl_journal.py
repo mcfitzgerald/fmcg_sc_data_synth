@@ -74,48 +74,40 @@ def generate_gl_journal(
             GROUP BY s.shipment_id, s.arrival_day, s.target_id
         ),
         -- 2. Production: DR 1120 WIP / CR 1100 RM, then DR 1130 FG / CR 1120 WIP (per batch)
+        --    Cost = SUM(ingredient_input_kg × ingredient_cost_per_kg) from batch_ingredients
+        batch_cost AS (
+            SELECT bi.batch_id,
+                SUM(bi.quantity_kg * COALESCE(ic2.cost, 5.0)) as ingredient_cost
+            FROM pq_batch_ingredients bi
+            LEFT JOIN ing_cost_tbl ic2 ON ic2.sim_id = bi.ingredient_id
+            GROUP BY bi.batch_id
+        ),
         prod_entries AS (
             SELECT b.day_produced as entry_date, '1120' as account_code,
-                SUM(b.quantity * COALESCE(
-                    CASE WHEN b.product_id LIKE 'BULK-%' THEN ic.cost
-                         ELSE sc.cost END, 10.0)) as debit_amount,
+                COALESCE(bc.ingredient_cost, 0.0) as debit_amount,
                 0.0 as credit_amount,
                 'production' as reference_type,
                 b.plant_id as node_id, b.batch_id as reference_id, 'WIP intake'
             FROM pq_batches b
-            LEFT JOIN ing_cost_tbl ic ON ic.sim_id = b.product_id
-            LEFT JOIN sku_cost_tbl sc ON sc.sim_id = b.product_id
-            GROUP BY b.batch_id, b.day_produced, b.plant_id
+            LEFT JOIN batch_cost bc ON bc.batch_id = b.batch_id
             UNION ALL
             SELECT b.day_produced, '1100', 0.0,
-                SUM(b.quantity * COALESCE(
-                    CASE WHEN b.product_id LIKE 'BULK-%' THEN ic.cost
-                         ELSE sc.cost END, 10.0)),
+                COALESCE(bc.ingredient_cost, 0.0),
                 'production', b.plant_id, b.batch_id, 'RM consumed'
             FROM pq_batches b
-            LEFT JOIN ing_cost_tbl ic ON ic.sim_id = b.product_id
-            LEFT JOIN sku_cost_tbl sc ON sc.sim_id = b.product_id
-            GROUP BY b.batch_id, b.day_produced, b.plant_id
+            LEFT JOIN batch_cost bc ON bc.batch_id = b.batch_id
             UNION ALL
             SELECT b.day_produced, '1130',
-                SUM(b.quantity * COALESCE(
-                    CASE WHEN b.product_id LIKE 'BULK-%' THEN ic.cost
-                         ELSE sc.cost END, 10.0)),
+                COALESCE(bc.ingredient_cost, 0.0),
                 0.0, 'production', b.plant_id, b.batch_id, 'FG completion'
             FROM pq_batches b
-            LEFT JOIN ing_cost_tbl ic ON ic.sim_id = b.product_id
-            LEFT JOIN sku_cost_tbl sc ON sc.sim_id = b.product_id
-            GROUP BY b.batch_id, b.day_produced, b.plant_id
+            LEFT JOIN batch_cost bc ON bc.batch_id = b.batch_id
             UNION ALL
             SELECT b.day_produced, '1120', 0.0,
-                SUM(b.quantity * COALESCE(
-                    CASE WHEN b.product_id LIKE 'BULK-%' THEN ic.cost
-                         ELSE sc.cost END, 10.0)),
+                COALESCE(bc.ingredient_cost, 0.0),
                 'production', b.plant_id, b.batch_id, 'WIP transfer to FG'
             FROM pq_batches b
-            LEFT JOIN ing_cost_tbl ic ON ic.sim_id = b.product_id
-            LEFT JOIN sku_cost_tbl sc ON sc.sim_id = b.product_id
-            GROUP BY b.batch_id, b.day_produced, b.plant_id
+            LEFT JOIN batch_cost bc ON bc.batch_id = b.batch_id
         ),
         -- 3. Ship Dispatch: DR 1140 In-Transit / CR 1130 FG (per shipment)
         dispatch_entries AS (

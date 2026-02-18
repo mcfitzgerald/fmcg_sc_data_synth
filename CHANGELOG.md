@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.77.0] - 2026-02-18
+
+### Fix: GL Production Costing Bug — Ingredient-Level Cost Rollup
+
+**Problem:** The GL production entries (accounts 1100/1120/1130) used `batch_output_kg × product_cost` instead of `SUM(ingredient_input_kg × ingredient_cost_per_kg)`. For FG batches, this applied `sku_cost_per_case` (a dollars/case value) to kg — a dimensional error. Result: RM Inventory (1100) overstated by ~$438B, while FG Inventory (1130) was understated proportionally.
+
+**Root cause:** `gl_journal.py` production CTE multiplied `b.quantity` (output kg) by `COALESCE(CASE WHEN BULK THEN ic.cost ELSE sc.cost END, 10.0)` — using output quantity instead of input ingredients, and `cost_per_case` instead of `cost_per_kg` for FG products.
+
+**Fix:** Replaced the 4 production sub-queries with a `batch_cost` CTE that joins `pq_batch_ingredients` to `ing_cost_tbl`, summing `quantity_kg × cost_per_kg` at the ingredient level. This is physically correct: production cost = Σ(input ingredient kg × ingredient cost/kg).
+
+#### Changes:
+
+**`scripts/erp/gl_journal.py`:**
+- New `batch_cost` CTE: pre-computes per-batch ingredient cost from `pq_batch_ingredients` × `ing_cost_tbl`
+- All 4 production sub-queries (WIP intake, RM consumed, FG completion, WIP→FG) now use `batch_cost.ingredient_cost`
+- Removed unused `sku_cost_tbl` / `ing_cost_tbl` joins from production CTE
+- No change to dispatch, arrival, sale, freight, or return entries
+
+#### Impact:
+
+| Account | Before (buggy) | After (fixed) |
+|---------|----------------|---------------|
+| 1100 RM Inventory net | +$438B | ~$0 (balanced) |
+| 1120 WIP net | $0 | $0 |
+| 1130 FG Inventory net | understated | corrected |
+| 5100 COGS | unchanged | unchanged (uses sku_cost independently) |
+| GL balance | $0 | $0 |
+
 ## [0.76.1] - 2026-02-16
 
 ### Feat: Per-Shipment GL Journal Detail — Digital Thread Traceability

@@ -180,7 +180,7 @@ DuckDB-based ETL that transforms sim parquet output into 36 normalized ERP CSV t
 | `sequence.py` | Deterministic `transaction_sequence_id`: `day × 10M + category × 1M + counter` |
 | `master_tables.py` | DuckDB SQL: 14 master CSVs from static world files + config |
 | `transactional.py` | DuckDB-native large tables (orders 60.9M, shipments 69.9M, inventory 99.2M); Python for small tables |
-| `gl_journal.py` | Pure DuckDB SQL: 7 event types × DR/CR pairs → ~47M per-shipment/batch GL entries with `reference_id` traceability |
+| `gl_journal.py` | Pure DuckDB SQL: 7 event types × DR/CR pairs → ~47M per-shipment/batch GL entries with `reference_id` traceability. v0.77.0: production cost uses `batch_cost` CTE (ingredient-level rollup from `pq_batch_ingredients` × `ing_cost_tbl`) instead of output_kg × product_cost. |
 | `invoices.py` | DuckDB-native AP invoices (5.4M) and AR invoices (1.5M headers, 57.7M lines) |
 | `verify.py` | Post-gen: GL balance (DuckDB), COGS/Revenue ratio, reference_id coverage, FK integrity, sequence monotonicity |
 | `neo4j_headers.py` | Neo4j-admin import header files |
