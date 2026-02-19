@@ -225,8 +225,8 @@ def _apply_entity_friction(
                 name || ' (Discontinued)' as name,
                 category, brand, units_per_case, weight_kg,
                 cost_per_case, price_per_case, value_segment,
-                original_id as supersedes_sku_id,
-                false as is_active
+                false as is_active,
+                original_id as supersedes_sku_id
             FROM sku_rename_map
         """)
 

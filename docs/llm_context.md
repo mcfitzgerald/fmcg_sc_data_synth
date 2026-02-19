@@ -182,7 +182,7 @@ DuckDB-based ETL that transforms sim parquet output into 39 normalized ERP CSV t
 | `transactional.py` | DuckDB-native large tables (orders 60.9M, shipments 69.9M, inventory 99.2M); Python for small tables |
 | `gl_journal.py` | Pure DuckDB SQL: 7 event types × DR/CR pairs → ~47M per-shipment/batch GL entries with `reference_id` traceability. v0.77.0: production cost uses `batch_cost` CTE (ingredient-level rollup from `pq_batch_ingredients` × `ing_cost_tbl`) instead of output_kg × product_cost. |
 | `invoices.py` | DuckDB-native AP invoices (5.4M) and AR invoices (1.5M headers, 57.7M lines) |
-| `friction.py` | v0.78.0: Phase 3.5 — controlled data quality friction. 4 tiers: entity resolution (dup suppliers, SKU aliases), 3-way match failures (price/qty variance → `invoice_variances`), data quality (null FKs, dup invoices, status flips), payment timing (`ap_payments`, `ar_receipts`, early discounts, bad debt). All DuckDB SQL, all GL entries balanced. Config: `cost_master.json` → `friction.enabled`. |
+| `friction.py` | v0.78.0: Phase 3.5 — controlled data quality friction. 4 tiers: entity resolution (dup suppliers, SKU aliases), 3-way match failures (price/qty variance → `invoice_variances`), data quality (null FKs, dup invoices, status flips), payment timing (`ap_payments`, `ar_receipts`, early discounts, bad debt). All DuckDB SQL, all GL entries balanced. Config: `cost_master.json` → `friction.enabled`. Payment lag computed via CTE (single random per row) for seq/date consistency. GL re-sorted by `transaction_sequence_id`; AP invoices exported with ordered COPY. |
 | `verify.py` | Post-gen: GL balance (DuckDB), COGS/Revenue ratio, reference_id coverage, FK integrity, sequence monotonicity, friction table stats |
 | `neo4j_headers.py` | Neo4j-admin import header files (incl. friction tables) |
 
@@ -191,7 +191,7 @@ DuckDB-based ETL that transforms sim parquet output into 39 normalized ERP CSV t
 
 **Friction layer (v0.78.0):** Toggled by `cost_master.json` → `friction.enabled`. When enabled, Phase 3.5 injects controlled noise: duplicate suppliers (variant names, ~10%), SKU old-code aliases (~5%, `supersedes_sku_id`), AP invoice price/qty variances (8%/5%), null FKs, duplicate invoices, AR status flips, AP payments, AR receipts, early payment discounts (2%), bad debt writeoffs (0.5%). New GL accounts: 4200 Discount Income, 5500 Bad Debt Expense.
 
-**Performance:** ~2.5 min end-to-end for 230M+ source rows (Phase 1: 0.1s, Phase 2: 52s, Phase 3: 61s, Phase 3.5: TBD, Phase 4: 10s + verify).
+**Performance:** ~7.5 min end-to-end for 394M rows with friction enabled (Phase 1: 0.1s, Phase 2: 50s, Phase 3: 50s, Phase 3.5: 100s, Phase 4: 115s incl. verify). Without friction: ~2.5 min for 230M+ rows.
 
 ### Data Export (`simulation/writer.py`)
 | Concept | Key Classes |

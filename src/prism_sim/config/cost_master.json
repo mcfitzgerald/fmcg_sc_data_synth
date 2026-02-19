@@ -40,7 +40,7 @@
   },
   "friction": {
     "_comment": "v0.78.0: Controlled data quality friction for VKG testing. Set enabled=true to inject realistic messiness.",
-    "enabled": false,
+    "enabled": true,
     "seed": 42,
     "entity_resolution": {
       "duplicate_supplier_rate": 0.10,

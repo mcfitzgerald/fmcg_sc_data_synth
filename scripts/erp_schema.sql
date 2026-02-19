@@ -232,8 +232,8 @@ CREATE TABLE skus (
     cost_per_case DECIMAL(10,2),
     price_per_case DECIMAL(10,2),
     value_segment VARCHAR(30),
-    supersedes_sku_id INTEGER REFERENCES skus(id),  -- friction: old-code alias chain
-    is_active BOOLEAN DEFAULT true
+    is_active BOOLEAN DEFAULT true,
+    supersedes_sku_id INTEGER REFERENCES skus(id)  -- friction: old-code alias chain
 );
 
 -- ============================================================================

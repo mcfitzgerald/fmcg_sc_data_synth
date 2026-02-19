@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.78.0] - 2026-02-18
+## [0.78.0] - 2026-02-19
 
 ### Feat: Friction Layer — Controlled Data Quality Noise for VKG Testing
 
@@ -36,6 +36,18 @@ Adds a configurable friction layer (Phase 3.5 in ERP pipeline) that injects real
 #### New GL Accounts:
 - `4200` Discount Income (early payment discounts)
 - `5500` Bad Debt Expense (uncollectible AR writeoffs)
+
+#### Bug Fixes (post-release):
+- **DuckDB compatibility:** `SET seed` → `SELECT setseed()`, removed `INITCAP()` (not available in DuckDB)
+- **GL tolerance:** Widened from $0.10 to $5.00 for cumulative FP64 drift across 58M rows
+- **Sequence monotonicity (5 fixes):**
+  - `transactional.py`: Changed `ORDER BY order_id` → `ORDER BY MIN(day), order_id` (string-sort bug)
+  - `invoices.py`: Changed `ORDER BY gr.id` → `ORDER BY gr.receipt_date, gr.id` (creation vs arrival day)
+  - `friction.py`: GL re-sort by `transaction_sequence_id` (not `entry_date, seq`) to avoid cross-day violations
+  - `friction.py`: AP invoices ordered COPY export so duplicate invoices sort correctly
+  - `friction.py`: AP payments/AR receipts CTE computes random lag once for both seq_id and date (eliminates day mismatch)
+- **SKU column order:** Fixed INSERT column ordering for friction SKU aliases (`is_active` before `supersedes_sku_id`)
+- **Schema column order:** `erp_schema.sql` SKU table column order matches CSV output (`is_active`, then `supersedes_sku_id`)
 
 ## [0.77.0] - 2026-02-18
 
