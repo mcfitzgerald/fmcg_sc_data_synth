@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.78.1] - 2026-02-19
+
+### Fix: GL node_id Gaps + ERP Data Quality
+
+**GL node_id coverage:** 27% of GL entries (15.8M rows) had empty `node_id`. Research into SAP S/4HANA and Oracle shows freight/variance entries should have location, while treasury events (payment/receipt/bad_debt) correctly lack it.
+
+- **Freight GL node_id (15.6M rows):** `source_sim_id` from `erp_shipments` now populates `node_id` for freight expense entries (DR 5300 / CR 1000)
+- **Freight reference_type split:** `reference_type='shipment'` → `reference_type='freight'` — distinguishes financial freight cost from physical dispatch/arrival movements
+- **Variance GL node_id (1.6M rows):** Price/qty variance entries derive plant `node_id` via AP lookup chain (ap_invoices → goods_receipts → shipments → gl_journal goods_receipt entries)
+- **Duplicate invoice line items:** Tier 3 duplicate AP invoices now include matching `ap_invoice_lines` (previously headers only, ~30K invoices affected)
+
+#### Files Modified:
+- `scripts/erp/transactional.py` — Add `source_sim_id` to `erp_shipments` internal table
+- `scripts/erp/gl_journal.py` — Freight `node_id` + `reference_type='freight'`
+- `scripts/erp/friction.py` — AP node lookup, variance GL node_id, dup invoice lines
+
 ## [0.78.0] - 2026-02-19
 
 ### Feat: Friction Layer — Controlled Data Quality Noise for VKG Testing

@@ -131,13 +131,20 @@ As validation iterates, these areas are probable touchpoints:
 - COGS/Revenue: 67.5%
 - FK integrity: 100% on 5 spot checks
 - Per-day GL balance: all 368 days balanced
-- Reference ID coverage: 100% across all 5 event types (goods_receipt, production, return, sale, shipment)
+- Reference ID coverage: 100% across all 7 reference_types (goods_receipt, production, shipment, freight, sale, return, plus variance/payment in friction)
+- node_id coverage: ~98% for physical events (goods_receipt, production, shipment, freight, sale, return); 0% for treasury events (payment, receipt, bad_debt) — matches SAP/Oracle behavior
 
 **v0.78.0 (friction layer):**
 - Friction layer: 4 tiers — entity resolution, 3-way match, data quality, payment timing
 - Config toggle: `cost_master.json` → `friction.enabled`
 - New tables: `invoice_variances`, `ap_payments`, `ar_receipts`
 - New GL accounts: 4200 (Discount Income), 5500 (Bad Debt)
+
+**v0.78.1 (GL node_id + data quality fixes):**
+- Freight GL split from `reference_type='shipment'` to `reference_type='freight'` — distinct financial vs physical events
+- Freight GL entries get `source_sim_id` as `node_id` (15.6M rows fixed)
+- Variance GL entries get plant `node_id` via AP lookup chain (1.6M rows fixed)
+- Duplicate invoices now include `ap_invoice_lines` (30K invoices fixed)
 
 **Deferred:**
 - Neo4j graph optimization (relationship property enrichment)

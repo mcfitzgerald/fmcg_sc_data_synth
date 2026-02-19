@@ -51,6 +51,24 @@ def generate_friction(
     _import_csv(db, "ap_invoice_lines", trans_dir / "ap_invoice_lines.csv")
     _import_csv(db, "ar_invoices", trans_dir / "ar_invoices.csv")
     _import_csv(db, "gl_journal", trans_dir / "gl_journal.csv")
+    _import_csv(db, "goods_receipts", trans_dir / "goods_receipts.csv")
+    _import_csv(db, "shipments", trans_dir / "shipments.csv")
+
+    # Build AP invoice → receiving plant node_id lookup
+    # Chain: ap_invoices → goods_receipts → shipments → gl_journal goods_receipt entries
+    db.execute("""
+        CREATE TABLE ap_node_lookup AS
+        SELECT DISTINCT ai.id as invoice_id, gj.node_id
+        FROM ap_invoices ai
+        JOIN goods_receipts gr ON gr.id = ai.gr_id
+        JOIN shipments sh ON sh.id = gr.shipment_id
+        JOIN gl_journal gj ON gj.reference_id = sh.shipment_number
+                           AND gj.reference_type = 'goods_receipt'
+                           AND gj.account_code = '1100'
+                           AND gj.node_id != ''
+                           AND gj.node_id IS NOT NULL
+        WHERE ai.gr_id IS NOT NULL
+    """)
 
     # ── Tier 1: Entity Resolution ──────────────────────────────
     t1 = _apply_entity_friction(db, fc.entity_resolution, fc.seed)
@@ -339,12 +357,13 @@ def _apply_three_way_match(
                 0.0 as credit_amount,
                 'price_variance' as reference_type,
                 ai.invoice_number as reference_id,
-                '' as node_id,
+                COALESCE(anl.node_id, '') as node_id,
                 '' as product_id,
                 'Price variance adjustment' as description,
                 false as is_reversal
             FROM invoice_variances iv
             JOIN ap_invoices ai ON ai.id = iv.invoice_id
+            LEFT JOIN ap_node_lookup anl ON anl.invoice_id = ai.id
             WHERE iv.variance_type = 'price'
             UNION ALL
             SELECT
@@ -359,12 +378,13 @@ def _apply_three_way_match(
                 ROUND(ABS(iv.variance_amount), 4) as credit_amount,
                 'price_variance' as reference_type,
                 ai.invoice_number as reference_id,
-                '' as node_id,
+                COALESCE(anl.node_id, '') as node_id,
                 '' as product_id,
                 'Price variance adjustment' as description,
                 false as is_reversal
             FROM invoice_variances iv
             JOIN ap_invoices ai ON ai.id = iv.invoice_id
+            LEFT JOIN ap_node_lookup anl ON anl.invoice_id = ai.id
             WHERE iv.variance_type = 'price'
         """)
 
@@ -440,12 +460,13 @@ def _apply_three_way_match(
                 0.0 as credit_amount,
                 'qty_variance' as reference_type,
                 ai.invoice_number as reference_id,
-                '' as node_id,
+                COALESCE(anl.node_id, '') as node_id,
                 '' as product_id,
                 'Quantity variance adjustment' as description,
                 false as is_reversal
             FROM invoice_variances iv
             JOIN ap_invoices ai ON ai.id = iv.invoice_id
+            LEFT JOIN ap_node_lookup anl ON anl.invoice_id = ai.id
             WHERE iv.variance_type = 'qty'
             UNION ALL
             SELECT
@@ -460,12 +481,13 @@ def _apply_three_way_match(
                 ROUND(ABS(iv.variance_amount), 4) as credit_amount,
                 'qty_variance' as reference_type,
                 ai.invoice_number as reference_id,
-                '' as node_id,
+                COALESCE(anl.node_id, '') as node_id,
                 '' as product_id,
                 'Quantity variance adjustment' as description,
                 false as is_reversal
             FROM invoice_variances iv
             JOIN ap_invoices ai ON ai.id = iv.invoice_id
+            LEFT JOIN ap_node_lookup anl ON anl.invoice_id = ai.id
             WHERE iv.variance_type = 'qty'
         """)
 
@@ -517,9 +539,11 @@ def _apply_data_quality(
     db.execute(f"SELECT setseed({seed / 10000.0 + 0.06})")
     dup_rate = dq_cfg.duplicate_invoice_rate  # type: ignore[attr-defined]
 
+    max_ap_id = db.execute("SELECT MAX(id) FROM ap_invoices").fetchone()[0]
     db.execute(f"""
         CREATE TABLE dup_invoice_candidates AS
-        SELECT * FROM ap_invoices WHERE random() < {dup_rate}
+        SELECT *, {max_ap_id} + ROW_NUMBER() OVER () as new_id
+        FROM ap_invoices WHERE random() < {dup_rate}
     """)
 
     dup_inv_count = db.execute(
@@ -527,16 +551,29 @@ def _apply_data_quality(
     ).fetchone()[0]
 
     if dup_inv_count > 0:
-        max_ap_id = db.execute("SELECT MAX(id) FROM ap_invoices").fetchone()[0]
-        db.execute(f"""
+        db.execute("""
             INSERT INTO ap_invoices
             SELECT
-                {max_ap_id} + ROW_NUMBER() OVER () as id,
+                new_id as id,
                 transaction_sequence_id,
                 invoice_number || '-DUP' as invoice_number,
                 supplier_id, gr_id, invoice_date, due_date,
                 total_amount, currency, status
             FROM dup_invoice_candidates
+        """)
+
+        # Duplicate line items for each duplicated invoice
+        db.execute("""
+            INSERT INTO ap_invoice_lines
+            SELECT
+                dic.new_id as invoice_id,
+                ail.line_number,
+                ail.ingredient_id,
+                ail.quantity_kg,
+                ail.unit_cost,
+                ail.line_amount
+            FROM dup_invoice_candidates dic
+            JOIN ap_invoice_lines ail ON ail.invoice_id = dic.id
         """)
 
     stats["duplicate_invoices"] = dup_inv_count

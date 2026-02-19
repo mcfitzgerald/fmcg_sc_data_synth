@@ -5,14 +5,13 @@ Produces per-shipment / per-batch GL entries. Each entry carries a
 batch_id, or rma_id), enabling full digital-thread traceability from
 financial entries to physical movements.
 
-Seven event types generate DR/CR pairs:
-  Goods Receipts  → DR 1100 Raw Material Inv / CR 2100 AP
-  Production      → DR 1120 WIP / CR 1100 RM; DR 1130 FG / CR 1120 WIP
-  Ship Dispatch   → DR 1140 In-Transit / CR 1130 FG
-  Freight         → DR 5300 Freight Expense / CR 1000 Cash
-  Ship Arrival    → DR 1130 FG / CR 1140 In-Transit
-  Demand Sales    → DR 5100 COGS / CR 1130 FG; DR 1200 AR / CR 4100 Revenue
-  Returns         → DR 5200 Returns / CR 1200 AR
+Seven event types generate DR/CR pairs (each with its own reference_type):
+  goods_receipt  → DR 1100 Raw Material Inv / CR 2100 AP
+  production     → DR 1120 WIP / CR 1100 RM; DR 1130 FG / CR 1120 WIP
+  shipment       → DR 1140 In-Transit / CR 1130 FG (dispatch + arrival)
+  freight        → DR 5300 Freight Expense / CR 1000 Cash
+  sale           → DR 5100 COGS / CR 1130 FG; DR 1200 AR / CR 4100 Revenue
+  return         → DR 5200 Returns / CR 1200 AR
 """
 
 from __future__ import annotations
@@ -135,13 +134,13 @@ def generate_gl_journal(
         freight_entries AS (
             SELECT ship_date as entry_date, '5300' as account_code,
                 freight_cost as debit_amount, 0.0 as credit_amount,
-                'shipment' as reference_type, '' as node_id,
+                'freight' as reference_type, source_sim_id as node_id,
                 shipment_number as reference_id, 'Freight expense'
             FROM erp_shipments
             WHERE freight_cost > 0.001
             UNION ALL
             SELECT ship_date, '1000', 0.0, freight_cost,
-                'shipment', '', shipment_number, 'Cash paid for freight'
+                'freight', source_sim_id, shipment_number, 'Cash paid for freight'
             FROM erp_shipments
             WHERE freight_cost > 0.001
         ),

@@ -276,6 +276,7 @@ def _generate_shipments_duckdb(
                      GREATEST(SUM(quantity), 100) * SUM(quantity)
             END + COALESCE(rc.handling_cost, 0.20) * SUM(quantity) as freight_cost,
             SUM(COALESCE(total_weight_kg, 0)) as total_weight_kg,
+            FIRST(s.source_id) as source_sim_id,
             CAST(MIN(creation_day) AS BIGINT) * 10000000 + 2 * 1000000 +
                 CAST(ROW_NUMBER() OVER (ORDER BY MIN(creation_day), shipment_id) AS BIGINT) as transaction_sequence_id
         FROM pq_shipments s
