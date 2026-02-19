@@ -117,6 +117,50 @@ def run_verification(output_dir: Path) -> None:
             logger.info("  %-20s %10s rows, %5.1f%% with reference_id",
                         ref_type, f"{total:,}", pct)
 
+        # node_id coverage by reference_type
+        # Physical events should have ~99% coverage (1% friction nulls).
+        # Treasury events (payment, receipt, bad_debt) correctly have 0%.
+        logger.info("\n--- node_id Coverage ---")
+        node_stats = gl_db.execute("""
+            SELECT reference_type,
+                   COUNT(*) as total,
+                   COUNT(CASE WHEN node_id IS NULL OR TRIM(node_id, '"') = ''
+                              THEN 1 END) as empty,
+                   ROUND(COUNT(CASE WHEN node_id IS NOT NULL
+                               AND TRIM(node_id, '"') != ''
+                               THEN 1 END)::numeric / COUNT(*) * 100, 1) as pct_filled
+            FROM gl GROUP BY reference_type ORDER BY reference_type
+        """).fetchall()
+
+        # Physical event types should have node_id; treasury types shouldn't
+        physical_types = {
+            "goods_receipt", "production", "shipment", "freight",
+            "sale", "return", "price_variance", "qty_variance",
+        }
+        treasury_types = {"payment", "receipt", "bad_debt"}
+
+        for ref_type, total, empty, pct_filled in node_stats:
+            status = ""
+            if ref_type in physical_types:
+                if pct_filled >= 95.0:
+                    status = "OK"
+                    passed += 1
+                else:
+                    status = "LOW"
+                    failed += 1
+            elif ref_type in treasury_types:
+                if pct_filled <= 1.0:
+                    status = "OK (treasury)"
+                    passed += 1
+                else:
+                    status = "UNEXPECTED"
+                    failed += 1
+            else:
+                status = "?"
+
+            logger.info("  %-20s %10s rows, %5.1f%% filled  [%s]",
+                        ref_type, f"{total:,}", pct_filled, status)
+
         gl_db.close()
     else:
         logger.warning("  SKIP: gl_journal.csv not found")
@@ -212,6 +256,30 @@ def _check_friction_tables(output_dir: Path, passed: int, failed: int) -> None:
         ).exists() else 0
         logger.info("  ar_receipts: %s rows (AR invoices: %s)",
                     f"{count:,}", f"{ar_count:,}")
+
+    # Duplicate invoices should have line items
+    ai_path = trans_dir / "ap_invoices.csv"
+    ail_path = trans_dir / "ap_invoice_lines.csv"
+    if ai_path.exists() and ail_path.exists():
+        fdb = duckdb.connect()
+        fdb.execute(f"CREATE TABLE ai AS SELECT * FROM read_csv_auto('{ai_path}')")
+        fdb.execute(f"CREATE TABLE ail AS SELECT * FROM read_csv_auto('{ail_path}')")
+        dup_total, dup_with_lines = fdb.execute("""
+            SELECT
+                COUNT(DISTINCT ai.id),
+                COUNT(DISTINCT CASE WHEN ail.line_number IS NOT NULL THEN ai.id END)
+            FROM ai
+            LEFT JOIN ail ON ail.invoice_id = ai.id
+            WHERE ai.invoice_number LIKE '%-DUP'
+        """).fetchone()
+        fdb.close()
+        if dup_total > 0:
+            if dup_with_lines == dup_total:
+                logger.info("  PASS: All %s dup invoices have line items",
+                            f"{dup_total:,}")
+            else:
+                logger.warning("  WARN: %s/%s dup invoices missing line items",
+                               f"{dup_total - dup_with_lines:,}", f"{dup_total:,}")
 
 
 def _count_rows(path: Path) -> int:
