@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.79.2] - 2026-02-20
+
+### Fix: Shipment Weight Data + Supplier Topology Investigation
+
+#### Shipment Weight Fix (`transactional.py`)
+- **Root cause**: `pq_shipments.total_weight_kg` is bin capacity (20,000 kg per FTL slot), not actual product weight. The ERP generator was copying this meaningless value to `shipments.total_weight_kg` and `shipment_lines.weight_kg`.
+- **Fix**: Both shipment headers and lines now compute actual weight from `quantity * raw_products.weight_kg` via JOIN to the product master table.
+- **Result**: Median shipment weight 2.2t (was always 20,000+ kg). Median line weight 52.9 kg. Only 0.5% of shipments exceed 20t (large RM deliveries).
+
+#### Supplier Topology Investigation
+- **Finding**: `MRPEngine._find_supplier_for_ingredient()` (`mrp.py:2044`) iterates `world.links.values()` and returns the **first** supplier linked to each plant. Since links are inserted in SUP-001, SUP-002, ... order, the same 1-2 early suppliers are always selected.
+- **Impact**: 48 of 50 suppliers have zero activity — the network topology creates links for all 50, but the MRP supplier selection is first-match, not distributed.
+- **Status**: Root cause documented. Fix requires MRP engine change (e.g., round-robin, random, or affinity-based supplier selection) — future work.
+
 ## [0.79.1] - 2026-02-20
 
 ### Fix: ERP Accounting Fixes + Diagnostic Query Corrections

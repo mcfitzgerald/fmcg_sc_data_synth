@@ -275,13 +275,14 @@ def _generate_shipments_duckdb(
                 ELSE COALESCE(rc.cost_per_km, 1.85) * COALESCE(lk.distance_km, 0) /
                      GREATEST(SUM(quantity), 100) * SUM(quantity)
             END + COALESCE(rc.handling_cost, 0.20) * SUM(quantity) as freight_cost,
-            SUM(COALESCE(total_weight_kg, 0)) as total_weight_kg,
+            SUM(s.quantity * COALESCE(rp.weight_kg, 0)) as total_weight_kg,
             FIRST(s.source_id) as source_sim_id,
             CAST(MIN(creation_day) AS BIGINT) * 10000000 + 2 * 1000000 +
                 CAST(ROW_NUMBER() OVER (ORDER BY MIN(creation_day), shipment_id) AS BIGINT) as transaction_sequence_id
         FROM pq_shipments s
         LEFT JOIN loc_map sm ON sm.sim_id = s.source_id
         LEFT JOIN loc_map tm ON tm.sim_id = s.target_id
+        LEFT JOIN raw_products rp ON rp.id = s.product_id
         LEFT JOIN raw_links lk ON lk.source_id = s.source_id AND lk.target_id = s.target_id
         LEFT JOIN route_cost_map rc ON rc.src_prefix = (
             CASE
@@ -325,10 +326,11 @@ def _generate_shipments_duckdb(
                 ROW_NUMBER() OVER (PARTITION BY es.id ORDER BY s.product_id) as line_number,
                 COALESCE(pm.pk, 0) as sku_id,
                 s.quantity as quantity_cases,
-                ROUND(COALESCE(s.total_weight_kg, 0), 2) as weight_kg
+                ROUND(s.quantity * COALESCE(rp.weight_kg, 0), 2) as weight_kg
             FROM pq_shipments s
             JOIN erp_shipments es ON es.shipment_number = s.shipment_id
             LEFT JOIN prod_map pm ON pm.sim_id = s.product_id
+            LEFT JOIN raw_products rp ON rp.id = s.product_id
         ) TO '{trans_dir / "shipment_lines.csv"}'
         (HEADER, DELIMITER ',')
     """)
