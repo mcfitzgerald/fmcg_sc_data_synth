@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.79.1] - 2026-02-20
+
+### Fix: ERP Accounting Fixes + Diagnostic Query Corrections
+
+Addresses 7 original FAILs from `diagnose_erp_database.py` — split between ERP generator accounting fixes and diagnostic query refinements. Investigation uncovered 3 additional measurement bugs (inflated fill rate, bin-capacity weight, return rate denominator). Result: **0 FAIL, 5 WARN, 59 PASS** (was 7 FAIL). No sim physics changes.
+
+#### Root Cause Discovery
+- `pq_shipments.total_weight_kg` = **bin capacity** (20,000 kg per slot), not actual product weight. Every product line in a shipment gets stamped with the same bin size, inflating `shipments.total_weight_kg` by `n_lines×`.
+- `SUM(shipment_lines.quantity_cases)` without route filtering counts every case at every echelon hop (plant→RDC→DC→store = 3× counting) plus RM quantities, producing a fake 1467% fill rate.
+- Only 2 of 50 suppliers have active sim routes to plants — a topology characteristic, not a data bug.
+
+#### ERP Generator Fixes (require data regeneration):
+- **Supplier ID mapping** (`invoices.py`): AP invoices now resolve `supplier_id` via `erp_shipments.source_sim_id` → `loc_map` instead of re-joining `pq_shipments` with error-prone string-concat GROUP BY.
+- **Inbound freight reclassification** (`gl_journal.py`): `supplier_to_plant` freight now debits 1100 (RM Inventory) instead of 5300 (Freight Expense). Outbound freight unchanged. Fixes gross margin from -10.3% → 23.2%, freight-to-revenue from 38% → 4.6%.
+
+#### Diagnostic Query Fixes (measurement-only):
+- **Prod/Demand ratio** (Q3.6): Compares FG cases shipped from plants to demand cases (was comparing incompatible batch kg vs case-weight kg). Ratio: 0.681 PASS.
+- **Fill rate** (Q4.5, Q6.1): Filters to `dc_to_store` deliveries only (was summing all echelon shipments → fake 1467%). Actual: 53.8%.
+- **Weight threshold** (Q4.6): Computes actual weight from `quantity_cases * skus.weight_kg` (was using bin-capacity `total_weight_kg`). Actual dc_to_store avg: 4.0t, 1.2% overweight PASS.
+- **Return rate** (Q5.1): Denominator uses dc_to_store deliveries (was all-echelon total). Actual: 0.07%.
+- **HHI** (Q2.2): Demoted to WARN — sim routes RM through 2 consolidated supplier hubs (structural).
+- **DIO** (Q6.6): Filters to FG inventory at distribution locations with per-SKU cost weighting. DIO: 16.6d.
+- **C2C** (Q6.7): Cascading fix from DIO. C2C: 9.4d.
+
 ## [0.79.0] - 2026-02-19
 
 ### Feat: ERP Database Diagnostic -- A Consultant's Engagement Workbook

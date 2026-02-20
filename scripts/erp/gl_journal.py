@@ -9,7 +9,8 @@ Seven event types generate DR/CR pairs (each with its own reference_type):
   goods_receipt  → DR 1100 Raw Material Inv / CR 2100 AP
   production     → DR 1120 WIP / CR 1100 RM; DR 1130 FG / CR 1120 WIP
   shipment       → DR 1140 In-Transit / CR 1130 FG (dispatch + arrival)
-  freight        → DR 5300 Freight Expense / CR 1000 Cash
+  freight(in)    → DR 1100 RM Inventory / CR 1000 Cash (inbound: supplier→plant)
+  freight(out)   → DR 5300 Freight Expense / CR 1000 Cash (outbound: all other routes)
   sale           → DR 5100 COGS / CR 1130 FG; DR 1200 AR / CR 4100 Revenue
   return         → DR 5200 Returns / CR 1200 AR
 """
@@ -131,16 +132,24 @@ def generate_gl_journal(
             GROUP BY s.shipment_id, s.creation_day, s.source_id
         ),
         -- 4. Freight from erp_shipments (per shipment, no aggregation)
+        --    Inbound (supplier→plant): capitalize to RM inventory (DR 1100)
+        --    Outbound (all other routes): expense (DR 5300)
         freight_entries AS (
-            SELECT ship_date as entry_date, '5300' as account_code,
+            SELECT ship_date as entry_date,
+                CASE WHEN route_type = 'supplier_to_plant' THEN '1100' ELSE '5300' END as account_code,
                 freight_cost as debit_amount, 0.0 as credit_amount,
                 'freight' as reference_type, source_sim_id as node_id,
-                shipment_number as reference_id, 'Freight expense'
+                shipment_number as reference_id,
+                CASE WHEN route_type = 'supplier_to_plant'
+                     THEN 'Inbound freight capitalized to RM'
+                     ELSE 'Freight expense'
+                END as description
             FROM erp_shipments
             WHERE freight_cost > 0.001
             UNION ALL
             SELECT ship_date, '1000', 0.0, freight_cost,
-                'freight', source_sim_id, shipment_number, 'Cash paid for freight'
+                'freight', source_sim_id, shipment_number,
+                'Cash paid for freight'
             FROM erp_shipments
             WHERE freight_cost > 0.001
         ),

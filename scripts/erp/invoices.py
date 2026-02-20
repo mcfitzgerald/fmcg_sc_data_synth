@@ -71,6 +71,8 @@ def _generate_ap_invoices_duckdb(
     dpo = int(cfg.dpo_days)
 
     # AP invoice headers: one per goods receipt
+    # Join via erp_shipments (which stores source_sim_id) instead of
+    # re-joining pq_shipments to avoid string-concat join and GROUP BY issues.
     db.execute(f"""
         CREATE OR REPLACE TABLE erp_ap_invoices AS
         SELECT
@@ -78,7 +80,7 @@ def _generate_ap_invoices_duckdb(
             CAST(gr.receipt_date AS BIGINT) * {DAY_MULTIPLIER} + 7 * {CAT_MULTIPLIER} +
                 CAST(ROW_NUMBER() OVER (ORDER BY gr.receipt_date, gr.id) AS BIGINT) as transaction_sequence_id,
             'AP-' || LPAD(CAST(ROW_NUMBER() OVER (ORDER BY gr.receipt_date, gr.id) AS VARCHAR), 7, '0') as invoice_number,
-            -- Get supplier from the shipment's source
+            -- Supplier FK: GR → erp_shipments.source_sim_id → loc_map PK
             COALESCE(sm.pk, 0) as supplier_id,
             gr.id as gr_id,
             gr.receipt_date as invoice_date,
@@ -87,9 +89,8 @@ def _generate_ap_invoices_duckdb(
             'USD' as currency,
             'open' as status
         FROM erp_goods_receipts gr
-        LEFT JOIN pq_shipments s ON 'GR-' || s.shipment_id = gr.gr_number
-        LEFT JOIN loc_map sm ON sm.sim_id = s.source_id
-        GROUP BY gr.id, gr.receipt_date, gr.gr_number, sm.pk
+        LEFT JOIN erp_shipments es ON es.id = gr.shipment_id
+        LEFT JOIN loc_map sm ON sm.sim_id = es.source_sim_id
     """)
 
     # AP invoice lines: line items from shipments to plants
