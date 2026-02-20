@@ -5,6 +5,36 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.79.0] - 2026-02-19
+
+### Feat: ERP Database Diagnostic -- A Consultant's Engagement Workbook
+
+New `scripts/analysis/diagnose_erp_database.py` -- a comprehensive 52-question diagnostic script that probes the PostgreSQL ERP database from the perspective of veteran SC consultants using SCOR-DS, Desmet's Triangle, and Mentzer's SC models.
+
+#### 10 Sections:
+- **Section 0: Data Landscape** (5 Qs) -- table census, date range, master data, topology, chart of accounts
+- **Section 1: Physical-Financial Reconciliation** (7 Qs) -- GL balance (global + per-day), COGS/Revenue, AP/AR invoice integrity
+- **Section 2: SCOR Source Process** (7 Qs) -- procurement chain, HHI, lead times, 3-way match, DPO
+- **Section 3: SCOR Make Process** (7 Qs) -- WO/batch coverage, yield, BOM integrity, production/demand alignment
+- **Section 4: SCOR Deliver Process** (7 Qs) -- shipment volumes, fill rate, freight, lead time, weight checks
+- **Section 5: SCOR Return Process** (4 Qs) -- return rate, condition, disposition, GL reconciliation
+- **Section 6: Desmet's Triangle** (7 Qs) -- service (fill+returns), cost (P&L, freight), cash (DSO, DPO, DIO, C2C)
+- **Section 7: Temporal & Causal Integrity** (6 Qs) -- sequence monotonicity, date ordering, cross-chain consistency
+- **Section 8: Friction Layer Audit** (7 Qs) -- all friction rates validated against config (dup suppliers, SKU renames, variances, bad debt, discounts, null FKs, dup invoices)
+- **Section 9: Digital Thread & Traceability** (5 Qs) -- reference_id/node_id coverage, end-to-end chain sampling
+
+#### Key Features:
+- Connects via psycopg2, readonly session, no writes
+- PASS/WARN/FAIL verdicts with traffic-light thresholds
+- Friction-aware `_friction_verdict()` helper (compares actual vs expected config rates, +/-2pp tolerance)
+- Inventory table (130M+ rows) sampled weekly for performance
+- Single-section mode: `--section N`
+- Auto-saves report to `data/output/diagnostics/`
+- Estimated runtime: ~3-4 minutes for full 52-question run
+
+#### New Files:
+- `scripts/analysis/diagnose_erp_database.py`
+
 ## [0.78.1] - 2026-02-19
 
 ### Fix: GL node_id Gaps + ERP Data Quality

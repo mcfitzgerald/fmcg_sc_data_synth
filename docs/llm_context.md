@@ -145,6 +145,11 @@ Shared modular backend used by diagnostics:
 - `diagnose_flow_deep.py` — 20-question forensic deep-dive (now Sections 3-6)
 - `diagnose_cost.py` — cost analytics (now Section 7)
 
+#### ERP Database Diagnostic (run after PostgreSQL load)
+| Script | When | What |
+|--------|------|------|
+| `diagnose_erp_database.py` | **After loading ERP CSVs into PostgreSQL** | 52 questions across 10 sections: data landscape, GL reconciliation, SCOR Source/Make/Deliver/Return, Desmet's Triangle, temporal integrity, friction audit, digital thread traceability. psycopg2 against PostgreSQL. |
+
 #### Tier 2: Specialized Diagnostics (run when investigating specific issues)
 | Script | When | What |
 |--------|------|------|

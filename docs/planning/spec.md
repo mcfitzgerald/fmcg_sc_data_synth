@@ -72,6 +72,7 @@ The simulation is in an iterative shake-out phase. The core engine is complete; 
 **Key diagnostic tools:**
 - Triangle Report (end-of-run summary)
 - `scripts/analysis/diagnose_supply_chain.py` (unified 35-question diagnostic, 8 sections)
+- `scripts/analysis/diagnose_erp_database.py` (ERP database diagnostic, 52 questions, 10 sections — psycopg2 against PostgreSQL)
 - Standalone analyzers: `diagnose_slob.py`, `diagnose_a_item_fill.py`, `analyze_bullwhip.py`
 
 **Known observations** (v0.67.0, converged 365-day warm-start):
