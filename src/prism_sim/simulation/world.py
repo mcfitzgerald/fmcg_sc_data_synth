@@ -10,6 +10,9 @@ class World:
         self.links: dict[str, Link] = {}
         self.products: dict[str, Product] = {}
         self.recipes: dict[str, Recipe] = {}
+        # Kraljic supplier segmentation (populated from supplier_catalog.csv)
+        self.supplier_catalog: dict[str, list[str]] = {}
+        self.ingredient_suppliers: dict[str, list[str]] = {}
 
     def add_node(self, node: Node) -> None:
         if node.id in self.nodes:

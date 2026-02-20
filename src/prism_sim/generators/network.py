@@ -8,6 +8,7 @@ import numpy as np
 
 from prism_sim.generators.static_pool import StaticDataPool
 from prism_sim.network.core import CustomerChannel, Link, Node, NodeType, StoreFormat
+from prism_sim.product.core import Product
 
 if TYPE_CHECKING:
     from numpy.random import Generator
@@ -435,6 +436,110 @@ class NetworkGenerator:
                 add_geo_link(dc_node, store)
 
         return nodes, links
+
+    def assign_supplier_catalog(
+        self,
+        ingredients: list[Product],
+        sim_config: dict[str, Any],
+    ) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
+        """Assign suppliers to ingredients using Kraljic Matrix segmentation.
+
+        Partitions the 50 supplier IDs into non-overlapping pools (strategic,
+        leverage, non_critical) and assigns N suppliers per ingredient based
+        on its kraljic quadrant from the ingredient_profiles config.
+
+        Returns:
+            (supplier_catalog, ingredient_suppliers) where
+            supplier_catalog:      supplier_id -> [ingredient_ids]
+            ingredient_suppliers:  ingredient_id -> [supplier_ids]
+        """
+        topology = self.config.get("topology", {})
+        seg_config = topology.get("supplier_segmentation", {})
+        ing_profiles = self.config.get("ingredient_profiles", {})
+
+        # Build prefix -> kraljic mapping from ingredient_profiles
+        prefix_to_kraljic: dict[str, str] = {}
+        for _profile_key, profile in ing_profiles.items():
+            prefix = profile.get("prefix", "")
+            kraljic = profile.get("kraljic", "non_critical")
+            prefix_to_kraljic[prefix] = kraljic
+
+        # Build sorted supplier ID list (SUP-001 .. SUP-050)
+        n_suppliers = topology.get("target_counts", {}).get("suppliers", 50)
+        all_sup_ids = [f"SUP-{i+1:03d}" for i in range(n_suppliers)]
+
+        # Shuffle deterministically then partition into pools
+        rng = np.random.default_rng(seed=42)
+        rng.shuffle(all_sup_ids)  # type: ignore[arg-type]
+
+        strategic_size = seg_config.get("strategic", {}).get("pool_size", 8)
+        leverage_size = seg_config.get("leverage", {}).get("pool_size", 12)
+        # non_critical gets the rest
+
+        pools: dict[str, list[str]] = {
+            "strategic": list(all_sup_ids[:strategic_size]),
+            "leverage": list(
+                all_sup_ids[strategic_size:strategic_size + leverage_size]
+            ),
+            "non_critical": list(all_sup_ids[strategic_size + leverage_size:]),
+        }
+
+        # SPOF override: ensure SUP-001 and SUP-002 are in the strategic pool
+        spof_config = sim_config.get("simulation_parameters", {}).get(
+            "manufacturing", {}
+        ).get("spof", {})
+        spof_primary = spof_config.get("primary_supplier_id", "SUP-001")
+        spof_backup = spof_config.get("backup_supplier_id", "SUP-002")
+
+        for spof_id in [str(spof_primary), str(spof_backup)]:
+            for pool_name, pool_list in pools.items():
+                if spof_id in pool_list and pool_name != "strategic":
+                    pool_list.remove(spof_id)
+                    pools["strategic"].append(spof_id)
+
+        # Determine kraljic quadrant for each ingredient from its ID prefix
+        def _get_kraljic(ing_id: str) -> str:
+            for prefix, kraljic in prefix_to_kraljic.items():
+                if ing_id.startswith(prefix):
+                    return kraljic
+            return "non_critical"
+
+        supplier_catalog: dict[str, list[str]] = {}
+        ingredient_suppliers: dict[str, list[str]] = {}
+
+        # Use a separate RNG for assignment so pool shuffle doesn't affect it
+        assign_rng = np.random.default_rng(seed=123)
+
+        for ing in ingredients:
+            kraljic = _get_kraljic(ing.id)
+            pool = pools.get(kraljic, pools["non_critical"])
+            seg = seg_config.get(kraljic, {})
+            n_range = seg.get("suppliers_per_ingredient", [1, 2])
+            n_sup = assign_rng.integers(n_range[0], n_range[1] + 1)  # inclusive
+
+            # SPOF ingredient: force primary + backup as first two suppliers
+            spof_ing_id = spof_config.get("ingredient_id", "")
+            if ing.id == spof_ing_id:
+                chosen = [str(spof_primary), str(spof_backup)]
+                # Add extras from pool if n_sup > 2
+                extras = [s for s in pool if s not in chosen]
+                n_spof_base = 2
+                if n_sup > n_spof_base and extras:
+                    extra_picks = assign_rng.choice(
+                        extras,
+                        size=min(int(n_sup) - n_spof_base, len(extras)),
+                        replace=False,
+                    )
+                    chosen.extend(extra_picks.tolist())
+            else:
+                n_pick = min(int(n_sup), len(pool))
+                chosen = assign_rng.choice(pool, size=n_pick, replace=False).tolist()
+
+            ingredient_suppliers[ing.id] = chosen
+            for sup_id in chosen:
+                supplier_catalog.setdefault(sup_id, []).append(ing.id)
+
+        return supplier_catalog, ingredient_suppliers
 
     def _generate_suppliers(self, n: int) -> list[Node]:
         nodes = []

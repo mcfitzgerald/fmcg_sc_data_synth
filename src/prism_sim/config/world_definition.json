@@ -87,6 +87,11 @@
       "sku_popularity_alpha": 1.05,
       "supplier_pareto_ratio": 0.8,
       "network_attachment_m": 2
+    },
+    "supplier_segmentation": {
+      "strategic":    { "suppliers_per_ingredient": [2, 3], "pool_size": 8 },
+      "leverage":     { "suppliers_per_ingredient": [3, 5], "pool_size": 12 },
+      "non_critical": { "suppliers_per_ingredient": [1, 2], "pool_size": 30 }
     }
   },
   "channel_economics": {
@@ -205,6 +210,7 @@
       "weight_range": [100, 1000],
       "cost_range": [50.0, 150.0],
       "sourcing": "LOCAL",
+      "kraljic": "leverage",
       "bom_level": 2
     },
     "ACTIVE_CHEM": {
@@ -214,6 +220,7 @@
       "weight_range": [0.1, 0.5],
       "cost_range": [10.0, 50.0],
       "sourcing": "GLOBAL",
+      "kraljic": "strategic",
       "bom_level": 2
     },
     "PKG_PRIMARY": {
@@ -223,6 +230,7 @@
       "weight_range": [0.01, 0.08],
       "cost_range": [0.03, 0.25],
       "sourcing": "REGIONAL",
+      "kraljic": "non_critical",
       "bom_level": 2
     },
     "PKG_SECONDARY": {
@@ -232,6 +240,7 @@
       "weight_range": [0.005, 0.03],
       "cost_range": [0.02, 0.15],
       "sourcing": "REGIONAL",
+      "kraljic": "non_critical",
       "bom_level": 2
     },
     "PKG_TERTIARY": {
@@ -241,6 +250,7 @@
       "weight_range": [0.01, 0.10],
       "cost_range": [0.05, 0.30],
       "sourcing": "LOCAL",
+      "kraljic": "non_critical",
       "bom_level": 2
     }
   },

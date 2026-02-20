@@ -52,7 +52,7 @@ The simulation enforces these constraints - violations indicate bugs:
 |---------|------|----------------------|
 | **Production planning** | `simulation/mrp.py` | `MRPEngine.generate_production_orders()` — SKU + dependent bulk intermediate orders |
 | **DRP-Lite (B/C production)** | `simulation/drp.py` | `DRPPlanner.plan_requirements()` — forward-netting daily targets for B/C items |
-| **Ingredient procurement** | `simulation/mrp.py` | `MRPEngine.generate_purchase_orders()` — two-step BOM explosion for 3-level BOM |
+| **Ingredient procurement** | `simulation/mrp.py` | `MRPEngine.generate_purchase_orders()` — two-step BOM explosion for 3-level BOM. Supplier selection via Kraljic catalog → SPOF → fallback |
 | **Recipe matrix (BOM)** | `network/recipe_matrix.py` | `RecipeMatrixBuilder` — dense [n_products, n_products] matrix |
 | **Production execution** | `simulation/transform.py` | `TransformEngine` — two-pass: bulk intermediates first, then SKUs |
 
@@ -94,11 +94,12 @@ Sentinel `-1` means "not populated" — all consumer sites use `x.product_idx if
 |---------|------|-------------|
 | **Product/SKU generation** | `generators/hierarchy.py` | `ProductGenerator` |
 | **Network topology** | `generators/network.py` | `NetworkGenerator` |
+| **Supplier segmentation** | `generators/network.py` | `NetworkGenerator.assign_supplier_catalog()` — Kraljic Matrix (strategic/leverage/non_critical) supplier-ingredient assignment |
 
 ### Utility Scripts
 | Script | Purpose |
 |--------|---------|
-| `scripts/generate_static_world.py` | Generate static world data (products, recipes, nodes, links) |
+| `scripts/generate_static_world.py` | Generate static world data (products, recipes, nodes, links, supplier catalog) |
 | `scripts/calibrate_config.py` | Physics-based config calibration (capacity, safety stock, DOS targets) |
 | `scripts/run_standard_sim.py` | Standard workflow runner (priming + stabilization + data run) |
 | `scripts/erp/` | **Enterprise Data Generator:** DuckDB-based ETL, sim parquet → 36 normalized CSV tables (368.5M rows) |

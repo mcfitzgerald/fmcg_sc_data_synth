@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.80.0] - 2026-02-20
+
+### Feat: Kraljic-Style Supplier Segmentation
+
+Resolves the root cause of only 2/50 suppliers being active: `MRPEngine._find_supplier_for_ingredient()` used first-match from dict iteration order. Now uses a **Kraljic Matrix** to assign suppliers to ingredients by quadrant, producing realistic multi-sourcing with Pareto spend distribution.
+
+#### Config Changes
+- **`world_definition.json`**: Added `kraljic` field (`strategic`, `leverage`, `non_critical`) to each ingredient profile. Added `topology.supplier_segmentation` block defining pool sizes and suppliers-per-ingredient ranges per quadrant.
+
+#### Core Changes
+- **`simulation/world.py`**: Added `supplier_catalog` (supplier→ingredients) and `ingredient_suppliers` (ingredient→suppliers) dicts to `World`.
+- **`generators/network.py`**: New `assign_supplier_catalog()` method — partitions 50 suppliers into 3 non-overlapping pools (8 strategic, 12 leverage, 30 non-critical), assigns N suppliers per ingredient via seeded RNG, respects SPOF override for ACT-FLUORIDE-001.
+- **`writers/static_writer.py`**: New `write_supplier_catalog()` — exports `supplier_catalog.csv` (supplier_id, ingredient_id, is_primary, kraljic).
+- **`scripts/generate_static_world.py`**: Wires catalog generation after network generation.
+- **`simulation/builder.py`**: New `_load_supplier_catalog_csv()` — loads catalog into `World` dicts. Logs warning and continues if file missing (backward compat).
+- **`simulation/mrp.py`**: Replaced `_find_supplier_for_ingredient()` — priority: (1) SPOF O(1) dict lookup, (2) Kraljic catalog, (3) fallback any-linked-supplier. SPOF check upgraded from O(n) link iteration to O(1).
+- **`scripts/erp/master_tables.py`**: `_generate_supplier_ingredients()` now loads from `supplier_catalog.csv` instead of round-robin. Falls back to round-robin if file missing.
+
+#### Results
+- **Supplier diversity**: 44/50 suppliers in catalog, 30 active in 50-day sim (was 2)
+- **Assignments**: 176 supplier-ingredient links across 78 ingredients
+- **Distribution**: Strategic (51 links), Leverage (69), Non-critical (56)
+- **ERP verified**: 25/25 checks pass, GL balanced
+- **Physics unchanged**: Mass balance, capacity, inventory positivity unaffected
+
 ## [0.79.2] - 2026-02-20
 
 ### Fix: Shipment Weight Data + Supplier Topology Investigation

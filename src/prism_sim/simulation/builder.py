@@ -1,5 +1,6 @@
 import ast
 import csv
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -47,6 +48,7 @@ class WorldBuilder:
         self._load_recipes_csv()
         self._load_locations_csv()
         self._load_links_csv()
+        self._load_supplier_catalog_csv()
 
     def _load_products_csv(self) -> None:
         path = self.static_data_dir / "products.csv"
@@ -143,6 +145,29 @@ class WorldBuilder:
                         variability_sigma=float(row["variability_sigma"]),
                     )
                 )
+
+    def _load_supplier_catalog_csv(self) -> None:
+        """Load Kraljic supplier catalog if available."""
+        path = self.static_data_dir / "supplier_catalog.csv"
+        if not path.exists():
+            logging.getLogger(__name__).warning(
+                "supplier_catalog.csv not found — using fallback supplier routing"
+            )
+            return
+
+        with open(path, encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                sup_id = row["supplier_id"]
+                ing_id = row["ingredient_id"]
+                self.world.supplier_catalog.setdefault(sup_id, []).append(ing_id)
+                self.world.ingredient_suppliers.setdefault(ing_id, []).append(sup_id)
+
+        logging.getLogger(__name__).info(
+            "Loaded supplier catalog: %d suppliers, %d ingredients",
+            len(self.world.supplier_catalog),
+            len(self.world.ingredient_suppliers),
+        )
 
     def _build_products(self) -> None:
         for p_data in self.world_config.get("products", []):

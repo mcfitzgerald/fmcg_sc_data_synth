@@ -2021,26 +2021,28 @@ class MRPEngine:
         return 999.0
 
     def _find_supplier_for_ingredient(self, plant_id: str, ing_id: str) -> str | None:
-        """Find a supplier that provides the ingredient to the plant."""
+        """Find a supplier that provides the ingredient to the plant.
+
+        Priority: (1) SPOF override, (2) Kraljic catalog, (3) any linked supplier.
+        """
         mfg_config = self.config.get("simulation_parameters", {}).get(
             "manufacturing", {}
         )
         spof_config = mfg_config.get("spof", {})
 
-        # C.2 FIX: Check SPOF ingredient - but verify link exists!
+        # 1. SPOF override — O(1) link lookup
         if ing_id == spof_config.get("ingredient_id"):
             primary = spof_config.get("primary_supplier_id")
-            if primary:
-                # Only use primary supplier if valid link exists to this plant
-                has_link = any(
-                    link.source_id == primary and link.target_id == plant_id
-                    for link in self.world.links.values()
-                )
-                if has_link:
-                    return str(primary)
-                # Fall through to generic case if no link exists
+            if primary and f"L-{primary}-{plant_id}" in self.world.links:
+                return str(primary)
 
-        # Generic case: find any supplier linked to this plant
+        # 2. Kraljic catalog lookup
+        qualified = self.world.ingredient_suppliers.get(ing_id, [])
+        for sup_id in qualified:
+            if f"L-{sup_id}-{plant_id}" in self.world.links:
+                return sup_id
+
+        # 3. Fallback: any supplier linked to plant (backward compat)
         for link in self.world.links.values():
             if link.target_id == plant_id:
                 source_node = self.world.nodes.get(link.source_id)

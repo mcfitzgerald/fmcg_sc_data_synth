@@ -79,13 +79,28 @@ def main() -> None:
         n_rdcs=counts.get("rdcs", 4)
     )
 
-    # 7. Write
+    # 7. Supplier Catalog (Kraljic segmentation)
+    print("Generating Supplier Catalog (Kraljic segmentation)...")
+    supplier_catalog, ingredient_suppliers = net_gen.assign_supplier_catalog(
+        ingredients, sim_config
+    )
+
+    # 8. Write
     print("Writing files...")
     writer.write_products(all_products)
     writer.write_recipes(recipes)
     writer.write_locations(nodes)
     writer.write_partners(nodes)
     writer.write_links(links)
+    writer.write_supplier_catalog(
+        supplier_catalog,
+        ingredient_suppliers,
+        world_config.get("ingredient_profiles", {}),
+    )
+
+    # Stats
+    active_suppliers = len(supplier_catalog)
+    total_assignments = sum(len(v) for v in ingredient_suppliers.values())
 
     print("Done!")
     print("Stats:")
@@ -96,6 +111,10 @@ def main() -> None:
     print(f"  Recipes:  {len(recipes)}")
     print(f"  Nodes:    {len(nodes)}")
     print(f"  Links:    {len(links)}")
+    print(
+        f"  Supplier Catalog: {total_assignments} assignments,"
+        f" {active_suppliers}/50 suppliers active"
+    )
 
 if __name__ == "__main__":
     main()

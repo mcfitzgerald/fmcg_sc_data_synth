@@ -421,40 +421,68 @@ def _generate_supplier_ingredients(
     master_dir: Path,
     mapper: IdMapper,
 ) -> None:
-    """Generate supplier_ingredients.csv by linking suppliers to their served ingredients.
+    """Generate supplier_ingredients.csv from Kraljic catalog or round-robin fallback.
 
-    Uses the link topology: SUP-* → PLANT-* links to determine which suppliers
-    exist, then distributes ingredients across suppliers round-robin.
+    Prefers supplier_catalog.csv from the static world if available (Kraljic
+    segmentation). Falls back to round-robin distribution otherwise.
     """
-    # Get all supplier IDs
-    supplier_ids = [
-        (sim_id, pk)
-        for sim_id, pk in sorted(mapper.all_ids("locations").items())
-        if sim_id.startswith("SUP-")
-    ]
-    # Get all ingredient + bulk IDs
-    ingredient_ids = [
-        (sim_id, pk)
-        for sim_id, pk in sorted(mapper.all_ids("products").items())
-        if sim_id.startswith(("BLK-", "ACT-", "PKG-"))
-    ]
+    import csv as _csv
 
-    if not supplier_ids or not ingredient_ids:
+    catalog_path = Path("data/output/static_world/supplier_catalog.csv")
+
+    # Get all supplier / ingredient PK maps
+    supplier_pk_map = {
+        sim_id: pk
+        for sim_id, pk in mapper.all_ids("locations").items()
+        if sim_id.startswith("SUP-")
+    }
+    ingredient_pk_map = {
+        sim_id: pk
+        for sim_id, pk in mapper.all_ids("products").items()
+        if sim_id.startswith(("BLK-", "ACT-", "PKG-"))
+    }
+
+    if not supplier_pk_map or not ingredient_pk_map:
         logger.warning("No suppliers or ingredients to link")
         return
 
-    rows = []
+    rows: list[tuple] = []
     row_id = 0
-    for idx, (ing_sim, ing_pk) in enumerate(ingredient_ids):
-        # Assign 1-2 suppliers per ingredient (round-robin + offset)
-        sup1 = supplier_ids[idx % len(supplier_ids)]
-        sup2 = supplier_ids[(idx + 7) % len(supplier_ids)]
-        for sup_sim, sup_pk in {sup1, sup2}:
-            row_id += 1
-            # Derive a reasonable cost from the ingredient
-            cost = 5.0 + (hash(ing_sim) % 100) / 10.0  # deterministic pseudo-random
-            lead_time = 3 + (hash(ing_sim + sup_sim) % 12)
-            rows.append((row_id, sup_pk, ing_pk, round(cost, 2), lead_time, 100))
+
+    if catalog_path.exists():
+        # ── Kraljic catalog path ──
+        with open(catalog_path, encoding="utf-8") as f:
+            reader = _csv.DictReader(f)
+            seen: set[tuple[str, str]] = set()
+            for cat_row in reader:
+                sup_sim = cat_row["supplier_id"]
+                ing_sim = cat_row["ingredient_id"]
+                sup_pk = supplier_pk_map.get(sup_sim)
+                ing_pk = ingredient_pk_map.get(ing_sim)
+                if sup_pk is None or ing_pk is None:
+                    continue
+                pair = (sup_sim, ing_sim)
+                if pair in seen:
+                    continue
+                seen.add(pair)
+                row_id += 1
+                cost = 5.0 + (hash(ing_sim) % 100) / 10.0
+                lead_time = 3 + (hash(ing_sim + sup_sim) % 12)
+                rows.append((row_id, sup_pk, ing_pk, round(cost, 2), lead_time, 100))
+        logger.info("Loaded supplier-ingredient links from Kraljic catalog")
+    else:
+        # ── Round-robin fallback ──
+        supplier_ids = sorted(supplier_pk_map.items())
+        ingredient_ids = sorted(ingredient_pk_map.items())
+        for idx, (ing_sim, ing_pk) in enumerate(ingredient_ids):
+            sup1 = supplier_ids[idx % len(supplier_ids)]
+            sup2 = supplier_ids[(idx + 7) % len(supplier_ids)]
+            for sup_sim, sup_pk in {sup1, sup2}:
+                row_id += 1
+                cost = 5.0 + (hash(ing_sim) % 100) / 10.0
+                lead_time = 3 + (hash(ing_sim + sup_sim) % 12)
+                rows.append((row_id, sup_pk, ing_pk, round(cost, 2), lead_time, 100))
+        logger.info("No supplier catalog found — used round-robin fallback")
 
     _write_csv(
         master_dir / "supplier_ingredients.csv",
