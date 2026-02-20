@@ -42,6 +42,13 @@ import psycopg2
 
 WIDTH = 78
 
+
+def _f(val: object) -> float:
+    """Coerce a psycopg2 Decimal/int/None to float for arithmetic."""
+    if val is None:
+        return 0.0
+    return float(val)  # type: ignore[arg-type]
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Expected friction rates (from scripts/erp/config.py defaults)
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -88,36 +95,40 @@ def _kpi_row(name: str, actual: str, target: str, status: str) -> None:
     print(f"  {name:<30}  {actual:>14}  {target:>14}  {light:>6}")
 
 
-def _traffic(val: float, green_lo: float, green_hi: float,
+def _traffic(val: object, green_lo: float, green_hi: float,
              yellow_lo: float = float("-inf"), yellow_hi: float = float("inf")) -> str:
-    if green_lo <= val <= green_hi:
+    v = float(val)  # type: ignore[arg-type]
+    if green_lo <= v <= green_hi:
         return "PASS"
-    if yellow_lo <= val <= yellow_hi:
+    if yellow_lo <= v <= yellow_hi:
         return "WARN"
     return "FAIL"
 
 
-def _friction_verdict(actual_rate: float, expected_rate: float, tol: float = 0.02) -> str:
-    """Compare an actual friction rate against the expected config rate (±tol)."""
-    if abs(actual_rate - expected_rate) <= tol:
+def _friction_verdict(actual_rate: object, expected_rate: float, tol: float = 0.02) -> str:
+    """Compare an actual friction rate against the expected config rate (+-tol)."""
+    a = float(actual_rate)  # type: ignore[arg-type]
+    if abs(a - expected_rate) <= tol:
         return "PASS"
-    if abs(actual_rate - expected_rate) <= tol * 2:
+    if abs(a - expected_rate) <= tol * 2:
         return "WARN"
     return "FAIL"
 
 
-def _pct(num: float, den: float) -> float:
-    return (num / den * 100.0) if den > 0 else 0.0
+def _pct(num: object, den: object) -> float:
+    n, d = float(num), float(den)  # type: ignore[arg-type]
+    return (n / d * 100.0) if d > 0 else 0.0
 
 
-def _fmt_money(val: float) -> str:
-    if abs(val) >= 1e9:
-        return f"${val / 1e9:,.2f}B"
-    if abs(val) >= 1e6:
-        return f"${val / 1e6:,.2f}M"
-    if abs(val) >= 1e3:
-        return f"${val / 1e3:,.1f}K"
-    return f"${val:,.2f}"
+def _fmt_money(val: object) -> str:
+    v = float(val)  # type: ignore[arg-type]
+    if abs(v) >= 1e9:
+        return f"${v / 1e9:,.2f}B"
+    if abs(v) >= 1e6:
+        return f"${v / 1e6:,.2f}M"
+    if abs(v) >= 1e3:
+        return f"${v / 1e3:,.1f}K"
+    return f"${v:,.2f}"
 
 
 def _verdict_counts(p: int = 0, w: int = 0, f: int = 0) -> dict[str, int]:
@@ -278,7 +289,7 @@ def run_section1(conn: psycopg2.extensions.connection) -> dict[str, int]:
         cur.execute("SELECT SUM(debit_amount), SUM(credit_amount) FROM gl_journal")
         total_dr, total_cr = cur.fetchone()
 
-    diff = abs(total_dr - total_cr)
+    diff = abs(_f(total_dr) - _f(total_cr))
     print(f"  Total Debits:  {_fmt_money(total_dr)}")
     print(f"  Total Credits: {_fmt_money(total_cr)}")
     print(f"  Imbalance:     ${diff:,.4f}")
@@ -344,7 +355,7 @@ def run_section1(conn: psycopg2.extensions.connection) -> dict[str, int]:
         """)
         cogs, revenue = cur.fetchone()
 
-    ratio = (cogs / revenue * 100) if revenue > 0 else 0
+    ratio = (_f(cogs) / _f(revenue) * 100) if _f(revenue) > 0 else 0
     print(f"  COGS:    {_fmt_money(cogs)}")
     print(f"  Revenue: {_fmt_money(revenue)}")
     print(f"  Ratio:   {ratio:.1f}%")
@@ -475,8 +486,8 @@ def run_section2(conn: psycopg2.extensions.connection) -> dict[str, int]:
         """)
         spend_rows = cur.fetchall()
 
-    total_spend = sum(r[1] for r in spend_rows)
-    hhi = sum((r[1] / total_spend * 100) ** 2 for r in spend_rows) if total_spend > 0 else 0
+    total_spend = sum(_f(r[1]) for r in spend_rows)
+    hhi = sum((_f(r[1]) / total_spend * 100) ** 2 for r in spend_rows) if total_spend > 0 else 0
     top5 = sorted(spend_rows, key=lambda r: r[1], reverse=True)[:5]
 
     print(f"  Total AP Spend: {_fmt_money(total_spend)}")
@@ -599,7 +610,7 @@ def run_section2(conn: psycopg2.extensions.connection) -> dict[str, int]:
         cur.execute("SELECT SUM(line_amount) FROM ap_invoice_lines")
         ap_value = cur.fetchone()[0] or 0
 
-    ratio = (ap_value / gr_value) if gr_value > 0 else 0
+    ratio = (_f(ap_value) / _f(gr_value)) if _f(gr_value) > 0 else 0
     print(f"  GR Value (qty*cost_per_kg): {_fmt_money(gr_value)}")
     print(f"  AP Line Value:              {_fmt_money(ap_value)}")
     print(f"  AP/GR Ratio:                {ratio:.3f}")
@@ -752,9 +763,9 @@ def run_section3(conn: psycopg2.extensions.connection) -> dict[str, int]:
         """)
         demand_kg = cur.fetchone()[0] or 0
 
-    ratio = fg_production_kg / demand_kg if demand_kg > 0 else 0
-    print(f"  FG Production: {fg_production_kg / 1e6:,.1f}M kg")
-    print(f"  Demand (order weight): {demand_kg / 1e6:,.1f}M kg")
+    ratio = _f(fg_production_kg) / _f(demand_kg) if _f(demand_kg) > 0 else 0
+    print(f"  FG Production: {_f(fg_production_kg) / 1e6:,.1f}M kg")
+    print(f"  Demand (order weight): {_f(demand_kg) / 1e6:,.1f}M kg")
     print(f"  Production/Demand ratio: {ratio:.3f}")
 
     v = _traffic(ratio, 0.95, 1.05, 0.85, 1.15)
@@ -974,7 +985,7 @@ def run_section5(conn: psycopg2.extensions.connection) -> dict[str, int]:
         """)
         cond_rows = cur.fetchall()
 
-    total_lines = sum(r[1] for r in cond_rows)
+    total_lines = sum(_f(r[1]) for r in cond_rows)
     print(f"  {'Condition':<20} {'Lines':>8} {'Cases':>12} {'%':>8}")
     print(f"  {'─' * 20} {'─' * 8} {'─' * 12} {'─' * 8}")
     for cond, cnt, cases in cond_rows:
@@ -993,7 +1004,7 @@ def run_section5(conn: psycopg2.extensions.connection) -> dict[str, int]:
         """)
         disp_rows = cur.fetchall()
 
-    total_disp = sum(r[1] for r in disp_rows)
+    total_disp = sum(_f(r[1]) for r in disp_rows)
     resale_count = 0
     print(f"  {'Disposition':<20} {'Count':>8} {'Cases':>12} {'%':>8}")
     print(f"  {'─' * 20} {'─' * 8} {'─' * 12} {'─' * 8}")
@@ -1022,7 +1033,7 @@ def run_section5(conn: psycopg2.extensions.connection) -> dict[str, int]:
         """)
         calc_returns = cur.fetchone()[0] or 0
 
-    ratio = gl_returns / calc_returns if calc_returns > 0 else 0
+    ratio = _f(gl_returns) / _f(calc_returns) if _f(calc_returns) > 0 else 0
     print(f"  GL 5200 (Returns Expense): {_fmt_money(gl_returns)}")
     print(f"  Calculated (qty*price):    {_fmt_money(calc_returns)}")
     print(f"  Ratio: {ratio:.3f}")
@@ -1078,7 +1089,7 @@ def run_section6(conn: psycopg2.extensions.connection) -> dict[str, int]:
         """)
         revenue, cogs, freight, returns_exp, mfg_oh, bad_debt = cur.fetchone()
 
-    gross_margin = revenue - cogs - freight - returns_exp - mfg_oh - bad_debt
+    gross_margin = _f(revenue) - _f(cogs) - _f(freight) - _f(returns_exp) - _f(mfg_oh) - _f(bad_debt)
     margin_pct = _pct(gross_margin, revenue)
 
     print(f"  Revenue:          {_fmt_money(revenue)}")
@@ -1152,7 +1163,7 @@ def run_section6(conn: psycopg2.extensions.connection) -> dict[str, int]:
             FROM (
                 SELECT day, SUM(quantity_cases) as daily_qty
                 FROM inventory
-                WHERE day %% 7 = 0
+                WHERE MOD(day, 7) = 0
                 GROUP BY day
             ) weekly
         """)
@@ -1167,7 +1178,7 @@ def run_section6(conn: psycopg2.extensions.connection) -> dict[str, int]:
         cur.execute("SELECT MAX(day) - MIN(day) + 1 FROM orders")
         sim_days = cur.fetchone()[0] or 365
 
-    daily_cogs = total_cogs / sim_days if sim_days > 0 else 1
+    daily_cogs = _f(total_cogs) / sim_days if sim_days > 0 else 1
 
     # Convert inventory cases to $ using avg cost_per_case
     with conn.cursor() as cur:
@@ -1304,7 +1315,7 @@ def run_section7(conn: psycopg2.extensions.connection) -> dict[str, int]:
 
         cur.execute("""
             SELECT COUNT(*) FROM gl_journal
-            WHERE entry_date < 1 OR entry_date > 455
+            WHERE entry_date < 1 OR entry_date > 456
         """)
         out_of_range = cur.fetchone()[0]
 
