@@ -54,6 +54,7 @@ seed.sql
 .tmp/
 .specstory/
 # reference/
-data/
-data/checkpoints/
-data/snapshots/
+
+# Project data (generated output — too large for git)
+data/*
+!data/static/
