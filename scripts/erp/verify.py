@@ -57,8 +57,8 @@ def run_verification(output_dir: Path) -> None:
             SELECT SUM(debit_amount), SUM(credit_amount) FROM gl
         """).fetchone()
         diff = abs(total_dr - total_cr)
-        # Tolerance: ~58M rows × ROUND(...,4) → cumulative float drift up to ~$5
-        if diff < 5.0:
+        # Tolerance: cumulative float drift (~$5) + rounding imbalances (~4 days x $1.00)
+        if diff < 10.0:
             logger.info("  PASS: GL balanced (DR=%.2f, CR=%.2f, diff=%.4f)",
                         total_dr, total_cr, diff)
             passed += 1
@@ -67,21 +67,31 @@ def run_verification(output_dir: Path) -> None:
                          total_dr, total_cr, diff)
             failed += 1
 
-        # Per-day balance (wider tolerance for friction GL entries)
+        # Per-day balance (tolerance: rounding imbalance max $1.00 + float drift $0.10)
         day_count, imbalanced_days = gl_db.execute("""
-            SELECT COUNT(*), SUM(CASE WHEN ABS(dr - cr) > 0.10 THEN 1 ELSE 0 END)
+            SELECT COUNT(*), SUM(CASE WHEN ABS(dr - cr) > 1.10 THEN 1 ELSE 0 END)
             FROM (
                 SELECT entry_date, SUM(debit_amount) as dr, SUM(credit_amount) as cr
                 FROM gl GROUP BY entry_date
             )
         """).fetchone()
         if imbalanced_days == 0:
-            logger.info("  PASS: All %d days balanced", day_count)
+            logger.info("  PASS: All %d days balanced (tolerance $1.10)", day_count)
             passed += 1
         else:
-            logger.warning("  WARN: %d/%d days have imbalance > $0.10",
+            logger.warning("  WARN: %d/%d days have imbalance > $1.10",
                            imbalanced_days, day_count)
             failed += 1
+
+        # GL duplicate detection (expected from friction Tier 5)
+        dup_count = gl_db.execute("""
+            SELECT COUNT(*) FROM gl WHERE reference_id LIKE '%-DUP'
+        """).fetchone()[0]
+        if dup_count > 0:
+            logger.info("  INFO: %s GL entries are friction duplicates (-DUP)",
+                        f"{dup_count:,}")
+        else:
+            logger.info("  INFO: No GL duplicate entries found")
 
         # ── 3. Cost Sanity ────────────────────────────────────
         logger.info("\n--- Cost Sanity ---")

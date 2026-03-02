@@ -90,6 +90,11 @@ def generate_friction(
     stats.update(t4)
     logger.info("  Tier 4 (payment timing): %s", t4)
 
+    # ── Tier 5: GL Anomalies ────────────────────────────────────
+    t5 = _apply_gl_anomalies(db, fc.gl_anomalies, fc.seed)
+    stats.update(t5)
+    logger.info("  Tier 5 (GL anomalies): %s", t5)
+
     # ── Re-sort GL journal by transaction_sequence_id ──────────
     # Friction appends entries from various days at the end of the table.
     # Re-sort by seq_id (which encodes day + category) and re-assign id
@@ -131,8 +136,8 @@ def generate_friction(
         SELECT SUM(debit_amount), SUM(credit_amount) FROM gl_journal
     """).fetchone()
     diff = abs(total_dr - total_cr)
-    # Tolerance scales with row count: ~58M GL rows × ROUND(...,4) → cumulative drift
-    if diff > 5.0:
+    # Tolerance: cumulative float drift (~$5) + rounding imbalances (~4 days x $1.00)
+    if diff > 10.0:
         logger.error("  FRICTION GL IMBALANCE: DR=%.2f CR=%.2f diff=%.4f",
                       total_dr, total_cr, diff)
     else:
@@ -878,6 +883,121 @@ def _apply_payment_timing(
         """)
 
     db.execute("DROP TABLE IF EXISTS ar_bad_debt")
+
+    return stats
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Tier 5: GL Anomaly Injection
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def _apply_gl_anomalies(
+    db: duckdb.DuckDBPyConnection,
+    ga_cfg: object,
+    seed: int,
+) -> dict[str, int]:
+    """Inject GL duplicate postings and rounding imbalances."""
+    stats: dict[str, int] = {}
+
+    dup_rate = ga_cfg.duplicate_posting_rate  # type: ignore[attr-defined]
+    imb_day_rate = ga_cfg.rounding_imbalance_day_rate  # type: ignore[attr-defined]
+    imb_max = ga_cfg.rounding_imbalance_max_dollars  # type: ignore[attr-defined]
+
+    # ── Duplicate GL Postings (~0.5%) ──────────────────────────
+    # Select random posting groups by (entry_date, reference_id).
+    # Copy both DR + CR sides → duplicates are internally balanced.
+    db.execute(f"SELECT setseed({seed / 10000.0 + 0.10})")
+
+    max_gl_id = db.execute("SELECT MAX(id) FROM gl_journal").fetchone()[0]
+    max_seq = db.execute(
+        "SELECT MAX(transaction_sequence_id) FROM gl_journal"
+    ).fetchone()[0]
+
+    # Identify posting groups to duplicate
+    db.execute(f"""
+        CREATE TABLE gl_dup_groups AS
+        SELECT DISTINCT entry_date, reference_id
+        FROM gl_journal
+        WHERE reference_id IS NOT NULL AND reference_id != ''
+        ORDER BY random()
+        LIMIT (
+            SELECT CAST(COUNT(DISTINCT (entry_date, reference_id)) * {dup_rate} AS INTEGER)
+            FROM gl_journal
+            WHERE reference_id IS NOT NULL AND reference_id != ''
+        )
+    """)
+
+    dup_group_count = db.execute("SELECT COUNT(*) FROM gl_dup_groups").fetchone()[0]
+
+    if dup_group_count > 0:
+        db.execute(f"""
+            INSERT INTO gl_journal
+            SELECT
+                {max_gl_id} + ROW_NUMBER() OVER () as id,
+                {max_seq} + ROW_NUMBER() OVER () as transaction_sequence_id,
+                g.entry_date, g.posting_date, g.account_code,
+                g.debit_amount, g.credit_amount,
+                g.reference_type,
+                g.reference_id || '-DUP' as reference_id,
+                g.node_id, g.product_id,
+                '[DUPLICATE] ' || g.description as description,
+                g.is_reversal
+            FROM gl_journal g
+            JOIN gl_dup_groups dg
+                ON dg.entry_date = g.entry_date
+               AND dg.reference_id = g.reference_id
+        """)
+
+    dup_entry_count = db.execute(
+        "SELECT COUNT(*) FROM gl_journal WHERE reference_id LIKE '%-DUP'"
+    ).fetchone()[0]
+    stats["gl_duplicate_groups"] = dup_group_count
+    stats["gl_duplicate_entries"] = dup_entry_count
+
+    db.execute("DROP TABLE IF EXISTS gl_dup_groups")
+
+    # ── Rounding Imbalances (~1% of days) ──────────────────────
+    # Pick random days and nudge one debit entry by $0.01-$max.
+    db.execute(f"SELECT setseed({seed / 10000.0 + 0.11})")
+
+    db.execute(f"""
+        CREATE TABLE gl_imbalance_days AS
+        SELECT DISTINCT entry_date
+        FROM gl_journal
+        WHERE debit_amount > 0.01
+        ORDER BY random()
+        LIMIT (
+            SELECT CAST(COUNT(DISTINCT entry_date) * {imb_day_rate} AS INTEGER)
+            FROM gl_journal
+        )
+    """)
+
+    imb_day_count = db.execute("SELECT COUNT(*) FROM gl_imbalance_days").fetchone()[0]
+
+    if imb_day_count > 0:
+        # For each selected day, pick one debit entry and add a small amount
+        db.execute(f"""
+            CREATE TABLE gl_imbalance_targets AS
+            SELECT DISTINCT ON (g.entry_date)
+                g.id,
+                0.01 + random() * ({imb_max} - 0.01) as nudge_amount
+            FROM gl_journal g
+            JOIN gl_imbalance_days d ON d.entry_date = g.entry_date
+            WHERE g.debit_amount > 0.01
+            ORDER BY g.entry_date, random()
+        """)
+
+        db.execute("""
+            UPDATE gl_journal SET
+                debit_amount = ROUND(debit_amount + t.nudge_amount, 4)
+            FROM gl_imbalance_targets t
+            WHERE gl_journal.id = t.id
+        """)
+
+        db.execute("DROP TABLE IF EXISTS gl_imbalance_targets")
+
+    stats["gl_rounding_imbalance_days"] = imb_day_count
+    db.execute("DROP TABLE IF EXISTS gl_imbalance_days")
 
     return stats
 

@@ -54,6 +54,15 @@ class PaymentTimingConfig:
 
 
 @dataclass
+class GlAnomalyConfig:
+    """Tier 5: GL anomaly injection — duplicates and rounding imbalances."""
+
+    duplicate_posting_rate: float = 0.005
+    rounding_imbalance_day_rate: float = 0.01
+    rounding_imbalance_max_dollars: float = 1.00
+
+
+@dataclass
 class FrictionConfig:
     """Top-level friction configuration with global toggle."""
 
@@ -69,6 +78,7 @@ class FrictionConfig:
     payment_timing: PaymentTimingConfig = field(
         default_factory=PaymentTimingConfig
     )
+    gl_anomalies: GlAnomalyConfig = field(default_factory=GlAnomalyConfig)
 
 
 @dataclass
@@ -98,6 +108,11 @@ class ErpConfig:
 
     # Friction layer (v0.78.0)
     friction: FrictionConfig = field(default_factory=FrictionConfig)
+
+    # Reporting date for status lifecycle (v0.82.0)
+    # Documents created after this day are excluded; those near it keep
+    # intermediate statuses. None = auto-compute from max_day - 25.
+    reporting_date: int | None = None
 
 
 # Fixed Chart of Accounts — 14 accounts for GL journal
@@ -164,6 +179,13 @@ def _load_friction_config(raw: dict) -> FrictionConfig:
         early_payment_discount_pct=pt.get("early_payment_discount_pct", 0.02),
         early_payment_window_days=pt.get("early_payment_window_days", 10),
         bad_debt_rate=pt.get("bad_debt_rate", 0.005),
+    )
+
+    ga = raw.get("gl_anomalies", {})
+    fc.gl_anomalies = GlAnomalyConfig(
+        duplicate_posting_rate=ga.get("duplicate_posting_rate", 0.005),
+        rounding_imbalance_day_rate=ga.get("rounding_imbalance_day_rate", 0.01),
+        rounding_imbalance_max_dollars=ga.get("rounding_imbalance_max_dollars", 1.00),
     )
 
     return fc

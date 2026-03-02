@@ -12,6 +12,7 @@ import time
 from pathlib import Path
 
 import duckdb
+import pyarrow.parquet as pq
 
 from .config import load_erp_config
 from .id_mapper import IdMapper
@@ -47,6 +48,13 @@ def main() -> None:
         default=Path("src/prism_sim/config"),
         help="Config directory (cost_master.json, etc.)",
     )
+    parser.add_argument(
+        "--reporting-date",
+        type=int,
+        default=None,
+        help="Reporting snapshot day (default: max_day - 25). "
+             "Documents after this day are excluded; recent ones keep intermediate statuses.",
+    )
     args = parser.parse_args()
 
     input_dir: Path = args.input_dir
@@ -67,6 +75,30 @@ def main() -> None:
 
     # Load config
     cfg = load_erp_config(config_dir)
+
+    # Resolve reporting_date: CLI > auto-compute from max(day) in orders.parquet
+    if args.reporting_date is not None:
+        cfg.reporting_date = args.reporting_date
+    else:
+        orders_path = input_dir / "orders.parquet"
+        if orders_path.exists():
+            md = pq.read_metadata(orders_path)
+            # Quick max(day) via row group statistics
+            max_day = 0
+            for rg_idx in range(md.num_row_groups):
+                rg = md.row_group(rg_idx)
+                for col_idx in range(rg.num_columns):
+                    col = rg.column(col_idx)
+                    if col.path_in_schema == "day" and col.statistics is not None:
+                        max_day = max(max_day, col.statistics.max)
+            if max_day == 0:
+                # Fallback: read the column
+                tbl = pq.read_table(orders_path, columns=["day"])
+                max_day = tbl.column("day").to_pylist()[-1]
+            cfg.reporting_date = max_day - 25
+        else:
+            cfg.reporting_date = 999999  # no filter
+    logger.info("Reporting date: day %d", cfg.reporting_date)
 
     # Initialize ID mapper
     mapper = IdMapper()

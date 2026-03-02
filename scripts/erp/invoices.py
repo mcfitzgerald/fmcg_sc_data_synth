@@ -44,8 +44,9 @@ def generate_invoices(
     _register_cost_table(db, "sku_price_tbl", sku_price_map)
     _register_cost_table(db, "ing_cost_tbl", ing_cost_map)
 
-    _generate_ap_invoices_duckdb(db, trans_dir, cfg)
-    _generate_ar_invoices_duckdb(db, trans_dir, cfg)
+    reporting_date = cfg.reporting_date or 999999
+    _generate_ap_invoices_duckdb(db, trans_dir, cfg, reporting_date)
+    _generate_ar_invoices_duckdb(db, trans_dir, cfg, reporting_date)
 
 
 def _register_cost_table(
@@ -64,6 +65,7 @@ def _generate_ap_invoices_duckdb(
     db: duckdb.DuckDBPyConnection,
     trans_dir: Path,
     cfg: ErpConfig,
+    reporting_date: int,
 ) -> None:
     """Generate AP invoices from goods receipts using DuckDB."""
     logger.info("  Generating AP invoices (DuckDB)...")
@@ -73,6 +75,7 @@ def _generate_ap_invoices_duckdb(
     # AP invoice headers: one per goods receipt
     # Join via erp_shipments (which stores source_sim_id) instead of
     # re-joining pq_shipments to avoid string-concat join and GROUP BY issues.
+    # erp_goods_receipts is already filtered by reporting_date; belt + suspenders.
     db.execute(f"""
         CREATE OR REPLACE TABLE erp_ap_invoices AS
         SELECT
@@ -91,6 +94,7 @@ def _generate_ap_invoices_duckdb(
         FROM erp_goods_receipts gr
         LEFT JOIN erp_shipments es ON es.id = gr.shipment_id
         LEFT JOIN loc_map sm ON sm.sim_id = es.source_sim_id
+        WHERE gr.receipt_date <= {reporting_date}
     """)
 
     # AP invoice lines: line items from shipments to plants
@@ -137,6 +141,7 @@ def _generate_ar_invoices_duckdb(
     db: duckdb.DuckDBPyConnection,
     trans_dir: Path,
     cfg: ErpConfig,
+    reporting_date: int,
 ) -> None:
     """Generate AR invoices from shipments arriving at demand endpoints."""
     logger.info("  Generating AR invoices (DuckDB)...")
@@ -186,9 +191,10 @@ def _generate_ar_invoices_duckdb(
                 ELSE 'MASS_RETAIL'
             END
         )
-        WHERE s.target_id LIKE 'STORE-%'
+        WHERE (s.target_id LIKE 'STORE-%'
            OR s.target_id LIKE 'ECOM-FC-%'
-           OR s.target_id LIKE 'DTC-FC-%'
+           OR s.target_id LIKE 'DTC-FC-%')
+          AND es.arrival_date <= {reporting_date}
         GROUP BY es.id, es.arrival_date, es.shipment_number,
                  tm.pk, s.target_id, dso.dso
     """)

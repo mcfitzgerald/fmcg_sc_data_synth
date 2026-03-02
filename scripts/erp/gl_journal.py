@@ -42,6 +42,8 @@ def generate_gl_journal(
     # Register cost/price lookup tables
     _register_cost_tables(db, output_dir)
 
+    reporting_date = cfg.reporting_date or 999999
+
     # Build all GL entries as a UNION ALL of 7 event type queries
     logger.info("  GL: Building journal entries via DuckDB...")
 
@@ -146,12 +148,14 @@ def generate_gl_journal(
                 END as description
             FROM erp_shipments
             WHERE freight_cost > 0.001
+                AND ship_date <= {reporting_date}
             UNION ALL
             SELECT ship_date, '1000', 0.0, freight_cost,
                 'freight', source_sim_id, shipment_number,
                 'Cash paid for freight'
             FROM erp_shipments
             WHERE freight_cost > 0.001
+                AND ship_date <= {reporting_date}
         ),
         -- 5. Ship Arrival: DR 1130 FG / CR 1140 In-Transit (per shipment)
         arrival_entries AS (
@@ -263,7 +267,8 @@ def generate_gl_journal(
             description,
             false as is_reversal
         FROM all_entries
-        WHERE debit_amount > 0.001 OR credit_amount > 0.001
+        WHERE (debit_amount > 0.001 OR credit_amount > 0.001)
+            AND entry_date <= {reporting_date}
     """)
 
     count = db.execute("SELECT COUNT(*) FROM erp_gl_journal").fetchone()[0]

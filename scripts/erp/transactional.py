@@ -20,6 +20,41 @@ from .sequence import CAT_MULTIPLIER, DAY_MULTIPLIER
 
 logger = logging.getLogger(__name__)
 
+
+# ── Status Lifecycle Bands ────────────────────────────────────
+# Each entry is a list of (days_before_reporting_date, status) pairs, sorted
+# descending by threshold. A document whose MIN(day) is N days before the
+# reporting_date gets the first status whose threshold it exceeds.
+STATUS_LIFECYCLES: dict[str, list[tuple[int, str]]] = {
+    "orders":          [(40, "delivered"), (20, "shipped"), (10, "allocated"), (0, "pending")],
+    "purchase_orders": [(30, "closed"), (15, "received"), (0, "open")],
+    "shipments":       [(15, "delivered"), (3, "in_transit"), (0, "planned")],
+    "goods_receipts":  [(10, "posted"), (3, "inspected"), (0, "received")],
+    "work_orders":     [(20, "complete"), (5, "in_progress"), (0, "planned")],
+    "batches":         [(10, "completed"), (2, "in_progress"), (0, "pending")],
+    "returns":         [(30, "processed"), (15, "received"), (7, "approved"), (0, "requested")],
+}
+
+
+def _lifecycle_status(table: str, day: int, reporting_date: int) -> str:
+    """Return lifecycle status for a document created on `day`."""
+    age = reporting_date - day
+    for threshold, status in STATUS_LIFECYCLES[table]:
+        if age >= threshold:
+            return status
+    return STATUS_LIFECYCLES[table][-1][1]
+
+
+def _lifecycle_case_sql(table: str, day_expr: str, reporting_date: int) -> str:
+    """Build a SQL CASE expression for lifecycle status assignment."""
+    bands = STATUS_LIFECYCLES[table]
+    parts = []
+    for threshold, status in bands[:-1]:
+        parts.append(f"WHEN ({reporting_date} - {day_expr}) >= {threshold} THEN '{status}'")
+    default_status = bands[-1][1]
+    return f"CASE {' '.join(parts)} ELSE '{default_status}' END"
+
+
 # Route key mapping: (src_echelon, tgt_echelon) → cost_master route key
 ROUTE_KEY_MAP: dict[tuple[str, str], str] = {
     ("supplier", "plant"): "supplier_to_plant",
@@ -51,19 +86,21 @@ def generate_transactional_tables(
     _register_product_map(db, mapper)
     _register_distance_map(db, input_dir)
 
+    rd = cfg.reporting_date or 999999
+
     # ── Large tables: DuckDB SQL + COPY TO ────────────────────
-    _generate_orders_duckdb(db, trans_dir)
-    _generate_purchase_orders_duckdb(db, trans_dir)
-    _generate_shipments_duckdb(db, trans_dir, cfg)
-    _generate_goods_receipts_duckdb(db, trans_dir)
-    _generate_inventory_duckdb(db, trans_dir)
+    _generate_orders_duckdb(db, trans_dir, rd)
+    _generate_purchase_orders_duckdb(db, trans_dir, rd)
+    _generate_shipments_duckdb(db, trans_dir, cfg, rd)
+    _generate_goods_receipts_duckdb(db, trans_dir, rd)
+    _generate_inventory_duckdb(db, trans_dir, rd)
 
     # ── Small tables: Python iteration ────────────────────────
-    _generate_work_orders(db, trans_dir, mapper)
-    _generate_batches(db, trans_dir, mapper)
-    _generate_batch_ingredients(db, trans_dir, mapper)
-    _generate_returns(db, trans_dir, mapper)
-    _generate_forecasts(db, trans_dir, mapper)
+    _generate_work_orders(db, trans_dir, mapper, rd)
+    _generate_batches(db, trans_dir, mapper, rd)
+    _generate_batch_ingredients(db, trans_dir, mapper, rd)
+    _generate_returns(db, trans_dir, mapper, rd)
+    _generate_forecasts(db, trans_dir, mapper, rd)
 
     # Populate IdMapper from DuckDB header tables for downstream use
     _populate_mapper_from_duckdb(db, mapper)
@@ -136,13 +173,15 @@ def _register_distance_map(
 
 
 def _generate_orders_duckdb(
-    db: duckdb.DuckDBPyConnection, trans_dir: Path
+    db: duckdb.DuckDBPyConnection, trans_dir: Path, reporting_date: int
 ) -> None:
     """Generate orders + order_lines via DuckDB SQL + COPY TO."""
     logger.info("  Generating orders (DuckDB)...")
 
+    status_case = _lifecycle_case_sql("orders", "MIN(day)", reporting_date)
+
     # Create order headers with integer PKs
-    db.execute("""
+    db.execute(f"""
         CREATE OR REPLACE TABLE erp_orders AS
         SELECT
             ROW_NUMBER() OVER (ORDER BY MIN(day), order_id) as id,
@@ -150,7 +189,7 @@ def _generate_orders_duckdb(
             MIN(day) as day,
             COALESCE(sm.pk, 0) as source_id,
             COALESCE(tm.pk, 0) as retail_location_id,
-            FIRST(status) as status,
+            {status_case} as status,
             CAST(SUM(quantity) AS INTEGER) as total_cases,
             CAST(MIN(day) AS BIGINT) * 10000000 + 4 * 1000000 +
                 CAST(ROW_NUMBER() OVER (ORDER BY MIN(day), order_id) AS BIGINT) as transaction_sequence_id
@@ -159,6 +198,7 @@ def _generate_orders_duckdb(
         LEFT JOIN loc_map tm ON tm.sim_id = o.target_id
         WHERE o.order_id LIKE 'ORD-%'
         GROUP BY o.order_id, sm.pk, tm.pk
+        HAVING MIN(day) <= {reporting_date}
     """)
 
     count = db.execute("SELECT COUNT(*) FROM erp_orders").fetchone()[0]
@@ -168,7 +208,7 @@ def _generate_orders_duckdb(
     """)
     logger.info("  Order headers: %s", f"{count:,}")
 
-    # Create order lines
+    # Create order lines (inherit status from header)
     db.execute(f"""
         COPY (
             SELECT
@@ -177,7 +217,7 @@ def _generate_orders_duckdb(
                 COALESCE(pm.pk, 0) as sku_id,
                 o.quantity as quantity_cases,
                 COALESCE(o.unit_price, 0.0) as unit_price,
-                o.status
+                eo.status
             FROM pq_orders o
             JOIN erp_orders eo ON eo.order_number = o.order_id
             LEFT JOIN prod_map pm ON pm.sim_id = o.product_id
@@ -196,12 +236,14 @@ def _generate_orders_duckdb(
 
 
 def _generate_purchase_orders_duckdb(
-    db: duckdb.DuckDBPyConnection, trans_dir: Path
+    db: duckdb.DuckDBPyConnection, trans_dir: Path, reporting_date: int
 ) -> None:
     """Generate purchase_orders + purchase_order_lines via DuckDB."""
     logger.info("  Generating purchase orders (DuckDB)...")
 
-    db.execute("""
+    status_case = _lifecycle_case_sql("purchase_orders", "MIN(day)", reporting_date)
+
+    db.execute(f"""
         CREATE OR REPLACE TABLE erp_pos AS
         SELECT
             ROW_NUMBER() OVER (ORDER BY MIN(day), order_id) as id,
@@ -209,7 +251,7 @@ def _generate_purchase_orders_duckdb(
             COALESCE(sm.pk, 0) as supplier_id,
             COALESCE(tm.pk, 0) as plant_id,
             MIN(day) as order_date,
-            FIRST(status) as status,
+            {status_case} as status,
             CAST(MIN(day) AS BIGINT) * 10000000 + 0 * 1000000 +
                 CAST(ROW_NUMBER() OVER (ORDER BY MIN(day), order_id) AS BIGINT) as transaction_sequence_id
         FROM pq_orders o
@@ -217,6 +259,7 @@ def _generate_purchase_orders_duckdb(
         LEFT JOIN loc_map tm ON tm.sim_id = o.target_id
         WHERE o.order_id LIKE 'PO-%'
         GROUP BY o.order_id, sm.pk, tm.pk
+        HAVING MIN(day) <= {reporting_date}
     """)
 
     count = db.execute("SELECT COUNT(*) FROM erp_pos").fetchone()[0]
@@ -225,7 +268,7 @@ def _generate_purchase_orders_duckdb(
         (HEADER, DELIMITER ',')
     """)
 
-    # PO lines
+    # PO lines (inherit status from header)
     db.execute(f"""
         COPY (
             SELECT
@@ -234,7 +277,7 @@ def _generate_purchase_orders_duckdb(
                 COALESCE(pm.pk, 0) as ingredient_id,
                 o.quantity as quantity_kg,
                 COALESCE(o.unit_price, 0.0) as unit_cost,
-                o.status
+                po.status
             FROM pq_orders o
             JOIN erp_pos po ON po.po_number = o.order_id
             LEFT JOIN prod_map pm ON pm.sim_id = o.product_id
@@ -249,7 +292,8 @@ def _generate_purchase_orders_duckdb(
 
 
 def _generate_shipments_duckdb(
-    db: duckdb.DuckDBPyConnection, trans_dir: Path, cfg: ErpConfig
+    db: duckdb.DuckDBPyConnection, trans_dir: Path, cfg: ErpConfig,
+    reporting_date: int,
 ) -> None:
     """Generate shipments + shipment_lines via DuckDB."""
     logger.info("  Generating shipments (DuckDB)...")
@@ -257,7 +301,9 @@ def _generate_shipments_duckdb(
     # Register route cost config as a DuckDB table for lookups
     _register_route_costs(db, cfg)
 
-    db.execute("""
+    status_case = _lifecycle_case_sql("shipments", "MIN(creation_day)", reporting_date)
+
+    db.execute(f"""
         CREATE OR REPLACE TABLE erp_shipments AS
         SELECT
             ROW_NUMBER() OVER (ORDER BY MIN(creation_day), shipment_id) as id,
@@ -266,7 +312,7 @@ def _generate_shipments_duckdb(
             MIN(arrival_day) as arrival_date,
             COALESCE(sm.pk, 0) as origin_id,
             COALESCE(tm.pk, 0) as destination_id,
-            FIRST(status) as status,
+            {status_case} as status,
             COALESCE(rc.route_key, 'other') as route_type,
             -- Freight: FTL = cost_per_km * dist / batch_size * qty; LTL = cost_per_case * qty
             CASE
@@ -302,6 +348,7 @@ def _generate_shipments_duckdb(
         )
         GROUP BY s.shipment_id, sm.pk, tm.pk, rc.route_key, rc.mode,
                  rc.cost_per_case, rc.cost_per_km, rc.handling_cost, lk.distance_km
+        HAVING MIN(creation_day) <= {reporting_date}
     """)
 
     count = db.execute("SELECT COUNT(*) FROM erp_shipments").fetchone()[0]
@@ -363,12 +410,14 @@ def _register_route_costs(db: duckdb.DuckDBPyConnection, cfg: ErpConfig) -> None
 
 
 def _generate_goods_receipts_duckdb(
-    db: duckdb.DuckDBPyConnection, trans_dir: Path
+    db: duckdb.DuckDBPyConnection, trans_dir: Path, reporting_date: int
 ) -> None:
     """Generate goods_receipts + goods_receipt_lines via DuckDB."""
     logger.info("  Generating goods receipts (DuckDB)...")
 
-    db.execute("""
+    status_case = _lifecycle_case_sql("goods_receipts", "MIN(s.arrival_day)", reporting_date)
+
+    db.execute(f"""
         CREATE OR REPLACE TABLE erp_goods_receipts AS
         SELECT
             ROW_NUMBER() OVER (ORDER BY MIN(creation_day), shipment_id) as id,
@@ -376,7 +425,7 @@ def _generate_goods_receipts_duckdb(
             COALESCE(es.id, 0) as shipment_id,
             COALESCE(tm.pk, 0) as plant_id,
             MIN(s.arrival_day) as receipt_date,
-            'received' as status,
+            {status_case} as status,
             CAST(MIN(s.arrival_day) AS BIGINT) * 10000000 + 0 * 1000000 +
                 CAST(ROW_NUMBER() OVER (ORDER BY MIN(s.arrival_day), s.shipment_id) AS BIGINT) as transaction_sequence_id
         FROM pq_shipments s
@@ -384,6 +433,7 @@ def _generate_goods_receipts_duckdb(
         LEFT JOIN erp_shipments es ON es.shipment_number = s.shipment_id
         WHERE s.target_id LIKE 'PLANT-%'
         GROUP BY s.shipment_id, es.id, tm.pk
+        HAVING MIN(s.arrival_day) <= {reporting_date}
     """)
 
     count = db.execute("SELECT COUNT(*) FROM erp_goods_receipts").fetchone()[0]
@@ -414,7 +464,7 @@ def _generate_goods_receipts_duckdb(
 
 
 def _generate_inventory_duckdb(
-    db: duckdb.DuckDBPyConnection, trans_dir: Path
+    db: duckdb.DuckDBPyConnection, trans_dir: Path, reporting_date: int
 ) -> None:
     """Generate inventory.csv — weekly snapshots via DuckDB COPY TO."""
     logger.info("  Generating inventory (DuckDB, weekly snapshots)...")
@@ -440,6 +490,7 @@ def _generate_inventory_duckdb(
             LEFT JOIN loc_map lm ON lm.sim_id = i.node_id
             LEFT JOIN prod_map pm ON pm.sim_id = i.product_id
             WHERE (i.day % 7 = 0 OR i.day = {max_day})
+                AND i.day <= {reporting_date}
                 AND lm.pk IS NOT NULL AND pm.pk IS NOT NULL
         ) TO '{trans_dir / "inventory.csv"}'
         (HEADER, DELIMITER ',')
@@ -448,6 +499,7 @@ def _generate_inventory_duckdb(
     count_result = db.execute(f"""
         SELECT COUNT(*) FROM pq_inventory
         WHERE (day % 7 = 0 OR day = {max_day})
+            AND day <= {reporting_date}
     """).fetchone()[0]
     logger.info("  Inventory snapshots: ~%s rows", f"{count_result:,}")
 
@@ -456,7 +508,8 @@ def _generate_inventory_duckdb(
 
 
 def _generate_work_orders(
-    db: duckdb.DuckDBPyConnection, trans_dir: Path, mapper: IdMapper
+    db: duckdb.DuckDBPyConnection, trans_dir: Path, mapper: IdMapper,
+    reporting_date: int,
 ) -> None:
     """Generate work_orders.csv from production_orders.parquet."""
     logger.info("  Generating work orders...")
@@ -470,10 +523,13 @@ def _generate_work_orders(
     wo_out: list[tuple] = []
     for row in rows:
         po_id, plant_id, prod_id, qty, create_day, due_day, status = row
+        if create_day > reporting_date:
+            continue
         wo_pk = mapper.get("work_orders", po_id)
         plant_pk = mapper.lookup("locations", plant_id) or 0
         formula_pk = mapper.lookup("formulas", f"FORM-{prod_id}") or 0
         seq_id = create_day * DAY_MULTIPLIER + 1 * CAT_MULTIPLIER + wo_pk
+        status = _lifecycle_status("work_orders", create_day, reporting_date)
 
         wo_out.append((
             wo_pk, po_id, plant_pk, formula_pk, qty,
@@ -490,7 +546,8 @@ def _generate_work_orders(
 
 
 def _generate_batches(
-    db: duckdb.DuckDBPyConnection, trans_dir: Path, mapper: IdMapper
+    db: duckdb.DuckDBPyConnection, trans_dir: Path, mapper: IdMapper,
+    reporting_date: int,
 ) -> None:
     """Generate batches.csv from batches.parquet."""
     logger.info("  Generating batches...")
@@ -505,6 +562,8 @@ def _generate_batches(
     for row in rows:
         (batch_id, po_id, plant_id, prod_id,
          day_produced, qty, yield_pct, status) = row
+        if day_produced > reporting_date:
+            continue
         batch_pk = mapper.get("batches", batch_id)
         wo_pk = mapper.lookup("work_orders", po_id) or 0
         plant_pk = mapper.lookup("locations", plant_id) or 0
@@ -513,6 +572,7 @@ def _generate_batches(
         product_type = "bulk_intermediate" if prod_id.startswith("BULK-") else "finished_good"
         bom_level = 1 if prod_id.startswith("BULK-") else 0
         seq_id = day_produced * DAY_MULTIPLIER + 1 * CAT_MULTIPLIER + batch_pk
+        status = _lifecycle_status("batches", day_produced, reporting_date)
 
         batch_out.append((
             batch_pk, batch_id, wo_pk, plant_pk, formula_pk, product_pk,
@@ -530,7 +590,8 @@ def _generate_batches(
 
 
 def _generate_batch_ingredients(
-    db: duckdb.DuckDBPyConnection, trans_dir: Path, mapper: IdMapper
+    db: duckdb.DuckDBPyConnection, trans_dir: Path, mapper: IdMapper,
+    reporting_date: int,
 ) -> None:
     """Generate batch_ingredients.csv."""
     logger.info("  Generating batch ingredients...")
@@ -541,10 +602,14 @@ def _generate_batch_ingredients(
     """).fetchall()
 
     bi_out: list[tuple] = []
-    for i, (batch_id, ing_id, qty_kg) in enumerate(rows, 1):
-        batch_pk = mapper.lookup("batches", batch_id) or 0
+    counter = 0
+    for batch_id, ing_id, qty_kg in rows:
+        batch_pk = mapper.lookup("batches", batch_id)
+        if not batch_pk:
+            continue  # batch excluded by reporting_date
         ing_pk = mapper.lookup("products", ing_id) or 0
-        bi_out.append((i, batch_pk, ing_pk, round(qty_kg, 4)))
+        counter += 1
+        bi_out.append((counter, batch_pk, ing_pk, round(qty_kg, 4)))
 
     _write_csv(
         trans_dir / "batch_ingredients.csv",
@@ -555,7 +620,8 @@ def _generate_batch_ingredients(
 
 
 def _generate_returns(
-    db: duckdb.DuckDBPyConnection, trans_dir: Path, mapper: IdMapper
+    db: duckdb.DuckDBPyConnection, trans_dir: Path, mapper: IdMapper,
+    reporting_date: int,
 ) -> None:
     """Generate returns, return_lines, disposition_logs."""
     logger.info("  Generating returns...")
@@ -573,7 +639,9 @@ def _generate_returns(
     ret_pk_map: dict[str, int] = {}
     ret_counter = 0
 
-    for rma_id, day, src, tgt, prod, qty, disposition, status in rows:
+    for rma_id, day, src, tgt, prod, qty, disposition, _status in rows:
+        if day > reporting_date:
+            continue
         if rma_id not in seen:
             seen.add(rma_id)
             ret_counter += 1
@@ -582,8 +650,11 @@ def _generate_returns(
             src_pk = mapper.lookup("locations", src) or 0
             tgt_pk = mapper.lookup("locations", tgt) or 0
             seq_id = day * DAY_MULTIPLIER + 5 * CAT_MULTIPLIER + ret_pk
-            ret_out.append((ret_pk, rma_id, day, src_pk, tgt_pk, status, seq_id))
+            lc_status = _lifecycle_status("returns", day, reporting_date)
+            ret_out.append((ret_pk, rma_id, day, src_pk, tgt_pk, lc_status, seq_id))
 
+        if rma_id not in ret_pk_map:
+            continue  # header was excluded by reporting_date
         pk = ret_pk_map[rma_id]
         prod_pk = mapper.lookup("products", prod) or 0
         condition = "sellable" if disposition == "restock" else "damaged"
@@ -603,7 +674,8 @@ def _generate_returns(
 
 
 def _generate_forecasts(
-    db: duckdb.DuckDBPyConnection, trans_dir: Path, mapper: IdMapper
+    db: duckdb.DuckDBPyConnection, trans_dir: Path, mapper: IdMapper,
+    reporting_date: int,
 ) -> None:
     """Generate demand_forecasts.csv."""
     logger.info("  Generating forecasts...")
@@ -614,10 +686,14 @@ def _generate_forecasts(
     """).fetchall()
 
     fc_out: list[tuple] = []
-    for i, (day, prod, qty) in enumerate(rows, 1):
+    counter = 0
+    for day, prod, qty in rows:
+        if day > reporting_date:
+            continue
+        counter += 1
         prod_pk = mapper.lookup("products", prod) or 0
         version = f"FCAST-DAY-{day:03d}"
-        fc_out.append((i, version, prod_pk, "total", day + 1, qty, "statistical"))
+        fc_out.append((counter, version, prod_pk, "total", day + 1, qty, "statistical"))
 
     _write_csv(trans_dir / "demand_forecasts.csv",
                ["id", "forecast_version", "sku_id", "location_type",

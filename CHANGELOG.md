@@ -5,6 +5,37 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.82.0] - 2026-03-02
+
+### Feat: Lifecycle & GL Anomalies — Ontology Feedback Chunk 2 (S4+S6)
+
+Addresses VKG benchmark gaps: status monoculture (all documents terminal) and perfect GL (trivial audit).
+
+#### S4: Status Lifecycle via `reporting_date`
+- **`scripts/erp/config.py`**: Added `reporting_date: int | None` to `ErpConfig`. Auto-computed as `max_day - 25` from orders.parquet.
+- **`scripts/erp/__main__.py`**: New `--reporting-date` CLI arg. Uses PyArrow row-group statistics for fast max_day probe.
+- **`scripts/erp/transactional.py`**: Added `STATUS_LIFECYCLES` dict with 7 table-specific state machines matching ontology `pcg.yaml`. DuckDB tables (orders, POs, shipments, goods_receipts, inventory) use CASE expressions; Python-iterated tables (work_orders, batches, returns) use `_lifecycle_status()` helper. Documents after `reporting_date` are excluded; order/PO lines inherit status from parent header.
+- **`scripts/erp/gl_journal.py`**: Added `entry_date <= reporting_date` filter on final output + safety filter on freight CTE.
+- **`scripts/erp/invoices.py`**: Added `receipt_date`/`arrival_date` safety filters on AP/AR invoice generation.
+- **`scripts/erp/transactional.py`**: Forecasts filtered by `reporting_date`.
+
+#### S6: GL Anomaly Injection
+- **`scripts/erp/config.py`**: New `GlAnomalyConfig` dataclass (duplicate_posting_rate, rounding_imbalance_day_rate, rounding_imbalance_max_dollars). Added to `FrictionConfig` as `gl_anomalies` field.
+- **`src/prism_sim/config/cost_master.json`**: Added `gl_anomalies` config section in friction block.
+- **`scripts/erp/friction.py`**: New `_apply_gl_anomalies()` (Tier 5). Duplicate postings: copies balanced (entry_date, reference_id) groups with `-DUP` suffix (~0.5%). Rounding imbalances: nudges one debit per selected day by $0.01-$1.00 (~1% of days).
+- **`scripts/erp/verify.py`**: Updated GL balance tolerances ($5→$10 global, $0.10→$1.10 per-day). Added info log for GL duplicate entry count.
+- **`scripts/erp_schema.sql`**: Added status indexes on 6 tables. Version bumped to v0.82.0.
+
+#### Expected Status Distributions (reporting_date = max_day - 25)
+- Orders: ~90% delivered, ~6% shipped, ~3% allocated, ~1% pending
+- POs: ~83% closed, ~12% received, ~5% open
+- Shipments: ~92% delivered, ~6% in_transit, ~2% planned
+- GL anomalies: ~0.5% duplicate entries, ~3-4 days with $0.01-$1.00 imbalance
+
+#### Regression Safety
+- `--reporting-date 999999` produces identical row counts + all-terminal statuses (pre-change behavior)
+- Zero sim engine changes — all lifecycle logic in ERP generator layer
+
 ## [0.81.0] - 2026-03-02
 
 ### Feat: Data Richness — Ontology Feedback Chunk 1 (S1+S2+S3+S5)
