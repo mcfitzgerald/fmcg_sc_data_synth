@@ -466,9 +466,10 @@ def _generate_supplier_ingredients(
                     continue
                 seen.add(pair)
                 row_id += 1
-                cost = 5.0 + (hash(ing_sim) % 100) / 10.0
-                lead_time = 3 + (hash(ing_sim + sup_sim) % 12)
-                rows.append((row_id, sup_pk, ing_pk, round(cost, 2), lead_time, 100))
+                cost = float(cat_row.get("unit_cost", 5.0))
+                lead_time = int(float(cat_row.get("lead_time_days", 7)))
+                min_qty = int(float(cat_row.get("min_order_qty", 100)))
+                rows.append((row_id, sup_pk, ing_pk, round(cost, 2), lead_time, min_qty))
         logger.info("Loaded supplier-ingredient links from Kraljic catalog")
     else:
         # ── Round-robin fallback ──

@@ -306,6 +306,7 @@ ORDER_FIELDS = [
     "quantity",
     "status",
     "requested_date",
+    "unit_price",
 ]
 
 SHIPMENT_FIELDS = [
@@ -392,6 +393,7 @@ def _get_parquet_schema(table_name: str) -> "pa.Schema":
                 ("quantity", pa.float64()),
                 ("status", pa.string()),
                 ("requested_date", pa.int32()),
+                ("unit_price", pa.float64()),
             ]
         ),
         "forecasts": pa.schema(
@@ -663,6 +665,7 @@ class SimulationWriter:
                     "quantity": line.quantity,
                     "status": order.status,
                     "requested_date": order.requested_date,
+                    "unit_price": line.unit_price,
                 }
                 rows.append(row)
 

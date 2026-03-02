@@ -84,14 +84,20 @@ class NetworkGenerator:
         # Suppliers (Sample from cities)
         suppliers: list[Node] = []
         supplier_cities = self.pool.sample_cities(n_suppliers)
+        supplier_names_cfg: list[str] = topology_conf.get("supplier_names", [])
         for i, city_data in enumerate(supplier_cities):
             node_id = f"SUP-{i+1:03d}"
             # v0.35.6: All suppliers have infinite capacity.
             # SPOF uses dedicated supplier.
             capacity = float("inf")
+            sup_name = (
+                supplier_names_cfg[i]
+                if i < len(supplier_names_cfg)
+                else f"Supplier {i+1}"
+            )
             suppliers.append(Node(
                 id=node_id,
-                name=f"Supplier {i+1}",
+                name=sup_name,
                 type=NodeType.SUPPLIER,
                 location=f"{city_data['city']}, {city_data['state']}",
                 lat=city_data["lat"],
@@ -441,7 +447,8 @@ class NetworkGenerator:
         self,
         ingredients: list[Product],
         sim_config: dict[str, Any],
-    ) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
+        nodes: list[Node] | None = None,
+    ) -> tuple[dict[str, list[str]], dict[str, list[str]], list[dict[str, Any]]]:
         """Assign suppliers to ingredients using Kraljic Matrix segmentation.
 
         Partitions the 50 supplier IDs into non-overlapping pools (strategic,
@@ -449,9 +456,10 @@ class NetworkGenerator:
         on its kraljic quadrant from the ingredient_profiles config.
 
         Returns:
-            (supplier_catalog, ingredient_suppliers) where
+            (supplier_catalog, ingredient_suppliers, catalog_rows) where
             supplier_catalog:      supplier_id -> [ingredient_ids]
             ingredient_suppliers:  ingredient_id -> [supplier_ids]
+            catalog_rows:          enriched rows with lead_time, cost, moq
         """
         topology = self.config.get("topology", {})
         seg_config = topology.get("supplier_segmentation", {})
@@ -539,7 +547,57 @@ class NetworkGenerator:
             for sup_id in chosen:
                 supplier_catalog.setdefault(sup_id, []).append(ing.id)
 
-        return supplier_catalog, ingredient_suppliers
+        # ── Enrich catalog rows with sourcing-aware lead times & costs ──
+        sourcing_lt_cfg = topology.get("sourcing_lead_times", {})
+
+        # Build ingredient ID → sourcing mode lookup from profiles
+        prefix_to_sourcing: dict[str, str] = {}
+        for _pk, prof in ing_profiles.items():
+            prefix_to_sourcing[prof.get("prefix", "")] = prof.get("sourcing", "LOCAL")
+
+        def _get_sourcing(ing_id: str) -> str:
+            for pfx, mode in prefix_to_sourcing.items():
+                if ing_id.startswith(pfx):
+                    return mode
+            return "LOCAL"
+
+        # Build ingredient cost lookup
+        ing_cost_map: dict[str, float] = {
+            ing.id: ing.cost_per_case for ing in ingredients
+        }
+
+        cost_rng = np.random.default_rng(seed=456)
+        catalog_rows: list[dict[str, Any]] = []
+        for ing_id, sup_ids in sorted(ingredient_suppliers.items()):
+            sourcing_mode = _get_sourcing(ing_id)
+            fallback = sourcing_lt_cfg.get("LOCAL", {})
+            lt_cfg = sourcing_lt_cfg.get(sourcing_mode, fallback)
+            base_days = lt_cfg.get("base_days", 7)
+            variance_days = max(lt_cfg.get("variance_days", 10), 1)
+            cost_premium = lt_cfg.get("cost_premium", 1.0)
+            base_cost = ing_cost_map.get(ing_id, 5.0)
+            kraljic = _get_kraljic(ing_id)
+
+            for idx, sup_id in enumerate(sup_ids):
+                # Deterministic lead time per (supplier, ingredient) pair
+                pair_hash = hash(sup_id + ing_id) & 0x7FFFFFFF
+                lead_time = base_days + (pair_hash % variance_days)
+                # Small per-pair cost noise (±5%)
+                noise = 1.0 + (cost_rng.uniform(-0.05, 0.05))
+                unit_cost = round(base_cost * cost_premium * noise, 4)
+                min_order_qty = 100
+
+                catalog_rows.append({
+                    "supplier_id": sup_id,
+                    "ingredient_id": ing_id,
+                    "is_primary": idx == 0,
+                    "kraljic": kraljic,
+                    "lead_time_days": lead_time,
+                    "unit_cost": unit_cost,
+                    "min_order_qty": min_order_qty,
+                })
+
+        return supplier_catalog, ingredient_suppliers, catalog_rows
 
     def _generate_suppliers(self, n: int) -> list[Node]:
         nodes = []

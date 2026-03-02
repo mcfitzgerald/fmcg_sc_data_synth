@@ -163,6 +163,14 @@ class WorldBuilder:
                 self.world.supplier_catalog.setdefault(sup_id, []).append(ing_id)
                 self.world.ingredient_suppliers.setdefault(ing_id, []).append(sup_id)
 
+                # Load enriched metadata (with fallback for old-format CSVs)
+                lead_time = float(row.get("lead_time_days", 7))
+                unit_cost = float(row.get("unit_cost", 5.0))
+                self.world.supplier_ingredient_meta[(sup_id, ing_id)] = {
+                    "lead_time_days": lead_time,
+                    "unit_cost": unit_cost,
+                }
+
         logging.getLogger(__name__).info(
             "Loaded supplier catalog: %d suppliers, %d ingredients",
             len(self.world.supplier_catalog),

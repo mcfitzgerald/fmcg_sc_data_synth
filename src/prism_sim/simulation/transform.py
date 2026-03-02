@@ -133,6 +133,16 @@ class TransformEngine:
         )
         self.spof_warning_threshold = spof_config.get("warning_threshold", 10.0)
 
+        # Production variance: ±3% recording noise on batch_ingredients.quantity_kg
+        variance_cfg = mfg_config.get("production_variance", {})
+        self._variance_enabled: bool = variance_cfg.get("enabled", False)
+        self._variance_min: float = variance_cfg.get("min_factor", 0.97)
+        self._variance_max: float = variance_cfg.get("max_factor", 1.03)
+        global_seed = config.get("simulation_parameters", {}).get(
+            "global_constants", {}
+        ).get("random_seed", 42)
+        self._variance_rng = np.random.default_rng(global_seed + 7)
+
         # Initialize plant states
         self._plant_states: dict[str, PlantState] = {}
         self._plant_efficiency: dict[str, float] = {}  # Store efficiency for OEE calc
@@ -747,7 +757,14 @@ class TransformEngine:
         ingredients_consumed: dict[str, float] = {}
         if recipe:
             for ing_id, qty_per_case in recipe.ingredients.items():
-                ingredients_consumed[ing_id] = qty_per_case * quantity
+                planned_qty = qty_per_case * quantity
+                if self._variance_enabled:
+                    factor = float(self._variance_rng.uniform(
+                        self._variance_min, self._variance_max,
+                    ))
+                    ingredients_consumed[ing_id] = planned_qty * factor
+                else:
+                    ingredients_consumed[ing_id] = planned_qty
 
         return Batch(
             id=batch_id,

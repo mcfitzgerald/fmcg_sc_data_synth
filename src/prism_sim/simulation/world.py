@@ -13,6 +13,8 @@ class World:
         # Kraljic supplier segmentation (populated from supplier_catalog.csv)
         self.supplier_catalog: dict[str, list[str]] = {}
         self.ingredient_suppliers: dict[str, list[str]] = {}
+        # Enriched per-(supplier, ingredient) metadata from catalog CSV
+        self.supplier_ingredient_meta: dict[tuple[str, str], dict[str, float]] = {}
 
     def add_node(self, node: Node) -> None:
         if node.id in self.nodes:

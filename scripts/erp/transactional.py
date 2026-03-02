@@ -176,7 +176,7 @@ def _generate_orders_duckdb(
                 ROW_NUMBER() OVER (PARTITION BY eo.id ORDER BY o.product_id) as line_number,
                 COALESCE(pm.pk, 0) as sku_id,
                 o.quantity as quantity_cases,
-                0.0 as unit_price,
+                COALESCE(o.unit_price, 0.0) as unit_price,
                 o.status
             FROM pq_orders o
             JOIN erp_orders eo ON eo.order_number = o.order_id
@@ -233,7 +233,7 @@ def _generate_purchase_orders_duckdb(
                 ROW_NUMBER() OVER (PARTITION BY po.id ORDER BY o.product_id) as line_number,
                 COALESCE(pm.pk, 0) as ingredient_id,
                 o.quantity as quantity_kg,
-                0.0 as unit_cost,
+                COALESCE(o.unit_price, 0.0) as unit_cost,
                 o.status
             FROM pq_orders o
             JOIN erp_pos po ON po.po_number = o.order_id

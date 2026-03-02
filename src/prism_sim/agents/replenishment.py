@@ -469,6 +469,7 @@ class MinMaxReplenisher:
         # Product caches
         self._product_id_arr: np.ndarray = np.empty(n_products, dtype=object)
         self._product_category_arr: np.ndarray = np.empty(n_products, dtype=object)
+        self._price_arr: np.ndarray = np.zeros(n_products, dtype=np.float64)
 
         for p_idx in range(n_products):
             p_id = self.state.product_idx_to_id[p_idx]
@@ -476,6 +477,7 @@ class MinMaxReplenisher:
             product = self.world.products.get(p_id)
             if product and product.category:
                 self._product_category_arr[p_idx] = product.category.name
+                self._price_arr[p_idx] = product.price_per_case
             else:
                 self._product_category_arr[p_idx] = ""
 
@@ -1376,7 +1378,8 @@ class MinMaxReplenisher:
                 ot_lines[t_idx] = entry
                 ot_min_dos[t_idx] = float("inf")
 
-            entry.append(OrderLine(p_id, qty, product_idx=p_idx))
+            price = self._price_arr[p_idx]
+            entry.append(OrderLine(p_id, qty, product_idx=p_idx, unit_price=price))
 
             # Days Supply Check
             if avg_demand[r, c] > 0:

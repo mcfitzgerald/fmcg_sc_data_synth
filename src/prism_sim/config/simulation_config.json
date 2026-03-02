@@ -434,6 +434,11 @@
           "window_days": 2,
           "min_weight_kg": 1500,
           "critical_dos_threshold": 5
+        },
+        "production_variance": {
+          "enabled": true,
+          "min_factor": 0.97,
+          "max_factor": 1.03
         }
       },
       "inventory_policies": {

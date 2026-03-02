@@ -323,11 +323,16 @@ class ProductGenerator:
                 profile_key, _RM_DIMENSIONS["PKG_PRIMARY"]
             )
 
+            display_map: dict[str, list[str]] = profile.get("display_names", {})
             for type_name in types:
+                type_names = display_map.get(type_name, [])
                 for i in range(count):
                     ing_id = f"{prefix}-{type_name}-{i + 1:03d}"
-                    pretty = type_name.replace("_", " ").title()
-                    name = f"{pretty} Grade {i + 1}"
+                    if i < len(type_names):
+                        name = type_names[i]
+                    else:
+                        pretty = type_name.replace("_", " ").title()
+                        name = f"{pretty} Grade {i + 1}"
 
                     weight = self.rng.uniform(*weight_range)
                     cost = self.rng.uniform(*cost_range)

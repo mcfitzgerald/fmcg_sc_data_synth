@@ -84,6 +84,7 @@ The simulation enforces these constraints - violations indicate bugs:
 `OrderLine`, `Order`, and `Shipment` carry cached integer indices to avoid repeated `dict.get()` lookups in inner loops:
 
 - `OrderLine.product_idx: int = -1` — maps to `state.product_id_to_idx[line.product_id]`
+- `OrderLine.unit_price: float = 0.0` — FG orders: `price_per_case`, PO lines: supplier `unit_cost`
 - `Order.source_idx: int = -1` / `Order.target_idx: int = -1` — maps to `state.node_id_to_idx`
 - `Shipment.source_idx: int = -1` / `Shipment.target_idx: int = -1` — maps to `state.node_id_to_idx`
 
@@ -94,7 +95,7 @@ Sentinel `-1` means "not populated" — all consumer sites use `x.product_idx if
 |---------|------|-------------|
 | **Product/SKU generation** | `generators/hierarchy.py` | `ProductGenerator` |
 | **Network topology** | `generators/network.py` | `NetworkGenerator` |
-| **Supplier segmentation** | `generators/network.py` | `NetworkGenerator.assign_supplier_catalog()` — Kraljic Matrix (strategic/leverage/non_critical) supplier-ingredient assignment |
+| **Supplier segmentation** | `generators/network.py` | `NetworkGenerator.assign_supplier_catalog()` — Kraljic Matrix + sourcing-aware lead times/costs. Returns enriched catalog rows. |
 
 ### Utility Scripts
 | Script | Purpose |
@@ -569,6 +570,9 @@ B/C items use DRP for forward-netting production targets, with campaign triggers
 6. **SKU Limit:** 100 SKUs/plant/day to cap changeover overhead
 
 **Configuration:** `simulation_config.json` → `manufacturing.mrp_thresholds.campaign_batching`
+
+### Production Variance (v0.81.0)
+`simulation_config.json` → `manufacturing.production_variance` — applies ±3% recording noise to `batch_ingredients.quantity_kg`. Variance affects *recorded* quantities only (simulates measurement noise); actual inventory consumption stays formula-based. Seeded RNG (`global_seed + 7`).
 
 ### Capacity Planning
 

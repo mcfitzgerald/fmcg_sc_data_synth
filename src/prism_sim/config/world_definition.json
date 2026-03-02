@@ -92,6 +92,30 @@
       "strategic":    { "suppliers_per_ingredient": [2, 3], "pool_size": 8 },
       "leverage":     { "suppliers_per_ingredient": [3, 5], "pool_size": 12 },
       "non_critical": { "suppliers_per_ingredient": [1, 2], "pool_size": 30 }
+    },
+    "supplier_names": [
+      "Meridian Chemical Corp", "Pacific Packaging Solutions", "Apex Ingredients LLC",
+      "NovaChem Industries", "TrueSource Materials", "Great Lakes Compounds",
+      "Summit Specialty Chemicals", "PrimePack International", "Continental Raw Materials",
+      "BrightStar Chemical Co", "Atlas Packaging Group", "Clearwater Ingredients",
+      "Vanguard Chemical Supply", "Pinnacle Materials Inc", "Heritage Bulk Systems",
+      "Sterling Compounds Ltd", "EcoBlend Chemicals", "Northern Resin Corp",
+      "Cascade Packaging Inc", "SilverLine Chemical Co", "Keystone Bulk Supply",
+      "FrontierChem Holdings", "Pacific Rim Ingredients", "Crestview Materials Group",
+      "Liberty Chemical Works", "Granite State Compounds", "BlueSky Packaging Ltd",
+      "Westfall Industries", "CoreMark Chemical Co", "Evergreen Supply Corp",
+      "Phoenix Specialty Chem", "Horizon Packaging Inc", "Lakeshore Compounds LLC",
+      "Redwood Materials Group", "Coastal Chemical Supply", "Ironbridge Ingredients",
+      "Northstar Packaging Co", "Benchmark Chemical Corp", "Prairie Compounds Inc",
+      "Summit Pack Solutions", "Golden Gate Chemicals", "Trident Materials LLC",
+      "Riverbend Packaging", "CrossRoads Chemical Co", "Timberline Ingredients",
+      "Capitol Compounds Inc", "SunCoast Packaging Ltd", "Appalachian Chemical Corp",
+      "Midland Supply Group", "Diamond Ridge Materials"
+    ],
+    "sourcing_lead_times": {
+      "LOCAL":    {"base_days": 5,  "variance_days": 10, "cost_premium": 1.0},
+      "REGIONAL": {"base_days": 15, "variance_days": 15, "cost_premium": 1.15},
+      "GLOBAL":   {"base_days": 30, "variance_days": 45, "cost_premium": 1.35}
     }
   },
   "channel_economics": {
@@ -211,7 +235,15 @@
       "cost_range": [50.0, 150.0],
       "sourcing": "LOCAL",
       "kraljic": "leverage",
-      "bom_level": 2
+      "bom_level": 2,
+      "display_names": {
+        "WATER": ["Purified Water USP", "Deionized Water", "Distilled Water"],
+        "OIL": ["Mineral Oil NF", "Castor Oil", "Coconut Oil RBD"],
+        "SILICATE": ["Sodium Silicate", "Hydrated Silica", "Precipitated Silica"],
+        "WAX": ["Carnauba Wax", "Microcrystalline Wax", "Paraffin Wax"],
+        "THICKENER": ["Carbomer 940", "Xanthan Gum", "Hydroxyethyl Cellulose"],
+        "SURF_BASE": ["Cocamidopropyl Betaine", "Sodium Cocoyl Isethionate", "Decyl Glucoside"]
+      }
     },
     "ACTIVE_CHEM": {
       "prefix": "ACT",
@@ -221,7 +253,19 @@
       "cost_range": [10.0, 50.0],
       "sourcing": "GLOBAL",
       "kraljic": "strategic",
-      "bom_level": 2
+      "bom_level": 2,
+      "display_names": {
+        "SURFACTANT": ["Sodium Lauryl Sulfate", "Sodium Laureth Sulfate"],
+        "FLUORIDE": ["Sodium Fluoride", "Stannous Fluoride"],
+        "FRAGRANCE": ["Menthol Crystal", "Limonene D-Isomer"],
+        "PRESERVATIVE": ["Methylparaben", "Phenoxyethanol"],
+        "HUMECTANT": ["Glycerin USP", "Propylene Glycol"],
+        "ABRASIVE": ["Calcium Carbonate", "Sodium Bicarbonate"],
+        "COLORANT": ["Titanium Dioxide CI 77891", "FD&C Blue No. 1"],
+        "WHITENING": ["Hydrogen Peroxide 3%", "Sodium Tripolyphosphate"],
+        "ANTIMICROBIAL": ["Triclosan", "Cetylpyridinium Chloride"],
+        "BINDER": ["PVM/MA Copolymer", "Sodium CMC"]
+      }
     },
     "PKG_PRIMARY": {
       "prefix": "PKG-PRI",
@@ -231,7 +275,15 @@
       "cost_range": [0.03, 0.25],
       "sourcing": "REGIONAL",
       "kraljic": "non_critical",
-      "bom_level": 2
+      "bom_level": 2,
+      "display_names": {
+        "TUBE": ["HDPE Laminate Tube", "Aluminum Barrier Tube", "ABL Squeeze Tube"],
+        "BOTTLE": ["PET Clear Bottle", "HDPE Opaque Bottle", "rPET Recycled Bottle"],
+        "PUMP": ["Lotion Pump 28/410", "Foaming Pump 43/410", "Treatment Pump 24/410"],
+        "CAP": ["Flip-Top Cap PP", "Screw Cap PE", "Disc-Top Cap PP"],
+        "SEAL": ["Induction Heat Seal", "Pressure-Sensitive Liner", "Tamper-Evident Band"],
+        "POUCH": ["Stand-Up Pouch PE/PET", "Spout Pouch Laminate", "Flat Pouch LDPE"]
+      }
     },
     "PKG_SECONDARY": {
       "prefix": "PKG-SEC",
@@ -241,7 +293,13 @@
       "cost_range": [0.02, 0.15],
       "sourcing": "REGIONAL",
       "kraljic": "non_critical",
-      "bom_level": 2
+      "bom_level": 2,
+      "display_names": {
+        "CARTON": ["SBS Folding Carton", "Corrugated Tuck-Top Box", "Kraft Window Carton"],
+        "SLEEVE": ["PVC Shrink Sleeve", "PET Shrink Band", "OPS Wrap-Around Sleeve"],
+        "LABEL": ["Pressure-Sensitive PP Label", "Cut & Stack Paper Label", "In-Mold Label PP"],
+        "INSERT": ["Coated Paper Leaflet", "Folded Instruction Card", "Promotional Coupon Insert"]
+      }
     },
     "PKG_TERTIARY": {
       "prefix": "PKG-TER",
@@ -251,7 +309,14 @@
       "cost_range": [0.05, 0.30],
       "sourcing": "LOCAL",
       "kraljic": "non_critical",
-      "bom_level": 2
+      "bom_level": 2,
+      "display_names": {
+        "SHIPPER": ["RSC Corrugated Shipper", "Die-Cut Display Shipper"],
+        "SHRINK_WRAP": ["LDPE Stretch Wrap 80ga", "PVC Shrink Film 75ga"],
+        "CORNER_BOARD": ["Recycled Fiber Corner Board", "Laminated Edge Protector"],
+        "PALLET_WRAP": ["Machine-Grade Stretch Film", "Pre-Stretched Hand Wrap"],
+        "DIVIDER": ["Corrugated Layer Pad", "Chipboard Cell Divider"]
+      }
     }
   },
   "bulk_intermediate_config": {

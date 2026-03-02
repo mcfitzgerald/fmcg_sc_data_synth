@@ -73,33 +73,20 @@ class StaticWriter(BaseWriter):
 
     def write_supplier_catalog(
         self,
-        supplier_catalog: dict[str, list[str]],
-        ingredient_suppliers: dict[str, list[str]],
-        ingredient_profiles: dict[str, Any],
+        catalog_rows: list[dict[str, Any]],
     ) -> None:
-        """Write supplier_catalog.csv with Kraljic segmentation.
+        """Write supplier_catalog.csv with enriched sourcing data.
 
-        Columns: supplier_id, ingredient_id, is_primary, kraljic
-        The first supplier in each ingredient's list is marked as primary.
+        Columns: supplier_id, ingredient_id, is_primary, kraljic,
+                 lead_time_days, unit_cost, min_order_qty
         """
-        # Build prefix -> kraljic mapping
-        prefix_to_kraljic: dict[str, str] = {}
-        for _key, profile in ingredient_profiles.items():
-            prefix = profile.get("prefix", "")
-            kraljic = profile.get("kraljic", "non_critical")
-            prefix_to_kraljic[prefix] = kraljic
-
-        def _get_kraljic(ing_id: str) -> str:
-            for prefix, kraljic in prefix_to_kraljic.items():
-                if ing_id.startswith(prefix):
-                    return kraljic
-            return "non_critical"
-
         filepath = self.output_dir / "supplier_catalog.csv"
+        fieldnames = [
+            "supplier_id", "ingredient_id", "is_primary", "kraljic",
+            "lead_time_days", "unit_cost", "min_order_qty",
+        ]
         with open(filepath, "w", newline="", encoding="utf-8") as f:
-            writer = csv.writer(f)
-            writer.writerow(["supplier_id", "ingredient_id", "is_primary", "kraljic"])
-            for ing_id, sup_ids in sorted(ingredient_suppliers.items()):
-                kraljic = _get_kraljic(ing_id)
-                for idx, sup_id in enumerate(sup_ids):
-                    writer.writerow([sup_id, ing_id, idx == 0, kraljic])
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            for row in catalog_rows:
+                writer.writerow(row)

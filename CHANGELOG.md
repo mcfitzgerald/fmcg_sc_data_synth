@@ -5,6 +5,42 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.81.0] - 2026-03-02
+
+### Feat: Data Richness — Ontology Feedback Chunk 1 (S1+S2+S3+S5)
+
+Addresses VKG benchmark data richness gaps: real names, sourcing-aware procurement, price columns, and batch variance.
+
+#### S1: Real Ingredient & Supplier Names
+- **`world_definition.json`**: Added `display_names` to all 5 ingredient profiles (~78 real chemical/packaging names). Added `supplier_names` list (50 company names) and `sourcing_lead_times` config to topology.
+- **`generators/hierarchy.py`**: `generate_ingredients()` uses display_names lookup with fallback to generic "Grade N" naming.
+- **`generators/network.py`**: `generate_network()` uses `supplier_names` config for supplier nodes.
+
+#### S2: Sourcing-Aware Lead Times & Unit Costs
+- **`generators/network.py`**: `assign_supplier_catalog()` now returns enriched catalog rows with `lead_time_days`, `unit_cost`, `min_order_qty` derived from ingredient sourcing mode (LOCAL 5-14d, REGIONAL 15-29d, GLOBAL 30-74d) with cost premiums.
+- **`writers/static_writer.py`**: `write_supplier_catalog()` accepts enriched rows, writes 7-column CSV.
+- **`simulation/world.py`**: Added `supplier_ingredient_meta` dict for per-pair lead time and cost lookup.
+- **`simulation/builder.py`**: Loads enriched catalog data into `supplier_ingredient_meta` with fallback defaults.
+- **`scripts/erp/master_tables.py`**: Reads `unit_cost` and `lead_time_days` from catalog CSV instead of hash formulas.
+
+#### S5: Populate Zero-Value Columns
+- **`network/core.py`**: Added `unit_price` field to `OrderLine` dataclass.
+- **`agents/replenishment.py`**: Stamps `product.price_per_case` on FG order lines via cached `_price_arr`.
+- **`simulation/mrp.py`**: Stamps `unit_cost` on PO ingredient lines at all 3 OrderLine creation sites (pending, immediate, consolidated).
+- **`simulation/writer.py`**: Added `unit_price` to `ORDER_FIELDS`, parquet schema, and `log_orders()` row dict.
+- **`scripts/erp/transactional.py`**: Reads `unit_price` from parquet for order_lines and purchase_order_lines.
+
+#### S3: Batch Production Variance
+- **`simulation_config.json`**: Added `production_variance` config (±3% min/max factors).
+- **`simulation/transform.py`**: Dedicated `_variance_rng` with seeded RNG. Applies variance to *recorded* `batch_ingredients.quantity_kg` only — actual inventory consumption stays formula-based (recording noise, not physics violation).
+
+#### Results
+- Products: 78 ingredients with real chemical names (Sodium Fluoride, Glycerin USP, etc.)
+- Suppliers: 50 with company names (Meridian Chemical Corp, Pacific Packaging Solutions, etc.)
+- Catalog: lead times 5-73 days (was 3-14), sourcing-aware costs with premiums
+- Orders: 99.99%+ rows have non-zero unit_price
+- Batch ingredients: ±3% variance visible in quantity_kg values
+
 ## [0.80.0] - 2026-02-20
 
 ### Feat: Kraljic-Style Supplier Segmentation

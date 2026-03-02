@@ -1891,10 +1891,13 @@ class MRPEngine:
                 self._pending_po_lines[supplier_key] = []
                 self._po_window_start[supplier_key] = current_day
 
+            meta = self.world.supplier_ingredient_meta.get((supplier_id, ing_id))
+            po_cost = meta["unit_cost"] if meta else 0.0
             self._pending_po_lines[supplier_key].append(
                 OrderLine(
                     ing_id, qty,
                     product_idx=self.state.product_id_to_idx.get(ing_id, -1),
+                    unit_price=po_cost,
                 )
             )
 
@@ -1948,6 +1951,8 @@ class MRPEngine:
 
         for i, (plant_id, supplier_id, ing_id, qty, _dos) in enumerate(candidate_lines):
             order_id = f"PO-ING-{current_day:03d}-{i:06d}"
+            meta = self.world.supplier_ingredient_meta.get((supplier_id, ing_id))
+            po_cost = meta["unit_cost"] if meta else 0.0
             purchase_order = Order(
                 id=order_id,
                 source_id=supplier_id,
@@ -1956,6 +1961,7 @@ class MRPEngine:
                 lines=[OrderLine(
                     ing_id, qty,
                     product_idx=self.state.product_id_to_idx.get(ing_id, -1),
+                    unit_price=po_cost,
                 )],
                 status="OPEN",
             )
@@ -1980,6 +1986,11 @@ class MRPEngine:
             OrderLine(
                 prod_id, qty,
                 product_idx=self.state.product_id_to_idx.get(prod_id, -1),
+                unit_price=(
+                    self.world.supplier_ingredient_meta.get(
+                        (supplier_id, prod_id), {}
+                    ).get("unit_cost", 0.0)
+                ),
             )
             for prod_id, qty in merged.items()
         ]

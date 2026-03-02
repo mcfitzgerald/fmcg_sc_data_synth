@@ -79,11 +79,12 @@ def main() -> None:
         n_rdcs=counts.get("rdcs", 4)
     )
 
-    # 7. Supplier Catalog (Kraljic segmentation)
+    # 7. Supplier Catalog (Kraljic segmentation + sourcing-aware enrichment)
     print("Generating Supplier Catalog (Kraljic segmentation)...")
-    supplier_catalog, ingredient_suppliers = net_gen.assign_supplier_catalog(
-        ingredients, sim_config
+    result = net_gen.assign_supplier_catalog(
+        ingredients, sim_config, nodes=nodes
     )
+    supplier_catalog, ingredient_suppliers, catalog_rows = result
 
     # 8. Write
     print("Writing files...")
@@ -92,11 +93,7 @@ def main() -> None:
     writer.write_locations(nodes)
     writer.write_partners(nodes)
     writer.write_links(links)
-    writer.write_supplier_catalog(
-        supplier_catalog,
-        ingredient_suppliers,
-        world_config.get("ingredient_profiles", {}),
-    )
+    writer.write_supplier_catalog(catalog_rows)
 
     # Stats
     active_suppliers = len(supplier_catalog)

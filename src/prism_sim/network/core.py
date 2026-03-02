@@ -103,6 +103,7 @@ class OrderLine:
     product_id: str
     quantity: float
     product_idx: int = -1
+    unit_price: float = 0.0
 
 
 @dataclass
