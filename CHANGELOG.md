@@ -41,6 +41,10 @@ Addresses VKG benchmark data richness gaps: real names, sourcing-aware procureme
 - Orders: 99.99%+ rows have non-zero unit_price
 - Batch ingredients: ±3% variance visible in quantity_kg values
 
+#### Hardcode Audit (semgrep)
+- `min_order_qty` moved from hardcoded 100 → config per sourcing mode (`world_definition.json`: LOCAL=50, REGIONAL=100, GLOBAL=200)
+- `forecast_horizon` moved from hardcoded 14 → `proactive_demand_horizon_days` in `simulation_config.json`
+
 ## [0.80.0] - 2026-02-20
 
 ### Feat: Kraljic-Style Supplier Segmentation
