@@ -113,9 +113,9 @@
       "Midland Supply Group", "Diamond Ridge Materials"
     ],
     "sourcing_lead_times": {
-      "LOCAL":    {"base_days": 5,  "variance_days": 10, "cost_premium": 1.0},
-      "REGIONAL": {"base_days": 15, "variance_days": 15, "cost_premium": 1.15},
-      "GLOBAL":   {"base_days": 30, "variance_days": 45, "cost_premium": 1.35}
+      "LOCAL":    {"base_days": 5,  "variance_days": 10, "cost_premium": 1.0,  "min_order_qty": 50},
+      "REGIONAL": {"base_days": 15, "variance_days": 15, "cost_premium": 1.15, "min_order_qty": 100},
+      "GLOBAL":   {"base_days": 30, "variance_days": 45, "cost_premium": 1.35, "min_order_qty": 200}
     }
   },
   "channel_economics": {

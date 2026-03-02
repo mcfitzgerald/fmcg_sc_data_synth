@@ -165,6 +165,11 @@ class MinMaxReplenisher:
         # v0.51.0: Config-driven history window (was hardcoded 7)
         self._history_window = int(params.get("outflow_history_days", 5))
 
+        # v0.81.0: Proactive demand sensing lookahead window
+        self._forecast_horizon = int(
+            params.get("proactive_demand_horizon_days", 14)
+        )
+
         # v0.15.4: Allocation outflow tracking for customer DCs (derived demand)
         # Rolling N-day history of allocation outflow per node
         # Shape: [_history_window, n_nodes, n_products]
@@ -966,8 +971,7 @@ class MinMaxReplenisher:
 
         # v0.36.0 Proactive Demand Sensing
         if hasattr(self, "pos_engine") and self.pos_engine is not None:
-            # Look ahead by 14 days to capture upcoming structure
-            forecast_horizon = 14
+            forecast_horizon = self._forecast_horizon
             proactive_matrix = self.pos_engine.get_deterministic_forecast(
                 self.current_day, forecast_horizon, aggregated=False
             )

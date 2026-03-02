@@ -133,6 +133,8 @@
         "order_cycle_days": 3,
         "store_batch_size_cases": 10.0,
         "lead_time_history_len": 20,
+        "proactive_demand_horizon_days": 14,
+        "_proactive_demand_note": "v0.81.0: Lookahead window for proactive demand sensing forecast. 14d captures bi-weekly order cycles.",
         "min_history_days": 7,
         "emergency_dos_threshold": 3.0,
         "_emergency_note": "v0.42.0: Raised from 2.0 to 3.0 — gives stores 1-day earlier warning for A-items with 1-day lead times",

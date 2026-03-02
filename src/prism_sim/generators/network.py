@@ -585,7 +585,7 @@ class NetworkGenerator:
                 # Small per-pair cost noise (±5%)
                 noise = 1.0 + (cost_rng.uniform(-0.05, 0.05))
                 unit_cost = round(base_cost * cost_premium * noise, 4)
-                min_order_qty = 100
+                min_order_qty = lt_cfg.get("min_order_qty", 100)
 
                 catalog_rows.append({
                     "supplier_id": sup_id,
