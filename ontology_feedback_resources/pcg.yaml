@@ -1,0 +1,2409 @@
+# ============================================================================
+# Prism Consumer Goods (PCG) - ERP Supply Chain Ontology
+# ============================================================================
+#
+# Virtual twin declaration for the PCG schema (38 tables, ~395M rows, 365-day sim).
+# Uses class hierarchy via scm_base.yaml imports (is_a, mixins, abstract classes).
+#
+# v3.1 — Context Enrichment:
+#   - All 38 classes now carry vg:context with business_logic + llm_prompt_hint
+#   - All 50 relationships now carry vg:context with traversal_semantics
+#   - Type discriminators fixed to match actual DB values
+#   - State machines annotated with data_note documenting observed status values
+#   - Additional scenario_params and axioms based on benchmark testing
+#
+# v3.0 — Structural Hierarchy:
+#   - Imports scm_base.yaml for abstract classes, mixins, shared slots, enums
+#   - Location hierarchy: Plant, DistributionCenter, RetailLocation → Location
+#   - TransactionDocument hierarchy: PO, GR, Order, Shipment, Return, AP/AR → TransactionDocument
+#   - LineItem hierarchy: all line items → LineItem
+#   - Mixins: HasActiveFlag, HasName for master data entities
+#   - LocationType enum for polymorphic location_type columns
+#
+# v2.0 — Complete Virtual Twin Declaration:
+#   - 50 relationships: all FK columns mapped, including polymorphic
+#   - Operation types: 8 of 11 types used
+#   - Transport network, SKU alias chain, BOM hierarchy
+#   - Polymorphic relationships, context blocks, edge attributes
+#   - OWL 2 role axioms: functional, asymmetric, irreflexive, acyclic
+#
+# Kinetic Annotations (v3.0):
+#   - State machines: 9 entities with status lifecycle
+#   - Axioms: Physics constraints (mass balance, temporal order, GL balance)
+#   - Actions: Business mutation semantics for what-if reasoning
+#   - Scenario params: Perturbable attributes for sensitivity analysis
+#   - Flow config: Material/financial flow metadata on key relationships
+#
+# Dates are INTEGER (day number 1-365), not timestamps.
+# transaction_sequence_id provides causal ordering across tables.
+#
+# Validation:
+#   Layer 1: poetry run linkml-lint --validate-only pcg_example/ontology/pcg.yaml
+#   Layer 2: OntologyAccessor("pcg_example/ontology/pcg.yaml", validate=True)
+
+id: https://virt-graph.dev/schemas/pcg
+name: pcg
+version: "3.1.0"
+description: >-
+  Prism Consumer Goods ERP ontology for Virtual Graph.
+  Models a full FMCG supply chain across 8 domains: Source, Transform,
+  Product, Order, Fulfill, Logistics, Plan, Return, and Finance.
+  38 entity classes with class hierarchy (Location, TransactionDocument,
+  LineItem), 50 relationships with polymorphic patterns, transport network
+  graph, recursive alias chains, and full business context on every entity.
+
+prefixes:
+  linkml: https://w3id.org/linkml/
+  vg: https://virt-graph.dev/
+
+imports:
+  - linkml:types
+  - scm_base
+
+default_range: string
+
+annotations:
+  vg:database_type: postgresql
+  vg:database_version: "15"
+  vg:connection_string: "postgresql://virt_graph:dev_password@localhost:5433/prism_fmcg"
+
+# =============================================================================
+# CLASSES
+# =============================================================================
+
+classes:
+
+  # ===========================================================================
+  # DOMAIN A: SOURCE (Procurement & Inbound)
+  # ===========================================================================
+
+  Supplier:
+    description: "Raw material and ingredient supplier"
+    mixins:
+      - HasActiveFlag
+      - HasName
+    instantiates:
+      - vg:SQLMappedClass
+    annotations:
+      vg:table: suppliers
+      vg:primary_key: id
+      vg:identifier: supplier_code
+      vg:context: >-
+        {
+          "business_logic": "50 suppliers segmented by Kraljic matrix: 8 strategic (sole/critical source, tier=1), 12 leverage (volume commodities, tier=2), 30 non-critical (tier=3). 12% of suppliers are duplicates with -ALT suffix on supplier_code — this is intentional data quality friction. country drives lead time and risk modeling.",
+          "llm_prompt_hint": "Use tier for strategic segmentation. Watch for -ALT suffix duplicates when counting unique suppliers — use REPLACE(supplier_code, '-ALT', '') to normalize. Join supplier_ingredients for sourcing matrix. supplier_id FK appears on purchase_orders and ap_invoices."
+        }
+      vg:scenario_params: >-
+        [
+          {"attribute": "lead_time_days", "propagation": "downstream", "description": "Supplier lead time affects PO receipt timing", "default_perturbation": "+50%"}
+        ]
+      vg:axioms: >-
+        [
+          {
+            "name": "no_duplicate_suppliers",
+            "description": "Base supplier codes should be unique (ALT duplicates are friction)",
+            "axiom_type": "referential",
+            "sql_expression": "SELECT REPLACE(supplier_code, '-ALT', '') as base, COUNT(*) FROM suppliers GROUP BY base HAVING COUNT(*) > 1",
+            "severity": "warning"
+          }
+        ]
+    attributes:
+      supplier_code:
+        range: string
+      country:
+        range: string
+      tier:
+        range: integer
+
+  Ingredient:
+    description: "Raw material input to manufacturing formulas"
+    mixins:
+      - HasActiveFlag
+      - HasName
+    instantiates:
+      - vg:SQLMappedClass
+    annotations:
+      vg:table: ingredients
+      vg:primary_key: id
+      vg:identifier: ingredient_code
+      vg:context: >-
+        {
+          "business_logic": "78 raw materials organized by category/subcategory (base_material, active_ingredient, packaging). bom_level=2 indicates raw material position in BOM hierarchy. cost_per_kg is the standard cost basis for cost rollup calculations through formulas.",
+          "llm_prompt_hint": "Join formula_ingredients for BOM membership. Join supplier_ingredients for sourcing options with cost/lead time. ingredient_id FK appears in purchase_order_lines, goods_receipt_lines, ap_invoice_lines, batch_ingredients. Use category/subcategory for material type analysis."
+        }
+      vg:scenario_params: >-
+        [
+          {"attribute": "cost_per_kg", "propagation": "downstream", "description": "Raw material price volatility affects BOM cost rollup", "default_perturbation": "+15%"}
+        ]
+    attributes:
+      ingredient_code:
+        range: string
+      category:
+        range: string
+      cost_per_kg:
+        range: decimal
+
+  SupplierIngredient:
+    description: "Supplier-ingredient catalog with cost and lead time"
+    instantiates:
+      - vg:SQLMappedClass
+    annotations:
+      vg:table: supplier_ingredients
+      vg:primary_key: id
+      vg:context: >-
+        {
+          "business_logic": "Sourcing matrix — junction table linking suppliers to ingredients with commercial terms. Multiple suppliers may offer the same ingredient at different cost/lead time/MOQ combinations. This is the basis for procurement optimization and supplier comparison.",
+          "llm_prompt_hint": "This is a junction table with edge attributes (unit_cost, lead_time_days, min_order_qty). For cheapest-supplier analysis, compare unit_cost across suppliers for same ingredient_id. lead_time_days for supply risk assessment. min_order_qty for order planning constraints."
+        }
+    attributes:
+      unit_cost:
+        range: decimal
+      lead_time_days:
+        range: integer
+      min_order_qty:
+        range: decimal
+
+  PurchaseOrder:
+    description: "Purchase order header for procuring ingredients"
+    is_a: TransactionDocument
+    instantiates:
+      - vg:SQLMappedClass
+    annotations:
+      vg:table: purchase_orders
+      vg:primary_key: id
+      vg:identifier: po_number
+      vg:context: >-
+        {
+          "business_logic": "Entry point of the procure-to-pay cycle. Each PO links a supplier to a receiving plant. order_date is day-integer (1-365). transaction_sequence_id provides causal ordering across all transaction documents. Lifecycle: PO → GoodsReceipt → APInvoice → APPayment.",
+          "llm_prompt_hint": "Join supplier_id → suppliers, plant_id → plants. PO lines in purchase_order_lines (po_id FK). For three-way match: PO lines ↔ GR lines ↔ AP invoice lines by ingredient_id and quantity_kg. All status values are CLOSED in current data."
+        }
+      vg:state_machine: >-
+        {
+          "state_column": "status",
+          "states": ["open", "received", "closed"],
+          "transitions": [
+            {"from_state": "open", "to_state": "received", "description": "Goods receipt confirmed"},
+            {"from_state": "received", "to_state": "closed", "description": "Invoice matched and paid"}
+          ],
+          "initial_state": "open",
+          "terminal_states": ["closed"],
+          "data_note": "Current data: all POs have status=CLOSED (uppercase). Full lifecycle retained as business process model."
+        }
+    attributes:
+      po_number:
+        range: string
+      order_date:
+        range: integer
+
+  PurchaseOrderLine:
+    description: "Line item on a purchase order"
+    is_a: LineItem
+    instantiates:
+      - vg:SQLMappedClass
+    annotations:
+      vg:table: purchase_order_lines
+      vg:primary_key: '["po_id", "line_number"]'
+      vg:context: >-
+        {
+          "business_logic": "Composite PK (po_id, line_number). Each line orders a specific ingredient at a quantity and unit cost. These values are the 'expected' baseline for three-way match against goods receipt lines and AP invoice lines.",
+          "llm_prompt_hint": "Join po_id → purchase_orders for header info. Join ingredient_id → ingredients for material details. Compare quantity_kg and unit_cost against ap_invoice_lines for variance detection."
+        }
+    attributes:
+      quantity_kg:
+        range: decimal
+      unit_cost:
+        range: decimal
+
+  GoodsReceipt:
+    description: "Goods receipt header confirming delivery of purchased materials"
+    is_a: TransactionDocument
+    instantiates:
+      - vg:SQLMappedClass
+    annotations:
+      vg:table: goods_receipts
+      vg:primary_key: id
+      vg:identifier: gr_number
+      vg:context: >-
+        {
+          "business_logic": "Inbound receiving confirmation. Links to an inbound shipment (shipment_id) and receiving plant (plant_id). gr_number is the natural key. GR confirms physical receipt of materials ordered via PO.",
+          "llm_prompt_hint": "Join shipment_id → shipments for inbound logistics. Join plant_id → plants for receiving location. GR lines in goods_receipt_lines (gr_id FK). Links to AP invoices via ap_invoices.gr_id for three-way match."
+        }
+      vg:state_machine: >-
+        {
+          "state_column": "status",
+          "states": ["received", "inspected", "posted"],
+          "transitions": [
+            {"from_state": "received", "to_state": "inspected", "description": "Quality inspection complete"},
+            {"from_state": "inspected", "to_state": "posted", "description": "Posted to inventory"}
+          ],
+          "initial_state": "received",
+          "terminal_states": ["posted"],
+          "data_note": "Current data: all GRs have status=received. Full lifecycle retained as business process model."
+        }
+    attributes:
+      gr_number:
+        range: string
+      receipt_date:
+        range: integer
+
+  GoodsReceiptLine:
+    description: "Line item on a goods receipt"
+    is_a: LineItem
+    instantiates:
+      - vg:SQLMappedClass
+    annotations:
+      vg:table: goods_receipt_lines
+      vg:primary_key: '["gr_id", "line_number"]'
+      vg:context: >-
+        {
+          "business_logic": "Composite PK (gr_id, line_number). Records actual quantity received per ingredient. quantity_kg is compared against PO line quantity for receipt verification and against AP invoice lines for three-way match.",
+          "llm_prompt_hint": "Join gr_id → goods_receipts for header. Join ingredient_id → ingredients. Compare quantity_kg against purchase_order_lines for over/under receipt detection."
+        }
+    attributes:
+      quantity_kg:
+        range: decimal
+
+  # ===========================================================================
+  # DOMAIN B: TRANSFORM (Manufacturing)
+  # ===========================================================================
+
+  Plant:
+    description: "Manufacturing plant with production capacity"
+    is_a: Location
+    instantiates:
+      - vg:SQLMappedClass
+    annotations:
+      vg:table: plants
+      vg:primary_key: id
+      vg:identifier: plant_code
+      vg:context: >-
+        {
+          "business_logic": "4 manufacturing plants: Dallas (PLANT-TX), Columbus (PLANT-OH), Atlanta (PLANT-GA), Sacramento (PLANT-CA). Each specializes in product categories. capacity_tons_per_day is the key constraint for production planning and scenario analysis.",
+          "llm_prompt_hint": "plant_id FK appears on purchase_orders, work_orders, batches, production_lines, goods_receipts. For capacity utilization: sum batch quantity_kg by plant by day vs capacity_tons_per_day * 1000. Plants are also nodes in the transport network (route_segments origin/destination)."
+        }
+      vg:axioms: >-
+        [
+          {
+            "name": "capacity_positive",
+            "description": "Plant capacity must be positive",
+            "axiom_type": "value_range",
+            "sql_expression": "capacity_tons_per_day > 0",
+            "severity": "error"
+          }
+        ]
+      vg:scenario_params: >-
+        [
+          {"attribute": "capacity_tons_per_day", "propagation": "downstream", "description": "Plant capacity affects production throughput", "default_perturbation": "-20%"}
+        ]
+    attributes:
+      plant_code:
+        range: string
+      capacity_tons_per_day:
+        range: decimal
+
+  ProductionLine:
+    description: "Production line within a plant"
+    mixins:
+      - HasActiveFlag
+    instantiates:
+      - vg:SQLMappedClass
+    annotations:
+      vg:table: production_lines
+      vg:primary_key: id
+      vg:identifier: line_code
+      vg:context: >-
+        {
+          "business_logic": "15 production lines across 4 plants. line_type determines which product categories a line can produce. capacity_units_per_hour is the throughput rate. is_active filters operational lines (ontology has vg:sql_filter on the relationship).",
+          "llm_prompt_hint": "Join plant_id → plants for location. line_type for category capability matching against SKU/formula categories. Use is_active=true filter for operational analysis. capacity_units_per_hour for bottleneck identification."
+        }
+      vg:scenario_params: >-
+        [
+          {"attribute": "capacity_units_per_hour", "propagation": "downstream", "description": "Line speed changes affect production throughput", "default_perturbation": "-15%"}
+        ]
+    attributes:
+      line_code:
+        range: string
+      line_type:
+        range: string
+      capacity_units_per_hour:
+        range: integer
+
+  Formula:
+    description: "Manufacturing formula (recipe/BOM) for producing a product"
+    instantiates:
+      - vg:SQLMappedClass
+    annotations:
+      vg:table: formulas
+      vg:primary_key: id
+      vg:identifier: formula_code
+      vg:context: >-
+        {
+          "business_logic": "545 formulas total: 500 SKU-level (bom_level=0) and 45 bulk-level (bom_level=1). product_id is polymorphic — for bom_level=0 it points to skus table, for bom_level=1 it points to bulk_intermediates table. batch_size_kg defines the standard batch quantity for production planning.",
+          "llm_prompt_hint": "Use bom_level to determine product_id target table (0→skus, 1→bulk_intermediates). Join formula_ingredients for BOM contents. For full BOM explosion: start at bom_level=0 formula, find bulk intermediate ingredients, look up their bom_level=1 formula, recurse. yield_percent and run_rate_cases_per_hour for production efficiency analysis."
+        }
+    attributes:
+      formula_code:
+        range: string
+      name:
+        range: string
+      batch_size_kg:
+        range: decimal
+      yield_percent:
+        range: decimal
+
+  FormulaIngredient:
+    description: "Ingredient requirement within a formula"
+    instantiates:
+      - vg:SQLMappedClass
+    annotations:
+      vg:table: formula_ingredients
+      vg:primary_key: '["formula_id", "ingredient_id", "sequence"]'
+      vg:context: >-
+        {
+          "business_logic": "BOM line items with composite PK (formula_id, ingredient_id, sequence). quantity_kg is the per-batch requirement. IMPORTANT: ingredient_id is polymorphic — it points to EITHER the ingredients table (3,048 rows of raw materials) OR the bulk_intermediates table (500 rows). No discriminator column exists; must check both tables to resolve. In a bom_level=0 formula, sequence=1 is typically the bulk intermediate; remaining sequences are packaging from the ingredients table.",
+          "llm_prompt_hint": "For BOM explosion: resolve each ingredient_id by joining both ingredients and bulk_intermediates tables (LEFT JOIN each, check which matches). If it is a bulk_intermediate, find its bom_level=1 formula and recurse for full material breakdown. quantity_kg for cost rollup."
+        }
+    attributes:
+      quantity_kg:
+        range: decimal
+      sequence:
+        range: integer
+
+  WorkOrder:
+    description: "Manufacturing work order for planned production"
+    is_a: TransactionDocument
+    instantiates:
+      - vg:SQLMappedClass
+    annotations:
+      vg:table: work_orders
+      vg:primary_key: id
+      vg:identifier: wo_number
+      vg:context: >-
+        {
+          "business_logic": "Production scheduling document linking a formula to a plant. planned_quantity_kg is the target output. The ONLY entity with diverse status values in current data (planned, in_progress, complete), making it the best candidate for state transition analysis.",
+          "llm_prompt_hint": "Join plant_id → plants, formula_id → formulas. Batches link back via batches.wo_id. planned_start_date and due_date are day-integers for scheduling analysis. Note: actual status value is 'complete' (lowercase, no 'd')."
+        }
+      vg:state_machine: >-
+        {
+          "state_column": "status",
+          "states": ["planned", "in_progress", "complete"],
+          "transitions": [
+            {"from_state": "planned", "to_state": "in_progress", "description": "Production started"},
+            {"from_state": "in_progress", "to_state": "complete", "description": "Production finished"}
+          ],
+          "initial_state": "planned",
+          "terminal_states": ["complete"],
+          "data_note": "Current data: statuses are planned, in_progress, complete (note: 'complete' not 'completed'). This is the only entity with diverse status values."
+        }
+    attributes:
+      wo_number:
+        range: string
+      planned_quantity_kg:
+        range: decimal
+
+  Batch:
+    description: "Production batch output from a work order"
+    is_a: TransactionDocument
+    instantiates:
+      - vg:SQLMappedClass
+    annotations:
+      vg:table: batches
+      vg:primary_key: id
+      vg:identifier: batch_number
+      vg:context: >-
+        {
+          "business_logic": "Production execution record. product_type discriminates output: 'finished_good' → SKU table, 'bulk_intermediate' → BulkIntermediate table. bom_level mirrors formula hierarchy (0=finished, 1=intermediate). Mass balance: sum of input ingredient quantities (batch_ingredients) should approximate batch output quantity_kg / yield_percent.",
+          "llm_prompt_hint": "Use product_type to determine which product table to join (finished_good→skus, bulk_intermediate→bulk_intermediates). For BOM tracing: follow formula_id → formula_ingredients. For actual consumption: join batch_ingredients by batch_id. wo_id links to work_order for scheduling context. All status=complete in current data."
+        }
+      vg:state_machine: >-
+        {
+          "state_column": "status",
+          "states": ["pending", "in_progress", "completed"],
+          "transitions": [
+            {"from_state": "pending", "to_state": "in_progress", "description": "Batch production started"},
+            {"from_state": "in_progress", "to_state": "completed", "description": "Batch production finished"}
+          ],
+          "initial_state": "pending",
+          "terminal_states": ["completed"],
+          "data_note": "Current data: all batches have status=complete. Full lifecycle retained as business process model."
+        }
+      vg:axioms: >-
+        [
+          {
+            "name": "yield_range",
+            "description": "Yield percent must be between 0 and 100",
+            "axiom_type": "value_range",
+            "sql_expression": "yield_percent BETWEEN 0 AND 100",
+            "severity": "error"
+          }
+        ]
+      vg:actions: >-
+        [
+          {
+            "name": "start_production",
+            "description": "Begin batch production, consuming ingredients",
+            "preconditions": ["status = 'pending'", "work order is in_progress"],
+            "effects": [
+              {"attribute": "status", "effect_type": "trigger_transition", "description": "pending -> in_progress"}
+            ]
+          },
+          {
+            "name": "complete_production",
+            "description": "Finish batch production, output available for shipment",
+            "preconditions": ["status = 'in_progress'"],
+            "effects": [
+              {"attribute": "status", "effect_type": "trigger_transition", "description": "in_progress -> completed"},
+              {"attribute": "yield_percent", "effect_type": "set", "description": "Actual yield recorded"}
+            ]
+          }
+        ]
+    attributes:
+      batch_number:
+        range: string
+      quantity_kg:
+        range: decimal
+      yield_percent:
+        range: decimal
+      production_date:
+        range: integer
+      product_type:
+        range: string
+      bom_level:
+        range: integer
+
+  BatchIngredient:
+    description: "Actual ingredient consumption in a batch"
+    instantiates:
+      - vg:SQLMappedClass
+    annotations:
+      vg:table: batch_ingredients
+      vg:primary_key: id
+      vg:context: >-
+        {
+          "business_logic": "Actual consumption records for production batches. quantity_kg records what was actually used, which may differ from the formula_ingredients planned quantity. Useful for planned-vs-actual variance analysis and mass balance verification.",
+          "llm_prompt_hint": "Join batch_id → batches for production context. Join ingredient_id → ingredients for material details. Compare quantity_kg against formula_ingredients.quantity_kg for the same formula to detect production variances."
+        }
+    attributes:
+      quantity_kg:
+        range: decimal
+
+  # ===========================================================================
+  # DOMAIN C: PRODUCT (SKU Master)
+  # ===========================================================================
+
+  BulkIntermediate:
+    description: "Intermediate bulk product (e.g., paste, base compound)"
+    mixins:
+      - HasActiveFlag
+      - HasName
+    instantiates:
+      - vg:SQLMappedClass
+    annotations:
+      vg:table: bulk_intermediates
+      vg:primary_key: id
+      vg:identifier: bulk_code
+      vg:context: >-
+        {
+          "business_logic": "45 intermediate products representing the compounding stage (pastes, bases, compounds). Bridges raw materials to finished goods in the 2-level BOM. bulk_code pattern: BULK-{category}-{variant}. bom_level=1 indicates intermediate position. These are the output of bom_level=1 formulas and input to bom_level=0 formulas.",
+          "llm_prompt_hint": "To find what raw materials make a bulk intermediate: join formulas (bom_level=1, product_id=bulk_intermediate.id) → formula_ingredients → ingredients. To find what SKUs use it: look for it as an ingredient in bom_level=0 formula_ingredients. bulk_intermediates.id appears as formula_ingredients.ingredient_id (polymorphic, no discriminator)."
+        }
+    attributes:
+      bulk_code:
+        range: string
+      category:
+        range: string
+
+  SKU:
+    description: "Stock keeping unit - finished good for sale"
+    mixins:
+      - HasActiveFlag
+      - HasName
+    instantiates:
+      - vg:SQLMappedClass
+    annotations:
+      vg:table: skus
+      vg:primary_key: id
+      vg:identifier: sku_code
+      vg:context: >-
+        {
+          "business_logic": "500 finished goods across categories: ORAL_CARE, PERSONAL_WASH, HOME_CARE. 21 SKUs have -OLD suffix renamed codes (4.2% friction rate) with supersedes_sku_id forming an alias chain. value_segment (premium/mid/value) drives margin analysis. price_per_case is list price; actual revenue is in AR invoices.",
+          "llm_prompt_hint": "For alias chain resolution: follow supersedes_sku_id recursively (use traverse handler). sku_id FK appears on order_lines, shipment_lines, ar_invoice_lines, inventory. category for product mix analysis. value_segment for margin segmentation. WARNING: order_lines.unit_price is ALWAYS ZERO — use ar_invoice_lines for actual revenue."
+        }
+    attributes:
+      sku_code:
+        range: string
+      category:
+        range: string
+      brand:
+        range: string
+      price_per_case:
+        range: decimal
+      supersedes_sku_id:
+        range: integer
+
+  # ===========================================================================
+  # DOMAIN D: ORDER (Demand Signal)
+  # ===========================================================================
+
+  Channel:
+    description: "Sales channel (retail, wholesale, e-commerce)"
+    mixins:
+      - HasActiveFlag
+      - HasName
+    instantiates:
+      - vg:SQLMappedClass
+    annotations:
+      vg:table: channels
+      vg:primary_key: id
+      vg:identifier: channel_code
+      vg:context: >-
+        {
+          "business_logic": "7 sales channels with approximate revenue share: MASS_RETAIL (30%), GROCERY (20%), ECOMMERCE (18%), CLUB (14%), DISTRIBUTOR (9%), PHARMACY (6%), DTC (3%). channel_type is 'b2b' for all channels. Channels are the demand signal grouping for sales analysis.",
+          "llm_prompt_hint": "Channel IDs are 1-7. Join orders.source_id → channels for channel-level order analysis. BUT source_id is polymorphic — values 1-7 are channels, values 67+ are retail_locations. For revenue by channel, use ar_invoices.channel column directly (more reliable). channel_code for grouping."
+        }
+    attributes:
+      channel_code:
+        range: string
+      channel_type:
+        range: string
+
+  Order:
+    description: "Customer order header"
+    is_a: TransactionDocument
+    instantiates:
+      - vg:SQLMappedClass
+    annotations:
+      vg:table: orders
+      vg:primary_key: id
+      vg:identifier: order_number
+      vg:context: >-
+        {
+          "business_logic": "Demand signal document. source_id is POLYMORPHIC: values 1-7 point to channels table, values 67+ point to retail_locations table. No discriminator column — resolved by ID range (channels max id=7, retail_locations min id=67). retail_location_id is the non-polymorphic delivery destination. day column is the order date (integer 1-365).",
+          "llm_prompt_hint": "For channel-level analysis: filter source_id <= 7 and join channels, OR use retail_location_id for store-level analysis (non-polymorphic). IMPORTANT: all order status=CLOSED in current data. IMPORTANT: order_lines.unit_price is ALWAYS ZERO — revenue lives exclusively in ar_invoices/ar_invoice_lines."
+        }
+      vg:state_machine: >-
+        {
+          "state_column": "status",
+          "states": ["pending", "allocated", "shipped", "delivered"],
+          "transitions": [
+            {"from_state": "pending", "to_state": "allocated", "description": "Inventory reserved"},
+            {"from_state": "allocated", "to_state": "shipped", "description": "Shipment dispatched"},
+            {"from_state": "shipped", "to_state": "delivered", "description": "Customer confirmed receipt"}
+          ],
+          "initial_state": "pending",
+          "terminal_states": ["delivered"],
+          "data_note": "Current data: all orders have status=CLOSED (uppercase). Full lifecycle retained as business process model."
+        }
+      vg:actions: >-
+        [
+          {
+            "name": "allocate",
+            "description": "Reserve inventory for order fulfillment",
+            "preconditions": ["status = 'pending'", "inventory >= total_cases"],
+            "effects": [
+              {"attribute": "status", "effect_type": "trigger_transition", "description": "pending -> allocated"}
+            ],
+            "affected_relationships": ["OrderHasLines"]
+          },
+          {
+            "name": "ship",
+            "description": "Dispatch shipment for order",
+            "preconditions": ["status = 'allocated'"],
+            "effects": [
+              {"attribute": "status", "effect_type": "trigger_transition", "description": "allocated -> shipped"}
+            ],
+            "affected_relationships": ["ShipmentHasLines"]
+          }
+        ]
+      vg:scenario_params: >-
+        [
+          {"attribute": "total_cases", "propagation": "downstream", "description": "Order volume affects shipment and inventory", "default_perturbation": "+20%"}
+        ]
+    attributes:
+      order_number:
+        range: string
+      day:
+        range: integer
+      total_cases:
+        range: integer
+
+  OrderLine:
+    description: "Line item on a customer order"
+    is_a: LineItem
+    instantiates:
+      - vg:SQLMappedClass
+    annotations:
+      vg:table: order_lines
+      vg:primary_key: '["order_id", "line_number"]'
+      vg:context: >-
+        {
+          "business_logic": "Composite PK (order_id, line_number). Links orders to SKUs with quantity. CRITICAL: unit_price is ALWAYS ZERO across all 61.9M rows — this is a known data pattern. Revenue lives exclusively in ar_invoices / ar_invoice_lines. Do NOT use order_lines for revenue calculations.",
+          "llm_prompt_hint": "Join order_id → orders for header. Join sku_id → skus for product details. For revenue analysis: trace order → shipment → ar_invoice → ar_invoice_lines instead. quantity_cases is valid for volume/fulfillment analysis."
+        }
+    attributes:
+      quantity_cases:
+        range: decimal
+      unit_price:
+        range: decimal
+
+  # ===========================================================================
+  # DOMAIN E: FULFILL (Outbound)
+  # ===========================================================================
+
+  DistributionCenter:
+    description: "Distribution center / warehouse"
+    is_a: Location
+    instantiates:
+      - vg:SQLMappedClass
+    annotations:
+      vg:table: distribution_centers
+      vg:primary_key: id
+      vg:identifier: dc_code
+      vg:context: >-
+        {
+          "business_logic": "62 distribution centers in two subtypes distinguished by type column: 6 RDCs (type='rdc', regional consolidation hubs owned by PCG) and 56 customer DCs (type='customer_dc', retailer/channel warehouses). This distinction is critical for network analysis — RDCs are PCG-controlled nodes, customer DCs are delivery endpoints.",
+          "llm_prompt_hint": "ALWAYS filter by type column when analyzing DCs: type='rdc' for PCG network nodes, type='customer_dc' for customer endpoints. dc_id FK appears on returns. distribution_centers appear as origin/destination in route_segments (origin_type/destination_type values: 'rdc' or 'customer_dc', NOT 'dc')."
+        }
+    attributes:
+      dc_code:
+        range: string
+      type:
+        range: string
+
+  RetailLocation:
+    description: "Retail store or customer delivery point"
+    is_a: Location
+    instantiates:
+      - vg:SQLMappedClass
+    annotations:
+      vg:table: retail_locations
+      vg:primary_key: id
+      vg:identifier: location_code
+      vg:context: >-
+        {
+          "business_logic": "3,817 retail endpoints representing stores across all channels. store_format (supermarket, convenience, warehouse, etc.) and channel columns enable segmentation. location_code pattern indicates the channel (e.g., MASS-RETAIL-xxx, GROCERY-xxx). These are the final delivery points in the supply chain.",
+          "llm_prompt_hint": "retail_location_id FK on orders for delivery destination. customer_location_id FK on ar_invoices. source_id FK on returns. In route_segments, retail locations appear as destination_type='store'. channel column for channel-level store analysis. store_format for format-level analysis."
+        }
+    attributes:
+      location_code:
+        range: string
+      store_format:
+        range: string
+
+  Shipment:
+    description: "Outbound shipment to customer or distribution center"
+    is_a: TransactionDocument
+    instantiates:
+      - vg:SQLMappedClass
+    annotations:
+      vg:table: shipments
+      vg:primary_key: id
+      vg:identifier: shipment_number
+      vg:context: >-
+        {
+          "business_logic": "Fulfillment execution document. origin_id and destination_id are polymorphic WITHOUT explicit type columns. route_type encodes the compound pattern: plant_to_rdc, rdc_to_customer_dc, customer_dc_to_store, plant_to_customer_dc, etc. Use route_type to infer origin/destination types. freight_cost for logistics cost analysis.",
+          "llm_prompt_hint": "Parse route_type to determine origin/destination tables (e.g., plant_to_rdc → origin is plants, destination is distribution_centers). For precise resolution, cross-reference with route_segments which have explicit type columns. Shipment lines in shipment_lines (shipment_id FK). Links to ar_invoices via ar_invoices.shipment_id. All status=in_transit in current data."
+        }
+      vg:state_machine: >-
+        {
+          "state_column": "status",
+          "states": ["planned", "in_transit", "delivered"],
+          "transitions": [
+            {"from_state": "planned", "to_state": "in_transit", "description": "Shipment departed origin"},
+            {"from_state": "in_transit", "to_state": "delivered", "description": "Shipment arrived at destination"}
+          ],
+          "initial_state": "planned",
+          "terminal_states": ["delivered"],
+          "data_note": "Current data: all shipments have status=in_transit. Full lifecycle retained as business process model."
+        }
+      vg:axioms: >-
+        [
+          {
+            "name": "temporal_order",
+            "description": "Arrival date must be on or after ship date",
+            "axiom_type": "temporal_order",
+            "sql_expression": "arrival_date >= ship_date OR arrival_date IS NULL",
+            "severity": "error"
+          }
+        ]
+      vg:actions: >-
+        [
+          {
+            "name": "dispatch",
+            "description": "Dispatch shipment from origin",
+            "preconditions": ["status = 'planned'"],
+            "effects": [
+              {"attribute": "status", "effect_type": "trigger_transition", "description": "planned -> in_transit"}
+            ]
+          },
+          {
+            "name": "deliver",
+            "description": "Mark shipment as delivered",
+            "preconditions": ["status = 'in_transit'"],
+            "effects": [
+              {"attribute": "status", "effect_type": "trigger_transition", "description": "in_transit -> delivered"}
+            ]
+          }
+        ]
+      vg:scenario_params: >-
+        [
+          {"attribute": "freight_cost", "propagation": "upstream", "description": "Freight rate changes affect logistics cost", "default_perturbation": "+25%"}
+        ]
+    attributes:
+      shipment_number:
+        range: string
+      ship_date:
+        range: integer
+      arrival_date:
+        range: integer
+      route_type:
+        range: string
+      freight_cost:
+        range: decimal
+
+  ShipmentLine:
+    description: "Line item on a shipment"
+    is_a: LineItem
+    instantiates:
+      - vg:SQLMappedClass
+    annotations:
+      vg:table: shipment_lines
+      vg:primary_key: '["shipment_id", "line_number"]'
+      vg:context: >-
+        {
+          "business_logic": "Composite PK (shipment_id, line_number). Records what SKUs and quantities were shipped. quantity_cases for fulfillment volume, weight_kg for logistics weight calculations.",
+          "llm_prompt_hint": "Join shipment_id → shipments for logistics context. Join sku_id → skus for product details. For fulfillment verification: compare quantity_cases against order_lines for the same SKU."
+        }
+    attributes:
+      quantity_cases:
+        range: decimal
+      weight_kg:
+        range: decimal
+
+  Inventory:
+    description: "Daily inventory snapshot by location and SKU"
+    instantiates:
+      - vg:SQLMappedClass
+    annotations:
+      vg:table: inventory
+      vg:primary_key: id
+      vg:context: >-
+        {
+          "business_logic": "Point-in-time inventory snapshots. day column (integer 1-365) enables temporal trend analysis. location_type discriminates the polymorphic location_id: 'plant' → plants, 'rdc' → distribution_centers (type='rdc'), 'customer_dc' → distribution_centers (type='customer_dc'), 'store' → retail_locations. Store inventory is ~98% of all records by volume.",
+          "llm_prompt_hint": "ALWAYS filter by location_type to determine which location table to join. For trend analysis: GROUP BY day. For network-level inventory: GROUP BY location_type. Largest volume is store-level inventory. sku_id for product-level analysis. quantity_cases is the snapshot value (not a delta)."
+        }
+      vg:axioms: >-
+        [
+          {
+            "name": "quantity_non_negative",
+            "description": "Inventory quantity must not be negative",
+            "axiom_type": "value_range",
+            "sql_expression": "quantity_cases >= 0",
+            "severity": "warning"
+          }
+        ]
+    attributes:
+      day:
+        range: integer
+      location_type:
+        range: LocationType
+      quantity_cases:
+        range: decimal
+
+  # ===========================================================================
+  # DOMAIN E2: LOGISTICS (Transport Network)
+  # ===========================================================================
+
+  RouteSegment:
+    description: "Transport route segment between two locations"
+    instantiates:
+      - vg:SQLMappedClass
+    annotations:
+      vg:table: route_segments
+      vg:primary_key: id
+      vg:identifier: segment_code
+      vg:context: >-
+        {
+          "business_logic": "This IS the transport network graph. Each row is a directed edge between two polymorphic locations. Origin types: supplier, plant, rdc, customer_dc. Destination types: plant, rdc, customer_dc, store. distance_km and transit_time_hours are dual edge weights for pathfinding. transport_mode (truck, rail, etc.) for modal analysis.",
+          "llm_prompt_hint": "Use RouteSegmentOrigin/RouteSegmentDestination relationships and their type_discriminators for graph traversal. Weight by distance_km for shortest distance, transit_time_hours for fastest route. Origin/destination type values in data are: supplier, plant, rdc, customer_dc, store — NOT 'dc' or 'retail'."
+        }
+      vg:scenario_params: >-
+        [
+          {"attribute": "distance_km", "propagation": "downstream", "description": "Transport distance affects logistics cost and time", "default_perturbation": "+10%"},
+          {"attribute": "transit_time_hours", "propagation": "downstream", "description": "Transit time disruption scenarios", "default_perturbation": "+50%"}
+        ]
+    attributes:
+      segment_code:
+        range: string
+      origin_type:
+        range: LocationType
+      destination_type:
+        range: LocationType
+      transport_mode:
+        range: string
+      distance_km:
+        range: decimal
+      transit_time_hours:
+        range: decimal
+
+  # ===========================================================================
+  # DOMAIN F: PLAN (Demand & Supply Planning)
+  # ===========================================================================
+
+  DemandForecast:
+    description: "Demand forecast for SKU at location"
+    instantiates:
+      - vg:SQLMappedClass
+    annotations:
+      vg:table: demand_forecasts
+      vg:primary_key: id
+      vg:context: >-
+        {
+          "business_logic": "Forward-looking demand projections by SKU and location. forecast_version enables scenario comparison (e.g., baseline vs optimistic). location_type for polymorphic location resolution (same as inventory). forecast_type distinguishes baseline from promotional forecasts.",
+          "llm_prompt_hint": "Join sku_id → skus for product context. location_type determines which location table to join. Compare forecast_quantity_cases against actual order_lines.quantity_cases for forecast accuracy. GROUP BY forecast_version for scenario comparison."
+        }
+    attributes:
+      forecast_version:
+        range: string
+      location_type:
+        range: LocationType
+      forecast_date:
+        range: integer
+      forecast_quantity_cases:
+        range: decimal
+      forecast_type:
+        range: string
+
+  # ===========================================================================
+  # DOMAIN G: RETURN (Regenerate)
+  # ===========================================================================
+
+  Return:
+    description: "Customer return (RMA) header"
+    is_a: TransactionDocument
+    instantiates:
+      - vg:SQLMappedClass
+    annotations:
+      vg:table: returns
+      vg:primary_key: id
+      vg:identifier: return_number
+      vg:context: >-
+        {
+          "business_logic": "Reverse logistics entry point. source_id points to the retail_location where the return originated. dc_id points to the distribution_center where the return is processed (for inspection and disposition). return_date is day-integer.",
+          "llm_prompt_hint": "Join source_id → retail_locations for originating store. Join dc_id → distribution_centers for processing DC. Return lines in return_lines (return_id FK). Disposition outcomes in disposition_logs (return_id FK). All status=received in current data."
+        }
+      vg:state_machine: >-
+        {
+          "state_column": "status",
+          "states": ["received", "inspected", "disposed"],
+          "transitions": [
+            {"from_state": "received", "to_state": "inspected", "description": "Return inspected for condition"},
+            {"from_state": "inspected", "to_state": "disposed", "description": "Disposition decision applied"}
+          ],
+          "initial_state": "received",
+          "terminal_states": ["disposed"],
+          "data_note": "Current data: all returns have status=received. Full lifecycle retained as business process model."
+        }
+    attributes:
+      return_number:
+        range: string
+      return_date:
+        range: integer
+
+  ReturnLine:
+    description: "Line item on a customer return"
+    is_a: LineItem
+    instantiates:
+      - vg:SQLMappedClass
+    annotations:
+      vg:table: return_lines
+      vg:primary_key: '["return_id", "line_number"]'
+      vg:context: >-
+        {
+          "business_logic": "Composite PK (return_id, line_number). Records returned SKU, quantity, and condition. condition column (sellable, damaged, expired, etc.) determines disposition path and recovery value.",
+          "llm_prompt_hint": "Join return_id → returns for header. Join sku_id → skus for product details. condition column is key for disposition analysis — GROUP BY condition for return reason breakdown. Link to disposition_logs for final outcome."
+        }
+    attributes:
+      quantity_cases:
+        range: decimal
+      condition:
+        range: string
+
+  DispositionLog:
+    description: "Disposition action for returned goods"
+    instantiates:
+      - vg:SQLMappedClass
+    annotations:
+      vg:table: disposition_logs
+      vg:primary_key: '["return_id", "return_line_number"]'
+      vg:context: >-
+        {
+          "business_logic": "Records what happens to returned goods after inspection. disposition values include restock, destroy, rework, donate. No PK constraint in the database (composite key is logical). quantity_cases may differ from return_line quantity if partial disposition.",
+          "llm_prompt_hint": "Join return_id → returns for header context. disposition column for outcome analysis. Compare quantity_cases against return_lines.quantity_cases. Note: this table has no formal PK constraint in the DDL."
+        }
+    attributes:
+      disposition:
+        range: string
+      quantity_cases:
+        range: decimal
+
+  # ===========================================================================
+  # DOMAIN H: FINANCE
+  # ===========================================================================
+
+  ChartOfAccounts:
+    description: "General ledger chart of accounts"
+    mixins:
+      - HasActiveFlag
+    instantiates:
+      - vg:SQLMappedClass
+    annotations:
+      vg:table: chart_of_accounts
+      vg:primary_key: id
+      vg:identifier: account_code
+      vg:context: >-
+        {
+          "business_logic": "14 GL accounts across 4 types: asset, liability, revenue, expense. account_code is the join key used by gl_journal (NOT id). account_name column (not 'name' — HasName mixin was removed from this class) provides the display label.",
+          "llm_prompt_hint": "Join gl_journal.account_code → chart_of_accounts.account_code for GL analysis. account_type for financial statement grouping. Note: join key is account_code (VARCHAR), not id (INTEGER)."
+        }
+    attributes:
+      account_code:
+        range: string
+      account_name:
+        range: string
+      account_type:
+        range: string
+
+  GLJournal:
+    description: "General ledger journal entry"
+    instantiates:
+      - vg:SQLMappedClass
+    annotations:
+      vg:table: gl_journal
+      vg:primary_key: id
+      vg:context: >-
+        {
+          "business_logic": "Financial backbone — 58.9M rows recording every financial event. Balanced to the penny daily (debits = credits per day). reference_type + reference_id provide full traceability to source documents (purchase_order, goods_receipt, batch, order, shipment, etc.). node_id identifies the facility. is_reversal marks correction entries. account_code joins to chart_of_accounts.",
+          "llm_prompt_hint": "Use reference_type and reference_id to trace GL entries back to source documents. Filter is_reversal = false for net balances. account_code joins to chart_of_accounts.account_code (NOT id). node_id for facility-level P&L. product_id for product-level cost attribution. GROUP BY entry_date for daily balances."
+        }
+      vg:axioms: >-
+        [
+          {
+            "name": "gl_balance",
+            "description": "Total debits must equal total credits per day",
+            "axiom_type": "conservation",
+            "sql_expression": "ABS(SUM(debit_amount) - SUM(credit_amount)) < 0.01",
+            "severity": "error"
+          }
+        ]
+    attributes:
+      entry_date:
+        range: integer
+      debit_amount:
+        range: decimal
+      credit_amount:
+        range: decimal
+      reference_type:
+        range: string
+
+  APInvoice:
+    description: "Accounts payable invoice from supplier"
+    is_a: TransactionDocument
+    instantiates:
+      - vg:SQLMappedClass
+    annotations:
+      vg:table: ap_invoices
+      vg:primary_key: id
+      vg:identifier: invoice_number
+      vg:context: >-
+        {
+          "business_logic": "Source-side payables from suppliers. Links supplier_id + gr_id for three-way match (PO ↔ GR ↔ AP). total_amount for spend analysis. Key friction: ~8% price variance and ~5% qty variance (recorded in invoice_variances table), plus ~0.5% duplicate invoices with -DUP suffix on invoice_number.",
+          "llm_prompt_hint": "Join supplier_id → suppliers for vendor context. Join gr_id → goods_receipts for receipt matching. AP lines in ap_invoice_lines (invoice_id FK). Check invoice_variances for mismatches. Watch for -DUP suffix duplicates on invoice_number. All status=open in current data."
+        }
+      vg:state_machine: >-
+        {
+          "state_column": "status",
+          "states": ["open", "paid"],
+          "transitions": [
+            {"from_state": "open", "to_state": "paid", "description": "Payment processed"}
+          ],
+          "initial_state": "open",
+          "terminal_states": ["paid"],
+          "data_note": "Current data: all AP invoices have status=open. Full lifecycle retained as business process model."
+        }
+      vg:axioms: >-
+        [
+          {
+            "name": "no_duplicate_invoices",
+            "description": "Invoice numbers should be unique (DUP suffix is friction)",
+            "axiom_type": "referential",
+            "sql_expression": "SELECT invoice_number, COUNT(*) FROM ap_invoices GROUP BY invoice_number HAVING COUNT(*) > 1",
+            "severity": "warning"
+          }
+        ]
+    attributes:
+      invoice_number:
+        range: string
+      invoice_date:
+        range: integer
+      total_amount:
+        range: decimal
+
+  APInvoiceLine:
+    description: "Line item on an AP invoice"
+    is_a: LineItem
+    instantiates:
+      - vg:SQLMappedClass
+    annotations:
+      vg:table: ap_invoice_lines
+      vg:primary_key: '["invoice_id", "line_number"]'
+      vg:context: >-
+        {
+          "business_logic": "Composite PK (invoice_id, line_number). Records what was invoiced: ingredient, quantity, unit cost, line amount. These are the 'actual' values for three-way match against PO lines (expected) and GR lines (received).",
+          "llm_prompt_hint": "Join invoice_id → ap_invoices for header. Join ingredient_id → ingredients. Compare quantity_kg and unit_cost against purchase_order_lines for variance detection. line_amount = quantity_kg * unit_cost."
+        }
+    attributes:
+      quantity_kg:
+        range: decimal
+      line_amount:
+        range: decimal
+
+  ARInvoice:
+    description: "Accounts receivable invoice to customer"
+    is_a: TransactionDocument
+    instantiates:
+      - vg:SQLMappedClass
+    annotations:
+      vg:table: ar_invoices
+      vg:primary_key: id
+      vg:identifier: invoice_number
+      vg:context: >-
+        {
+          "business_logic": "SOURCE OF TRUTH FOR REVENUE ($38.3B total across simulation). This is where actual revenue lives — NOT in order_lines (which have zero unit_price). channel column enables direct revenue-by-channel analysis without joining orders. customer_location_id → retail_locations. shipment_id links to fulfillment. Friction: ~0.5% bad debt (status=disputed or uncollectable).",
+          "llm_prompt_hint": "For revenue analysis: SUM(total_amount) or join ar_invoice_lines for SKU-level detail. Use channel column for revenue-by-channel (do NOT try to derive from orders). customer_location_id → retail_locations for geographic revenue. shipment_id → shipments for fulfillment linkage. Status values in data: disputed, open, partial."
+        }
+      vg:state_machine: >-
+        {
+          "state_column": "status",
+          "states": ["open", "partial", "paid", "disputed", "bad_debt"],
+          "transitions": [
+            {"from_state": "open", "to_state": "partial", "description": "Partial payment received"},
+            {"from_state": "open", "to_state": "paid", "description": "Full payment received"},
+            {"from_state": "open", "to_state": "disputed", "description": "Customer disputes invoice"},
+            {"from_state": "partial", "to_state": "paid", "description": "Remaining balance collected"},
+            {"from_state": "disputed", "to_state": "paid", "description": "Dispute resolved, payment received"},
+            {"from_state": "disputed", "to_state": "bad_debt", "description": "Written off as uncollectable"}
+          ],
+          "initial_state": "open",
+          "terminal_states": ["paid", "bad_debt"],
+          "data_note": "Current data: AR invoice statuses are disputed, open, partial. No invoices have reached paid or bad_debt terminal states."
+        }
+    attributes:
+      invoice_number:
+        range: string
+      invoice_date:
+        range: integer
+      total_amount:
+        range: decimal
+
+  ARInvoiceLine:
+    description: "Line item on an AR invoice"
+    is_a: LineItem
+    instantiates:
+      - vg:SQLMappedClass
+    annotations:
+      vg:table: ar_invoice_lines
+      vg:primary_key: '["invoice_id", "line_number"]'
+      vg:context: >-
+        {
+          "business_logic": "Composite PK (invoice_id, line_number). This is where SKU-level revenue data lives — unit_price and line_amount ARE populated here (unlike order_lines). quantity_cases for volume, line_amount for revenue attribution by SKU.",
+          "llm_prompt_hint": "Join invoice_id → ar_invoices for header (channel, customer, dates). Join sku_id → skus for product details. For SKU-level revenue: SUM(line_amount) GROUP BY sku_id. This is the ONLY reliable source of unit pricing data."
+        }
+    attributes:
+      quantity_cases:
+        range: decimal
+      line_amount:
+        range: decimal
+
+  # ===========================================================================
+  # DOMAIN H2: FRICTION (Data Quality)
+  # ===========================================================================
+
+  InvoiceVariance:
+    description: "Price or quantity variance on AP invoice line"
+    instantiates:
+      - vg:SQLMappedClass
+    annotations:
+      vg:table: invoice_variances
+      vg:primary_key: id
+      vg:context: >-
+        {
+          "business_logic": "Friction table recording mismatches between AP invoice lines and PO terms. variance_type is 'price' (unit cost mismatch) or 'qty' (quantity mismatch). expected_value vs actual_value with variance_amount = actual - expected. resolution_status tracks audit progress.",
+          "llm_prompt_hint": "Join invoice_id → ap_invoices for supplier/GR context. Filter by variance_type for price vs quantity analysis. SUM(ABS(variance_amount)) for total variance exposure. resolution_status for audit pipeline status."
+        }
+    attributes:
+      variance_type:
+        range: string
+      variance_amount:
+        range: decimal
+
+  APPayment:
+    description: "Payment against an AP invoice"
+    instantiates:
+      - vg:SQLMappedClass
+    annotations:
+      vg:table: ap_payments
+      vg:primary_key: id
+      vg:context: >-
+        {
+          "business_logic": "Settlement of AP invoices. ~10% of payments receive a 2% early-pay discount. net_amount = amount - discount_amount. payment_method is typically EFT. This completes the procure-to-pay cycle.",
+          "llm_prompt_hint": "Join invoice_id → ap_invoices for invoice context. discount_amount > 0 indicates early-pay discount taken. For cash flow analysis: SUM(net_amount) GROUP BY payment_date. payment_date is day-integer."
+        }
+    attributes:
+      payment_date:
+        range: integer
+      amount:
+        range: decimal
+      net_amount:
+        range: decimal
+
+  ARReceipt:
+    description: "Receipt of payment against an AR invoice"
+    instantiates:
+      - vg:SQLMappedClass
+    annotations:
+      vg:table: ar_receipts
+      vg:primary_key: id
+      vg:context: >-
+        {
+          "business_logic": "Collection of AR invoices. amount is the payment received. This completes the order-to-cash cycle. Compare amount against ar_invoices.total_amount for collection rate analysis.",
+          "llm_prompt_hint": "Join invoice_id → ar_invoices for invoice context (channel, customer, amounts). For collection analysis: SUM(amount) vs SUM(ar_invoices.total_amount). receipt_date is day-integer for cash flow timing."
+        }
+    attributes:
+      receipt_date:
+        range: integer
+      amount:
+        range: decimal
+
+  # ===========================================================================
+  # RELATIONSHIPS (RBox)
+  # ===========================================================================
+
+  # --- SOURCE domain ---
+
+  SupplierOffersIngredient:
+    description: "Supplier offers an ingredient at a given cost/lead time"
+    instantiates:
+      - vg:SQLMappedRelationship
+    annotations:
+      vg:edge_table: supplier_ingredients
+      vg:domain_key: supplier_id
+      vg:range_key: ingredient_id
+      vg:domain_class: Supplier
+      vg:range_class: Ingredient
+      vg:operation_types: '["direct_join"]'
+      vg:context: >-
+        {
+          "business_logic": "Many-to-many sourcing matrix between suppliers and ingredients. Each edge carries commercial terms (unit_cost, lead_time_days, min_order_qty). Multiple suppliers may offer the same ingredient — this is the basis for procurement optimization.",
+          "traversal_semantics": {
+            "inbound": "what suppliers offer this ingredient (sourcing options)",
+            "outbound": "what ingredients this supplier provides (supplier catalog)"
+          },
+          "llm_prompt_hint": "Junction table with edge attributes. For cheapest source: MIN(unit_cost) GROUP BY ingredient_id. For supply risk: COUNT(DISTINCT supplier_id) per ingredient. lead_time_days for delivery planning."
+        }
+      vg:edge_attributes: >-
+        [
+          {"name": "unit_cost", "type": "decimal", "description": "Cost per kg from this supplier"},
+          {"name": "lead_time_days", "type": "integer", "description": "Supplier lead time in days"},
+          {"name": "min_order_qty", "type": "decimal", "description": "Minimum order quantity in kg"}
+        ]
+      vg:flow_config: >-
+        {
+          "flow_type": "material",
+          "quantity_column": "min_order_qty",
+          "timestamp_column": "lead_time_days",
+          "conservation_group": "procure_to_pay",
+          "unit": "kg"
+        }
+
+  POFromSupplier:
+    description: "Purchase order placed with a supplier"
+    instantiates:
+      - vg:SQLMappedRelationship
+    annotations:
+      vg:edge_table: purchase_orders
+      vg:domain_key: id
+      vg:range_key: supplier_id
+      vg:domain_class: PurchaseOrder
+      vg:range_class: Supplier
+      vg:operation_types: '["direct_join"]'
+      vg:functional: true
+      vg:context: >-
+        {
+          "business_logic": "Links each purchase order to its supplier. Functional (each PO has exactly one supplier). This is the procurement relationship in the procure-to-pay chain.",
+          "traversal_semantics": {
+            "inbound": "what POs were placed with this supplier (supplier order history)",
+            "outbound": "which supplier this PO was placed with"
+          },
+          "llm_prompt_hint": "Direct FK join: purchase_orders.supplier_id → suppliers.id. For supplier spend analysis: SUM PO line amounts by supplier."
+        }
+
+  POAtPlant:
+    description: "Purchase order delivered to a plant"
+    instantiates:
+      - vg:SQLMappedRelationship
+    annotations:
+      vg:edge_table: purchase_orders
+      vg:domain_key: id
+      vg:range_key: plant_id
+      vg:domain_class: PurchaseOrder
+      vg:range_class: Plant
+      vg:operation_types: '["direct_join"]'
+      vg:functional: true
+      vg:context: >-
+        {
+          "business_logic": "Links each purchase order to the receiving plant. Functional (each PO is delivered to exactly one plant). Determines where procured materials enter the manufacturing network.",
+          "traversal_semantics": {
+            "inbound": "what POs were delivered to this plant (plant procurement history)",
+            "outbound": "which plant receives this PO's materials"
+          },
+          "llm_prompt_hint": "Direct FK join: purchase_orders.plant_id → plants.id. For plant-level procurement: GROUP BY plant_id."
+        }
+
+  POHasLines:
+    description: "Purchase order has line items"
+    instantiates:
+      - vg:SQLMappedRelationship
+    annotations:
+      vg:edge_table: purchase_order_lines
+      vg:domain_key: po_id
+      vg:range_key: '["po_id", "line_number"]'
+      vg:domain_class: PurchaseOrder
+      vg:range_class: PurchaseOrderLine
+      vg:operation_types: '["direct_join"]'
+      vg:context: >-
+        {
+          "business_logic": "One-to-many: PO header to its line items. Each line specifies an ingredient, quantity, and unit cost. Lines are the detail level for three-way match verification.",
+          "traversal_semantics": {
+            "inbound": "which PO this line belongs to",
+            "outbound": "what line items are on this PO"
+          },
+          "llm_prompt_hint": "Join purchase_order_lines.po_id → purchase_orders.id. For PO total: SUM(quantity_kg * unit_cost) across lines."
+        }
+      vg:flow_config: >-
+        {
+          "flow_type": "material",
+          "quantity_column": "quantity_kg",
+          "timestamp_column": "po_id",
+          "conservation_group": "procure_to_pay",
+          "unit": "kg"
+        }
+
+  POLineForIngredient:
+    description: "PO line is for a specific ingredient"
+    instantiates:
+      - vg:SQLMappedRelationship
+    annotations:
+      vg:edge_table: purchase_order_lines
+      vg:domain_key: '["po_id", "line_number"]'
+      vg:range_key: ingredient_id
+      vg:domain_class: PurchaseOrderLine
+      vg:range_class: Ingredient
+      vg:operation_types: '["direct_join"]'
+      vg:context: >-
+        {
+          "business_logic": "Links each PO line to the ingredient being ordered. Used for ingredient-level procurement analysis and traceability from supplier through to production.",
+          "traversal_semantics": {
+            "inbound": "what PO lines ordered this ingredient (procurement history for a material)",
+            "outbound": "which ingredient this PO line is ordering"
+          },
+          "llm_prompt_hint": "Join purchase_order_lines.ingredient_id → ingredients.id. For ingredient procurement volume: SUM(quantity_kg) GROUP BY ingredient_id across PO lines."
+        }
+
+  GRFromShipment:
+    description: "Goods receipt received from a shipment"
+    instantiates:
+      - vg:SQLMappedRelationship
+    annotations:
+      vg:edge_table: goods_receipts
+      vg:domain_key: id
+      vg:range_key: shipment_id
+      vg:domain_class: GoodsReceipt
+      vg:range_class: Shipment
+      vg:operation_types: '["direct_join"]'
+      vg:functional: true
+      vg:context: >-
+        {
+          "business_logic": "Links goods receipt to the inbound shipment that delivered it. Functional (each GR comes from one shipment). Connects logistics to receiving.",
+          "traversal_semantics": {
+            "inbound": "what GRs were created from this shipment",
+            "outbound": "which shipment delivered this goods receipt"
+          },
+          "llm_prompt_hint": "Join goods_receipts.shipment_id → shipments.id. For inbound logistics analysis: trace shipment → GR → AP invoice."
+        }
+
+  GRAtPlant:
+    description: "Goods receipt delivered to a plant"
+    instantiates:
+      - vg:SQLMappedRelationship
+    annotations:
+      vg:edge_table: goods_receipts
+      vg:domain_key: id
+      vg:range_key: plant_id
+      vg:domain_class: GoodsReceipt
+      vg:range_class: Plant
+      vg:operation_types: '["direct_join"]'
+      vg:functional: true
+      vg:context: >-
+        {
+          "business_logic": "Links goods receipt to the plant that received the materials. Functional (each GR is at one plant). Confirms physical receipt at the manufacturing site.",
+          "traversal_semantics": {
+            "inbound": "what GRs were received at this plant",
+            "outbound": "which plant received this goods receipt"
+          },
+          "llm_prompt_hint": "Join goods_receipts.plant_id → plants.id. For plant receiving volume: SUM GR line quantities by plant."
+        }
+
+  GRHasLines:
+    description: "Goods receipt has line items"
+    instantiates:
+      - vg:SQLMappedRelationship
+    annotations:
+      vg:edge_table: goods_receipt_lines
+      vg:domain_key: gr_id
+      vg:range_key: '["gr_id", "line_number"]'
+      vg:domain_class: GoodsReceipt
+      vg:range_class: GoodsReceiptLine
+      vg:operation_types: '["direct_join"]'
+      vg:context: >-
+        {
+          "business_logic": "One-to-many: GR header to its line items. Each line records actual quantity received per ingredient. Used for receipt verification against PO lines.",
+          "traversal_semantics": {
+            "inbound": "which GR this line belongs to",
+            "outbound": "what line items are on this GR"
+          },
+          "llm_prompt_hint": "Join goods_receipt_lines.gr_id → goods_receipts.id. Compare quantities against PO lines for over/under receipt."
+        }
+      vg:flow_config: >-
+        {
+          "flow_type": "material",
+          "quantity_column": "quantity_kg",
+          "timestamp_column": "gr_id",
+          "conservation_group": "procure_to_pay",
+          "unit": "kg"
+        }
+
+  GRLineForIngredient:
+    description: "GR line received a specific ingredient"
+    instantiates:
+      - vg:SQLMappedRelationship
+    annotations:
+      vg:edge_table: goods_receipt_lines
+      vg:domain_key: '["gr_id", "line_number"]'
+      vg:range_key: ingredient_id
+      vg:domain_class: GoodsReceiptLine
+      vg:range_class: Ingredient
+      vg:operation_types: '["direct_join"]'
+      vg:context: >-
+        {
+          "business_logic": "Links each GR line to the ingredient received. Used for material traceability — confirms which ingredient was physically received.",
+          "traversal_semantics": {
+            "inbound": "what GR lines received this ingredient",
+            "outbound": "which ingredient was received on this GR line"
+          },
+          "llm_prompt_hint": "Join goods_receipt_lines.ingredient_id → ingredients.id. For ingredient receipt history: filter by ingredient_id across GR lines."
+        }
+
+  # --- TRANSFORM domain ---
+
+  ProductionLineAtPlant:
+    description: "Production line is located at a plant"
+    instantiates:
+      - vg:SQLMappedRelationship
+    annotations:
+      vg:edge_table: production_lines
+      vg:domain_key: id
+      vg:range_key: plant_id
+      vg:domain_class: ProductionLine
+      vg:range_class: Plant
+      vg:operation_types: '["direct_join"]'
+      vg:functional: true
+      vg:sql_filter: "is_active = true"
+      vg:context: >-
+        {
+          "business_logic": "Links production lines to their plant. Functional (each line is at one plant). The sql_filter (is_active=true) ensures only operational lines are considered. line_type on the production line determines category capability.",
+          "traversal_semantics": {
+            "inbound": "what production lines are at this plant (plant capacity breakdown)",
+            "outbound": "which plant this production line is located at"
+          },
+          "llm_prompt_hint": "Join production_lines.plant_id → plants.id. Filter is_active=true is applied automatically. For plant capacity: SUM capacity_units_per_hour by plant."
+        }
+
+  FormulaForProduct:
+    description: "Formula produces a product (polymorphic: SKU or BulkIntermediate)"
+    instantiates:
+      - vg:SQLMappedRelationship
+    annotations:
+      vg:edge_table: formulas
+      vg:domain_key: id
+      vg:range_key: product_id
+      vg:domain_class: Formula
+      vg:range_class: '["SKU", "BulkIntermediate"]'
+      vg:operation_types: '["direct_join"]'
+      vg:functional: true
+      vg:type_discriminator: >-
+        {"column": "bom_level", "mapping": {"0": "SKU", "1": "BulkIntermediate"}}
+      vg:context: >-
+        {
+          "business_logic": "Polymorphic: formula produces either a SKU (bom_level=0) or a BulkIntermediate (bom_level=1). The bom_level column is the type discriminator. 500 formulas produce SKUs, 45 produce bulk intermediates.",
+          "traversal_semantics": {
+            "inbound": "what formula produces this product",
+            "outbound": "what product does this formula make"
+          },
+          "llm_prompt_hint": "Use bom_level to determine join target: formulas.product_id → skus.id (when bom_level=0) or formulas.product_id → bulk_intermediates.id (when bom_level=1)."
+        }
+
+  FormulaHasIngredients:
+    description: "Formula requires ingredients (BOM)"
+    instantiates:
+      - vg:SQLMappedRelationship
+    annotations:
+      vg:edge_table: formula_ingredients
+      vg:domain_key: formula_id
+      vg:range_key: ingredient_id
+      vg:domain_class: Formula
+      vg:range_class: Ingredient
+      vg:operation_types: '["direct_join", "hierarchical_aggregation", "path_aggregation"]'
+      vg:context: >-
+        {
+          "business_logic": "BOM explosion semantics — quantity_kg is per-batch requirement. For total requirements, multiply through the hierarchy (formula → sub-formula → ingredients). IMPORTANT: ingredient_id is polymorphic — points to EITHER ingredients table (raw materials) OR bulk_intermediates table (intermediates). No discriminator column exists; must LEFT JOIN both tables to resolve. In bom_level=0 formulas, sequence=1 is typically the bulk intermediate.",
+          "traversal_semantics": {
+            "inbound": "what ingredients go into this formula (BOM contents)",
+            "outbound": "what formulas use this ingredient (where-used)"
+          },
+          "llm_prompt_hint": "For full BOM explosion: 1) Get formula's ingredients, 2) For each that resolves to bulk_intermediates, find its bom_level=1 formula, 3) Recurse. Resolve ingredient_id by LEFT JOIN to both ingredients and bulk_intermediates. quantity_kg for cost rollup."
+        }
+      vg:edge_attributes: >-
+        [
+          {"name": "sequence", "type": "integer", "description": "Ingredient addition sequence"},
+          {"name": "quantity_kg", "type": "decimal", "description": "Quantity per batch in kg"}
+        ]
+      vg:axioms: >-
+        [
+          {
+            "name": "ingredient_quantity_positive",
+            "description": "Formula ingredient quantity must be positive",
+            "axiom_type": "value_range",
+            "sql_expression": "quantity_kg > 0",
+            "severity": "error"
+          }
+        ]
+
+  WorkOrderAtPlant:
+    description: "Work order is executed at a plant"
+    instantiates:
+      - vg:SQLMappedRelationship
+    annotations:
+      vg:edge_table: work_orders
+      vg:domain_key: id
+      vg:range_key: plant_id
+      vg:domain_class: WorkOrder
+      vg:range_class: Plant
+      vg:operation_types: '["direct_join"]'
+      vg:functional: true
+      vg:context: >-
+        {
+          "business_logic": "Links work order to the plant where production occurs. Functional (each WO is at one plant). Determines manufacturing site for capacity planning.",
+          "traversal_semantics": {
+            "inbound": "what work orders are scheduled at this plant (production schedule)",
+            "outbound": "which plant executes this work order"
+          },
+          "llm_prompt_hint": "Join work_orders.plant_id → plants.id. For plant utilization: SUM planned_quantity_kg by plant by date range."
+        }
+
+  WorkOrderUsesFormula:
+    description: "Work order uses a specific formula"
+    instantiates:
+      - vg:SQLMappedRelationship
+    annotations:
+      vg:edge_table: work_orders
+      vg:domain_key: id
+      vg:range_key: formula_id
+      vg:domain_class: WorkOrder
+      vg:range_class: Formula
+      vg:operation_types: '["direct_join"]'
+      vg:functional: true
+      vg:context: >-
+        {
+          "business_logic": "Links work order to the formula (recipe/BOM) being produced. Functional (each WO uses one formula). Through the formula, determines what product is being made and what ingredients are needed.",
+          "traversal_semantics": {
+            "inbound": "what work orders use this formula (production history for a recipe)",
+            "outbound": "which formula this work order produces"
+          },
+          "llm_prompt_hint": "Join work_orders.formula_id → formulas.id. Then formula → formula_ingredients for material requirements. formula → product_id for output product."
+        }
+
+  BatchFromWorkOrder:
+    description: "Batch produced from a work order"
+    instantiates:
+      - vg:SQLMappedRelationship
+    annotations:
+      vg:edge_table: batches
+      vg:domain_key: id
+      vg:range_key: wo_id
+      vg:domain_class: Batch
+      vg:range_class: WorkOrder
+      vg:operation_types: '["direct_join"]'
+      vg:context: >-
+        {
+          "business_logic": "Links batch to its originating work order. A work order may produce multiple batches. This connects production execution to production planning.",
+          "traversal_semantics": {
+            "inbound": "what batches were produced from this work order",
+            "outbound": "which work order initiated this batch"
+          },
+          "llm_prompt_hint": "Join batches.wo_id → work_orders.id. For WO completion: check if all batches for a WO are complete."
+        }
+
+  BatchAtPlant:
+    description: "Batch produced at a plant"
+    instantiates:
+      - vg:SQLMappedRelationship
+    annotations:
+      vg:edge_table: batches
+      vg:domain_key: id
+      vg:range_key: plant_id
+      vg:domain_class: Batch
+      vg:range_class: Plant
+      vg:operation_types: '["direct_join"]'
+      vg:context: >-
+        {
+          "business_logic": "Links batch to the plant where it was produced. For plant-level production volume and capacity utilization analysis.",
+          "traversal_semantics": {
+            "inbound": "what batches were produced at this plant",
+            "outbound": "which plant produced this batch"
+          },
+          "llm_prompt_hint": "Join batches.plant_id → plants.id. For plant production volume: SUM(quantity_kg) GROUP BY plant_id, production_date."
+        }
+
+  BatchUsesFormula:
+    description: "Batch uses a specific formula"
+    instantiates:
+      - vg:SQLMappedRelationship
+    annotations:
+      vg:edge_table: batches
+      vg:domain_key: id
+      vg:range_key: formula_id
+      vg:domain_class: Batch
+      vg:range_class: Formula
+      vg:operation_types: '["direct_join"]'
+      vg:context: >-
+        {
+          "business_logic": "Links batch to the formula used for production. Through the formula, connects to ingredient requirements and the product being made.",
+          "traversal_semantics": {
+            "inbound": "what batches used this formula (production runs for a recipe)",
+            "outbound": "which formula this batch was produced with"
+          },
+          "llm_prompt_hint": "Join batches.formula_id → formulas.id. For actual vs planned comparison: batch.quantity_kg vs formula.batch_size_kg."
+        }
+
+  BatchProducesProduct:
+    description: "Batch produces a product (polymorphic: SKU or BulkIntermediate)"
+    instantiates:
+      - vg:SQLMappedRelationship
+    annotations:
+      vg:edge_table: batches
+      vg:domain_key: id
+      vg:range_key: product_id
+      vg:domain_class: Batch
+      vg:range_class: '["SKU", "BulkIntermediate"]'
+      vg:operation_types: '["direct_join"]'
+      vg:functional: true
+      vg:type_discriminator: >-
+        {"column": "product_type", "mapping": {"finished_good": "SKU", "bulk_intermediate": "BulkIntermediate"}}
+      vg:context: >-
+        {
+          "business_logic": "Polymorphic: batch produces either a SKU (product_type='finished_good') or a BulkIntermediate (product_type='bulk_intermediate'). The product_type column is the type discriminator.",
+          "traversal_semantics": {
+            "inbound": "what batches produced this product",
+            "outbound": "what product did this batch make"
+          },
+          "llm_prompt_hint": "Use product_type to determine join target: batches.product_id → skus.id (finished_good) or batches.product_id → bulk_intermediates.id (bulk_intermediate)."
+        }
+
+  BatchConsumesIngredient:
+    description: "Batch consumed ingredients during production"
+    instantiates:
+      - vg:SQLMappedRelationship
+    annotations:
+      vg:edge_table: batch_ingredients
+      vg:domain_key: batch_id
+      vg:range_key: ingredient_id
+      vg:domain_class: Batch
+      vg:range_class: Ingredient
+      vg:operation_types: '["direct_join"]'
+      vg:context: >-
+        {
+          "business_logic": "Actual ingredient consumption during production. Mass balance: sum of input ingredient quantities should approximate batch output quantity_kg / yield_percent. Use for planned-vs-actual analysis (compare against formula_ingredients) and full traceability.",
+          "traversal_semantics": {
+            "inbound": "what batches consumed this ingredient (traceability)",
+            "outbound": "what ingredients went into this batch (bill of materials actuals)"
+          },
+          "llm_prompt_hint": "Join batch_ingredients.batch_id → batches, batch_ingredients.ingredient_id → ingredients. For planned vs actual: compare quantity_kg here against formula_ingredients.quantity_kg for the same formula."
+        }
+      vg:edge_attributes: >-
+        [
+          {"name": "quantity_kg", "type": "decimal", "description": "Actual quantity consumed in kg"}
+        ]
+      vg:flow_config: >-
+        {
+          "flow_type": "material",
+          "quantity_column": "quantity_kg",
+          "timestamp_column": "batch_id",
+          "conservation_group": "production_mass_balance",
+          "unit": "kg"
+        }
+
+  # --- PRODUCT domain ---
+
+  SKUSupersedes:
+    description: "SKU supersedes another SKU (alias/replacement chain)"
+    instantiates:
+      - vg:SQLMappedRelationship
+    annotations:
+      vg:edge_table: skus
+      vg:domain_key: id
+      vg:range_key: supersedes_sku_id
+      vg:domain_class: SKU
+      vg:range_class: SKU
+      vg:operation_types: '["direct_join", "recursive_traversal"]'
+      vg:asymmetric: true
+      vg:irreflexive: true
+      vg:acyclic: true
+      vg:context: >-
+        {
+          "business_logic": "Self-referential alias chain for SKU replacements. 21 SKUs with -OLD suffix have supersedes_sku_id pointing to their replacement. Chain is acyclic and asymmetric. Used to resolve current SKU code from legacy codes.",
+          "traversal_semantics": {
+            "inbound": "what SKU replaced this one (newer version)",
+            "outbound": "what SKU this one replaces (older version)"
+          },
+          "llm_prompt_hint": "Use recursive_traversal handler to follow the full chain. Direction: outbound follows supersedes_sku_id to find the old SKU; inbound finds the new replacement. Typically short chains (depth 1-2). 4.2% of SKUs have -OLD suffix."
+        }
+
+  # --- ORDER domain ---
+
+  OrderFromChannel:
+    description: "Order placed through a sales channel"
+    instantiates:
+      - vg:SQLMappedRelationship
+    annotations:
+      vg:edge_table: orders
+      vg:domain_key: id
+      vg:range_key: source_id
+      vg:domain_class: Order
+      vg:range_class: Channel
+      vg:operation_types: '["direct_join"]'
+      vg:functional: true
+      vg:context: >-
+        {
+          "business_logic": "Links order to its source channel. CAUTION: source_id is polymorphic — values 1-7 point to channels table, values 67+ point to retail_locations table. No discriminator column. This relationship is only valid when source_id <= 7.",
+          "traversal_semantics": {
+            "inbound": "what orders came through this channel",
+            "outbound": "which channel this order was placed through"
+          },
+          "llm_prompt_hint": "Join orders.source_id → channels.id BUT only when source_id <= 7. For channel-level order analysis, prefer using ar_invoices.channel column which is cleaner. For store-level analysis, use orders.retail_location_id instead (non-polymorphic)."
+        }
+
+  OrderForRetailLocation:
+    description: "Order delivered to a retail location"
+    instantiates:
+      - vg:SQLMappedRelationship
+    annotations:
+      vg:edge_table: orders
+      vg:domain_key: id
+      vg:range_key: retail_location_id
+      vg:domain_class: Order
+      vg:range_class: RetailLocation
+      vg:operation_types: '["direct_join"]'
+      vg:functional: true
+      vg:context: >-
+        {
+          "business_logic": "Links order to its delivery retail location. Non-polymorphic — this is the clean FK for store-level analysis. Functional (each order is delivered to one location).",
+          "traversal_semantics": {
+            "inbound": "what orders were delivered to this retail location (store order history)",
+            "outbound": "which retail location receives this order"
+          },
+          "llm_prompt_hint": "Join orders.retail_location_id → retail_locations.id. This is the preferred join for geographic/store-level order analysis (avoids the source_id polymorphism issue)."
+        }
+
+  OrderHasLines:
+    description: "Order has line items"
+    instantiates:
+      - vg:SQLMappedRelationship
+    annotations:
+      vg:edge_table: order_lines
+      vg:domain_key: order_id
+      vg:range_key: '["order_id", "line_number"]'
+      vg:domain_class: Order
+      vg:range_class: OrderLine
+      vg:operation_types: '["direct_join"]'
+      vg:context: >-
+        {
+          "business_logic": "One-to-many: order header to its line items. Lines specify SKUs and quantities. WARNING: unit_price on order_lines is ALWAYS ZERO — do not use for revenue calculations.",
+          "traversal_semantics": {
+            "inbound": "which order this line belongs to",
+            "outbound": "what line items are on this order"
+          },
+          "llm_prompt_hint": "Join order_lines.order_id → orders.id. For order volume: SUM(quantity_cases). For revenue: must go through ar_invoices/ar_invoice_lines instead."
+        }
+      vg:flow_config: >-
+        {
+          "flow_type": "material",
+          "quantity_column": "quantity_cases",
+          "timestamp_column": "order_id",
+          "conservation_group": "order_to_cash",
+          "unit": "cases"
+        }
+
+  OrderLineForSKU:
+    description: "Order line is for a specific SKU"
+    instantiates:
+      - vg:SQLMappedRelationship
+    annotations:
+      vg:edge_table: order_lines
+      vg:domain_key: '["order_id", "line_number"]'
+      vg:range_key: sku_id
+      vg:domain_class: OrderLine
+      vg:range_class: SKU
+      vg:operation_types: '["direct_join"]'
+      vg:context: >-
+        {
+          "business_logic": "Links order line to the SKU being ordered. Used for product-level demand analysis (volume only — not revenue).",
+          "traversal_semantics": {
+            "inbound": "what order lines are for this SKU (demand signal)",
+            "outbound": "which SKU this order line is for"
+          },
+          "llm_prompt_hint": "Join order_lines.sku_id → skus.id. For SKU demand volume: SUM(quantity_cases) GROUP BY sku_id. Remember unit_price is zero — use ar_invoice_lines for revenue."
+        }
+
+  # --- FULFILL domain ---
+
+  ShipmentFromOrigin:
+    description: "Shipment originates from a location (polymorphic: plant, DC, or retail)"
+    instantiates:
+      - vg:SQLMappedRelationship
+    annotations:
+      vg:edge_table: shipments
+      vg:domain_key: id
+      vg:range_key: origin_id
+      vg:domain_class: Shipment
+      vg:range_class: '["Plant", "DistributionCenter", "RetailLocation"]'
+      vg:operation_types: '["direct_join"]'
+      vg:functional: true
+      vg:context: >-
+        {
+          "business_logic": "Polymorphic origin without an explicit type column. Use route_type to infer origin type: plant_to_* implies Plant origin, rdc_to_* implies DistributionCenter (RDC) origin, customer_dc_to_* implies DistributionCenter (customer DC) origin.",
+          "traversal_semantics": {
+            "inbound": "what shipments originated from this location",
+            "outbound": "where did this shipment originate"
+          },
+          "llm_prompt_hint": "Parse route_type prefix for origin type (e.g., 'plant_to_rdc' → plants table). Or cross-reference with route_segments which have explicit origin_type column. No type discriminator column on shipments table."
+        }
+
+  ShipmentToDestination:
+    description: "Shipment delivered to a location (polymorphic: plant, DC, or retail)"
+    instantiates:
+      - vg:SQLMappedRelationship
+    annotations:
+      vg:edge_table: shipments
+      vg:domain_key: id
+      vg:range_key: destination_id
+      vg:domain_class: Shipment
+      vg:range_class: '["Plant", "DistributionCenter", "RetailLocation"]'
+      vg:operation_types: '["direct_join"]'
+      vg:functional: true
+      vg:context: >-
+        {
+          "business_logic": "Polymorphic destination without an explicit type column. Use route_type to infer destination type: *_to_rdc implies DistributionCenter (RDC), *_to_customer_dc implies DistributionCenter (customer DC), *_to_store implies RetailLocation.",
+          "traversal_semantics": {
+            "inbound": "what shipments were delivered to this location",
+            "outbound": "where was this shipment delivered"
+          },
+          "llm_prompt_hint": "Parse route_type suffix for destination type. Or cross-reference with route_segments which have explicit destination_type column. No type discriminator column on shipments table."
+        }
+
+  ShipmentHasLines:
+    description: "Shipment has line items"
+    instantiates:
+      - vg:SQLMappedRelationship
+    annotations:
+      vg:edge_table: shipment_lines
+      vg:domain_key: shipment_id
+      vg:range_key: '["shipment_id", "line_number"]'
+      vg:domain_class: Shipment
+      vg:range_class: ShipmentLine
+      vg:operation_types: '["direct_join"]'
+      vg:context: >-
+        {
+          "business_logic": "One-to-many: shipment header to its line items. Each line records an SKU, quantity in cases, and weight. Used for fulfillment verification and logistics weight planning.",
+          "traversal_semantics": {
+            "inbound": "which shipment this line belongs to",
+            "outbound": "what line items are on this shipment"
+          },
+          "llm_prompt_hint": "Join shipment_lines.shipment_id → shipments.id. For shipment total weight: SUM(weight_kg). For SKU mix: GROUP BY sku_id."
+        }
+      vg:flow_config: >-
+        {
+          "flow_type": "material",
+          "quantity_column": "quantity_cases",
+          "timestamp_column": "shipment_id",
+          "conservation_group": "order_to_cash",
+          "unit": "cases"
+        }
+
+  ShipmentLineForSKU:
+    description: "Shipment line carries a specific SKU"
+    instantiates:
+      - vg:SQLMappedRelationship
+    annotations:
+      vg:edge_table: shipment_lines
+      vg:domain_key: '["shipment_id", "line_number"]'
+      vg:range_key: sku_id
+      vg:domain_class: ShipmentLine
+      vg:range_class: SKU
+      vg:operation_types: '["direct_join"]'
+      vg:context: >-
+        {
+          "business_logic": "Links shipment line to the SKU being shipped. Used for product-level logistics analysis and fulfillment tracking.",
+          "traversal_semantics": {
+            "inbound": "what shipment lines carried this SKU (fulfillment history)",
+            "outbound": "which SKU is on this shipment line"
+          },
+          "llm_prompt_hint": "Join shipment_lines.sku_id → skus.id. For SKU shipment volume: SUM(quantity_cases) GROUP BY sku_id."
+        }
+
+  InventoryForSKU:
+    description: "Inventory snapshot for a specific SKU"
+    instantiates:
+      - vg:SQLMappedRelationship
+    annotations:
+      vg:edge_table: inventory
+      vg:domain_key: id
+      vg:range_key: sku_id
+      vg:domain_class: Inventory
+      vg:range_class: SKU
+      vg:operation_types: '["direct_join"]'
+      vg:context: >-
+        {
+          "business_logic": "Links inventory snapshots to the SKU being tracked. Each inventory row is a point-in-time snapshot for a specific SKU at a specific location.",
+          "traversal_semantics": {
+            "inbound": "what inventory records exist for this SKU (stock positions)",
+            "outbound": "which SKU this inventory record tracks"
+          },
+          "llm_prompt_hint": "Join inventory.sku_id → skus.id. For total stock on hand: SUM(quantity_cases) WHERE day = target_day GROUP BY sku_id. Filter by location_type for network tier analysis."
+        }
+
+  InventoryAtLocation:
+    description: "Inventory at a location (polymorphic: plant, DC, or retail)"
+    instantiates:
+      - vg:SQLMappedRelationship
+    annotations:
+      vg:edge_table: inventory
+      vg:domain_key: id
+      vg:range_key: location_id
+      vg:domain_class: Inventory
+      vg:range_class: '["Plant", "DistributionCenter", "RetailLocation"]'
+      vg:operation_types: '["direct_join"]'
+      vg:type_discriminator: >-
+        {"column": "location_type", "mapping": {"plant": "Plant", "rdc": "DistributionCenter", "customer_dc": "DistributionCenter", "store": "RetailLocation"}}
+      vg:context: >-
+        {
+          "business_logic": "Polymorphic location with explicit type discriminator. location_type values: plant → plants table, rdc → distribution_centers (type='rdc'), customer_dc → distribution_centers (type='customer_dc'), store → retail_locations. Store inventory is ~98% of records.",
+          "traversal_semantics": {
+            "inbound": "what inventory is at this location",
+            "outbound": "which location holds this inventory"
+          },
+          "llm_prompt_hint": "MUST filter by location_type before joining. Both 'rdc' and 'customer_dc' join to distribution_centers table. 'store' joins to retail_locations. 'plant' joins to plants. For network-level inventory: GROUP BY location_type."
+        }
+
+  # --- LOGISTICS domain ---
+
+  RouteSegmentOrigin:
+    description: "Route segment originates from a location (polymorphic)"
+    instantiates:
+      - vg:SQLMappedRelationship
+    annotations:
+      vg:edge_table: route_segments
+      vg:domain_key: id
+      vg:range_key: origin_id
+      vg:domain_class: RouteSegment
+      vg:range_class: '["Plant", "DistributionCenter", "Supplier"]'
+      vg:operation_types: '["direct_join", "shortest_path", "centrality", "connected_components", "resilience_analysis"]'
+      vg:functional: true
+      vg:type_discriminator: >-
+        {"column": "origin_type", "mapping": {"plant": "Plant", "rdc": "DistributionCenter", "customer_dc": "DistributionCenter", "supplier": "Supplier"}}
+      vg:is_weighted: true
+      vg:weight_columns: >-
+        [
+          {"name": "distance_km", "type": "decimal", "unit": "km", "description": "Segment distance"},
+          {"name": "transit_time_hours", "type": "decimal", "unit": "hours", "description": "Transit time"}
+        ]
+      vg:context: >-
+        {
+          "business_logic": "Polymorphic origin of transport network edges. Origin types: supplier (100 segments), plant (42 segments), rdc (38 segments), customer_dc (3,817 segments). Suppliers are origin-only nodes — they ship TO the network but nothing ships TO them.",
+          "traversal_semantics": {
+            "inbound": "what route segments arrive at this location",
+            "outbound": "what locations does this segment connect from"
+          },
+          "llm_prompt_hint": "Use origin_type to determine join table: supplier→suppliers, plant→plants, rdc→distribution_centers, customer_dc→distribution_centers. For graph algorithms (shortest_path etc.), use distance_km or transit_time_hours as edge weight."
+        }
+
+  RouteSegmentDestination:
+    description: "Route segment ends at a location (polymorphic)"
+    instantiates:
+      - vg:SQLMappedRelationship
+    annotations:
+      vg:edge_table: route_segments
+      vg:domain_key: id
+      vg:range_key: destination_id
+      vg:domain_class: RouteSegment
+      vg:range_class: '["Plant", "DistributionCenter", "RetailLocation"]'
+      vg:operation_types: '["direct_join", "shortest_path", "centrality", "connected_components", "resilience_analysis"]'
+      vg:functional: true
+      vg:type_discriminator: >-
+        {"column": "destination_type", "mapping": {"plant": "Plant", "rdc": "DistributionCenter", "customer_dc": "DistributionCenter", "store": "RetailLocation"}}
+      vg:is_weighted: true
+      vg:weight_columns: >-
+        [
+          {"name": "distance_km", "type": "decimal", "unit": "km", "description": "Segment distance"},
+          {"name": "transit_time_hours", "type": "decimal", "unit": "hours", "description": "Transit time"}
+        ]
+      vg:context: >-
+        {
+          "business_logic": "Polymorphic destination of transport network edges. Destination types: plant, rdc, customer_dc, store. Retail locations (store) are destination-only nodes — the final delivery point. Note: destination_type value is 'store' not 'retail'.",
+          "traversal_semantics": {
+            "inbound": "what route segments depart from this location",
+            "outbound": "what locations does this segment connect to"
+          },
+          "llm_prompt_hint": "Use destination_type to determine join table: plant→plants, rdc→distribution_centers, customer_dc→distribution_centers, store→retail_locations. For graph algorithms, pair with RouteSegmentOrigin for bidirectional network analysis."
+        }
+
+  # --- PLAN domain ---
+
+  DemandForecastForSKU:
+    description: "Demand forecast for a specific SKU"
+    instantiates:
+      - vg:SQLMappedRelationship
+    annotations:
+      vg:edge_table: demand_forecasts
+      vg:domain_key: id
+      vg:range_key: sku_id
+      vg:domain_class: DemandForecast
+      vg:range_class: SKU
+      vg:operation_types: '["direct_join"]'
+      vg:context: >-
+        {
+          "business_logic": "Links demand forecast to the SKU being forecasted. Used for demand planning and forecast accuracy analysis.",
+          "traversal_semantics": {
+            "inbound": "what demand forecasts exist for this SKU",
+            "outbound": "which SKU this forecast is for"
+          },
+          "llm_prompt_hint": "Join demand_forecasts.sku_id → skus.id. For forecast accuracy: compare forecast_quantity_cases against actual order_lines.quantity_cases for the same SKU and time period."
+        }
+
+  # --- RETURN domain ---
+
+  ReturnFromRetailLocation:
+    description: "Return originated from a retail location"
+    instantiates:
+      - vg:SQLMappedRelationship
+    annotations:
+      vg:edge_table: returns
+      vg:domain_key: id
+      vg:range_key: source_id
+      vg:domain_class: Return
+      vg:range_class: RetailLocation
+      vg:operation_types: '["direct_join"]'
+      vg:functional: true
+      vg:context: >-
+        {
+          "business_logic": "Links return to the retail location where it originated. Functional (each return comes from one store). Used for return rate analysis by store.",
+          "traversal_semantics": {
+            "inbound": "what returns originated from this retail location (store return history)",
+            "outbound": "which retail location initiated this return"
+          },
+          "llm_prompt_hint": "Join returns.source_id → retail_locations.id. For store return rates: COUNT returns by source_id. Join retail_locations for geographic analysis."
+        }
+
+  ReturnHasLines:
+    description: "Return has line items"
+    instantiates:
+      - vg:SQLMappedRelationship
+    annotations:
+      vg:edge_table: return_lines
+      vg:domain_key: return_id
+      vg:range_key: '["return_id", "line_number"]'
+      vg:domain_class: Return
+      vg:range_class: ReturnLine
+      vg:operation_types: '["direct_join"]'
+      vg:context: >-
+        {
+          "business_logic": "One-to-many: return header to its line items. Each line records the returned SKU, quantity, and condition assessment.",
+          "traversal_semantics": {
+            "inbound": "which return this line belongs to",
+            "outbound": "what line items are on this return"
+          },
+          "llm_prompt_hint": "Join return_lines.return_id → returns.id. For return reason analysis: GROUP BY condition column on return_lines."
+        }
+
+  ReturnLineForSKU:
+    description: "Return line is for a specific SKU"
+    instantiates:
+      - vg:SQLMappedRelationship
+    annotations:
+      vg:edge_table: return_lines
+      vg:domain_key: '["return_id", "line_number"]'
+      vg:range_key: sku_id
+      vg:domain_class: ReturnLine
+      vg:range_class: SKU
+      vg:operation_types: '["direct_join"]'
+      vg:context: >-
+        {
+          "business_logic": "Links return line to the SKU being returned. Used for product-level return analysis and quality tracking.",
+          "traversal_semantics": {
+            "inbound": "what return lines are for this SKU (product return history)",
+            "outbound": "which SKU is being returned on this line"
+          },
+          "llm_prompt_hint": "Join return_lines.sku_id → skus.id. For SKU return rate: COUNT return lines / COUNT order lines for same SKU."
+        }
+
+  ReturnToDC:
+    description: "Return is sent to a distribution center"
+    instantiates:
+      - vg:SQLMappedRelationship
+    annotations:
+      vg:edge_table: returns
+      vg:domain_key: id
+      vg:range_key: dc_id
+      vg:domain_class: Return
+      vg:range_class: DistributionCenter
+      vg:operation_types: '["direct_join"]'
+      vg:functional: true
+      vg:context: >-
+        {
+          "business_logic": "Links return to the distribution center where it is processed (inspected, dispositioned). Functional (each return is sent to one DC). Returns flow from retail locations to DCs for processing.",
+          "traversal_semantics": {
+            "inbound": "what returns were sent to this DC (DC processing workload)",
+            "outbound": "which DC processes this return"
+          },
+          "llm_prompt_hint": "Join returns.dc_id → distribution_centers.id. For DC return processing volume: COUNT returns by dc_id."
+        }
+
+  DispositionForReturn:
+    description: "Disposition action for a specific return"
+    instantiates:
+      - vg:SQLMappedRelationship
+    annotations:
+      vg:edge_table: disposition_logs
+      vg:domain_key: return_id
+      vg:range_key: return_id
+      vg:domain_class: DispositionLog
+      vg:range_class: Return
+      vg:operation_types: '["direct_join"]'
+      vg:functional: true
+      vg:context: >-
+        {
+          "business_logic": "Links disposition log to its return. Records the final outcome of returned goods after inspection (restock, destroy, rework, donate).",
+          "traversal_semantics": {
+            "inbound": "what disposition actions were taken for this return",
+            "outbound": "which return this disposition relates to"
+          },
+          "llm_prompt_hint": "Join disposition_logs.return_id → returns.id. For disposition outcome analysis: GROUP BY disposition column. Compare quantity_cases against return_lines for partial dispositions."
+        }
+
+  # --- FINANCE domain ---
+
+  APInvoiceFromSupplier:
+    description: "AP invoice is from a supplier"
+    instantiates:
+      - vg:SQLMappedRelationship
+    annotations:
+      vg:edge_table: ap_invoices
+      vg:domain_key: id
+      vg:range_key: supplier_id
+      vg:domain_class: APInvoice
+      vg:range_class: Supplier
+      vg:operation_types: '["direct_join"]'
+      vg:functional: true
+      vg:context: >-
+        {
+          "business_logic": "Links AP invoice to the supplier who issued it. Functional (each invoice is from one supplier). Used for supplier spend analysis and payables tracking.",
+          "traversal_semantics": {
+            "inbound": "what AP invoices were received from this supplier (supplier invoice history)",
+            "outbound": "which supplier issued this invoice"
+          },
+          "llm_prompt_hint": "Join ap_invoices.supplier_id → suppliers.id. For supplier spend: SUM(total_amount) GROUP BY supplier_id. Watch for -DUP duplicate invoices."
+        }
+
+  APInvoiceForGR:
+    description: "AP invoice matches a goods receipt"
+    instantiates:
+      - vg:SQLMappedRelationship
+    annotations:
+      vg:edge_table: ap_invoices
+      vg:domain_key: id
+      vg:range_key: gr_id
+      vg:domain_class: APInvoice
+      vg:range_class: GoodsReceipt
+      vg:operation_types: '["direct_join"]'
+      vg:context: >-
+        {
+          "business_logic": "Links AP invoice to the goods receipt it matches. Part of three-way match: PO ↔ GR ↔ AP Invoice. When all three agree on quantity and cost, the invoice is approved for payment.",
+          "traversal_semantics": {
+            "inbound": "what AP invoices match this goods receipt",
+            "outbound": "which goods receipt this AP invoice was matched to"
+          },
+          "llm_prompt_hint": "Join ap_invoices.gr_id → goods_receipts.id. For three-way match analysis: ap_invoices → goods_receipts → purchase_orders via shared ingredient_id and quantity comparisons across their line items."
+        }
+
+  APInvoiceHasLines:
+    description: "AP invoice has line items"
+    instantiates:
+      - vg:SQLMappedRelationship
+    annotations:
+      vg:edge_table: ap_invoice_lines
+      vg:domain_key: invoice_id
+      vg:range_key: '["invoice_id", "line_number"]'
+      vg:domain_class: APInvoice
+      vg:range_class: APInvoiceLine
+      vg:operation_types: '["direct_join"]'
+      vg:context: >-
+        {
+          "business_logic": "One-to-many: AP invoice header to its line items. Lines detail what was invoiced — ingredient, quantity, unit cost, line amount. Used for three-way match at the line level.",
+          "traversal_semantics": {
+            "inbound": "which AP invoice this line belongs to",
+            "outbound": "what line items are on this AP invoice"
+          },
+          "llm_prompt_hint": "Join ap_invoice_lines.invoice_id → ap_invoices.id. For invoice total verification: SUM(line_amount) should equal ap_invoices.total_amount."
+        }
+      vg:flow_config: >-
+        {
+          "flow_type": "financial",
+          "quantity_column": "line_amount",
+          "timestamp_column": "invoice_id",
+          "conservation_group": "procure_to_pay",
+          "unit": "USD"
+        }
+
+  APInvoiceLineForIngredient:
+    description: "AP invoice line is for a specific ingredient"
+    instantiates:
+      - vg:SQLMappedRelationship
+    annotations:
+      vg:edge_table: ap_invoice_lines
+      vg:domain_key: '["invoice_id", "line_number"]'
+      vg:range_key: ingredient_id
+      vg:domain_class: APInvoiceLine
+      vg:range_class: Ingredient
+      vg:operation_types: '["direct_join"]'
+      vg:context: >-
+        {
+          "business_logic": "Links AP invoice line to the ingredient being invoiced. Used for ingredient-level cost tracking and variance analysis against PO terms.",
+          "traversal_semantics": {
+            "inbound": "what AP invoice lines are for this ingredient (cost history)",
+            "outbound": "which ingredient this AP invoice line covers"
+          },
+          "llm_prompt_hint": "Join ap_invoice_lines.ingredient_id → ingredients.id. For ingredient cost tracking: compare unit_cost here against supplier_ingredients.unit_cost and purchase_order_lines.unit_cost."
+        }
+
+  ARInvoiceForCustomer:
+    description: "AR invoice is for a customer location"
+    instantiates:
+      - vg:SQLMappedRelationship
+    annotations:
+      vg:edge_table: ar_invoices
+      vg:domain_key: id
+      vg:range_key: customer_location_id
+      vg:domain_class: ARInvoice
+      vg:range_class: RetailLocation
+      vg:operation_types: '["direct_join"]'
+      vg:functional: true
+      vg:context: >-
+        {
+          "business_logic": "Links AR invoice to the customer retail location. Functional (each invoice is for one customer). Used for customer-level revenue analysis and collections tracking.",
+          "traversal_semantics": {
+            "inbound": "what AR invoices were issued to this customer (customer revenue history)",
+            "outbound": "which customer location this invoice is for"
+          },
+          "llm_prompt_hint": "Join ar_invoices.customer_location_id → retail_locations.id. For customer revenue: SUM(total_amount) GROUP BY customer_location_id. Channel column on ar_invoices is often more useful for channel-level analysis."
+        }
+
+  ARInvoiceHasLines:
+    description: "AR invoice has line items"
+    instantiates:
+      - vg:SQLMappedRelationship
+    annotations:
+      vg:edge_table: ar_invoice_lines
+      vg:domain_key: invoice_id
+      vg:range_key: '["invoice_id", "line_number"]'
+      vg:domain_class: ARInvoice
+      vg:range_class: ARInvoiceLine
+      vg:operation_types: '["direct_join"]'
+      vg:context: >-
+        {
+          "business_logic": "One-to-many: AR invoice header to its line items. THIS is where SKU-level revenue data lives — unit_price and line_amount ARE populated (unlike order_lines). The source of truth for product-level revenue attribution.",
+          "traversal_semantics": {
+            "inbound": "which AR invoice this line belongs to",
+            "outbound": "what line items are on this AR invoice"
+          },
+          "llm_prompt_hint": "Join ar_invoice_lines.invoice_id → ar_invoices.id. For SKU revenue: SUM(line_amount) GROUP BY sku_id. This is the ONLY reliable source for unit pricing and revenue at the SKU level."
+        }
+      vg:flow_config: >-
+        {
+          "flow_type": "financial",
+          "quantity_column": "line_amount",
+          "timestamp_column": "invoice_id",
+          "conservation_group": "order_to_cash",
+          "unit": "USD"
+        }
+
+  ARInvoiceLineForSKU:
+    description: "AR invoice line is for a specific SKU"
+    instantiates:
+      - vg:SQLMappedRelationship
+    annotations:
+      vg:edge_table: ar_invoice_lines
+      vg:domain_key: '["invoice_id", "line_number"]'
+      vg:range_key: sku_id
+      vg:domain_class: ARInvoiceLine
+      vg:range_class: SKU
+      vg:operation_types: '["direct_join"]'
+      vg:context: >-
+        {
+          "business_logic": "Links AR invoice line to the SKU sold. This is the revenue attribution join — line_amount here is the actual revenue for this SKU sale. Critical for product profitability analysis.",
+          "traversal_semantics": {
+            "inbound": "what AR invoice lines are for this SKU (product revenue history)",
+            "outbound": "which SKU was sold on this invoice line"
+          },
+          "llm_prompt_hint": "Join ar_invoice_lines.sku_id → skus.id. For SKU revenue: SUM(line_amount) GROUP BY sku_id. For product profitability: compare against ingredient cost rollup through formulas."
+        }
+
+  APPaymentForInvoice:
+    description: "Payment made against an AP invoice"
+    instantiates:
+      - vg:SQLMappedRelationship
+    annotations:
+      vg:edge_table: ap_payments
+      vg:domain_key: id
+      vg:range_key: invoice_id
+      vg:domain_class: APPayment
+      vg:range_class: APInvoice
+      vg:operation_types: '["direct_join"]'
+      vg:context: >-
+        {
+          "business_logic": "Links payment to the AP invoice being settled. Completes the procure-to-pay financial cycle. ~10% of payments include early-pay discount (discount_amount > 0).",
+          "traversal_semantics": {
+            "inbound": "what payments were made against this AP invoice",
+            "outbound": "which AP invoice this payment settles"
+          },
+          "llm_prompt_hint": "Join ap_payments.invoice_id → ap_invoices.id. For payment analysis: net_amount = amount - discount_amount. For early-pay discount rate: COUNT(discount_amount > 0) / COUNT(*)."
+        }
+      vg:flow_config: >-
+        {
+          "flow_type": "financial",
+          "quantity_column": "amount",
+          "timestamp_column": "payment_date",
+          "conservation_group": "procure_to_pay",
+          "unit": "USD"
+        }
+
+  ARReceiptForInvoice:
+    description: "Receipt of payment against an AR invoice"
+    instantiates:
+      - vg:SQLMappedRelationship
+    annotations:
+      vg:edge_table: ar_receipts
+      vg:domain_key: id
+      vg:range_key: invoice_id
+      vg:domain_class: ARReceipt
+      vg:range_class: ARInvoice
+      vg:operation_types: '["direct_join"]'
+      vg:context: >-
+        {
+          "business_logic": "Links receipt to the AR invoice being collected. Completes the order-to-cash financial cycle. Compare receipt amount against invoice total_amount for collection rate analysis.",
+          "traversal_semantics": {
+            "inbound": "what receipts were collected for this AR invoice",
+            "outbound": "which AR invoice this receipt is for"
+          },
+          "llm_prompt_hint": "Join ar_receipts.invoice_id → ar_invoices.id. For collection analysis: SUM(ar_receipts.amount) vs ar_invoices.total_amount. For aging: receipt_date - invoice_date."
+        }
+      vg:flow_config: >-
+        {
+          "flow_type": "financial",
+          "quantity_column": "amount",
+          "timestamp_column": "receipt_date",
+          "conservation_group": "order_to_cash",
+          "unit": "USD"
+        }
+
+  ARInvoiceForShipment:
+    description: "AR invoice generated for a shipment"
+    instantiates:
+      - vg:SQLMappedRelationship
+    annotations:
+      vg:edge_table: ar_invoices
+      vg:domain_key: id
+      vg:range_key: shipment_id
+      vg:domain_class: ARInvoice
+      vg:range_class: Shipment
+      vg:operation_types: '["direct_join"]'
+      vg:context: >-
+        {
+          "business_logic": "Links AR invoice to the shipment that triggered it. Connects fulfillment execution to revenue recognition. Each shipment generates an AR invoice upon delivery.",
+          "traversal_semantics": {
+            "inbound": "what AR invoices were generated from this shipment",
+            "outbound": "which shipment triggered this AR invoice"
+          },
+          "llm_prompt_hint": "Join ar_invoices.shipment_id → shipments.id. For order-to-cash tracing: orders → shipments → ar_invoices → ar_receipts."
+        }
+
+  GLJournalToAccount:
+    description: "GL journal entry posts to a chart of accounts entry"
+    instantiates:
+      - vg:SQLMappedRelationship
+    annotations:
+      vg:edge_table: gl_journal
+      vg:domain_key: id
+      vg:range_key: account_code
+      vg:domain_class: GLJournal
+      vg:range_class: ChartOfAccounts
+      vg:operation_types: '["direct_join"]'
+      vg:context: >-
+        {
+          "business_logic": "Links GL journal entries to their chart of accounts classification. IMPORTANT: join key is account_code (VARCHAR), NOT id (INTEGER). 58.9M journal entries across 14 accounts.",
+          "traversal_semantics": {
+            "inbound": "what GL entries post to this account (account activity)",
+            "outbound": "which account this GL entry posts to"
+          },
+          "llm_prompt_hint": "Join gl_journal.account_code → chart_of_accounts.account_code. NOT a standard id-based FK — use the string account_code. For account balances: SUM(debit_amount) - SUM(credit_amount) GROUP BY account_code."
+        }
+
+  InvoiceVarianceForAPInvoice:
+    description: "Variance recorded against an AP invoice"
+    instantiates:
+      - vg:SQLMappedRelationship
+    annotations:
+      vg:edge_table: invoice_variances
+      vg:domain_key: id
+      vg:range_key: invoice_id
+      vg:domain_class: InvoiceVariance
+      vg:range_class: APInvoice
+      vg:operation_types: '["direct_join"]'
+      vg:context: >-
+        {
+          "business_logic": "Links variance records to the AP invoice with discrepancies. ~8% of invoices have price variances, ~5% have quantity variances. This is the data quality friction detection table.",
+          "traversal_semantics": {
+            "inbound": "what variances were recorded on this AP invoice",
+            "outbound": "which AP invoice has this variance"
+          },
+          "llm_prompt_hint": "Join invoice_variances.invoice_id → ap_invoices.id. For variance exposure: SUM(ABS(variance_amount)) by variance_type. Join ap_invoices → suppliers for supplier quality analysis."
+        }
