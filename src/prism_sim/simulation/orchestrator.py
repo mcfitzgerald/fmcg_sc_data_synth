@@ -10,7 +10,11 @@ if TYPE_CHECKING:
 
 from prism_sim.agents.allocation import AllocationAgent
 from prism_sim.agents.replenishment import MinMaxReplenisher
-from prism_sim.config.loader import load_manifest, load_simulation_config
+from prism_sim.config.loader import (
+    load_manifest,
+    load_simulation_config,
+    load_world_definition,
+)
 from prism_sim.network.core import (
     Batch,
     Link,
@@ -70,6 +74,12 @@ class Orchestrator:
         # that need them (e.g. POSEngine)
         self.config["promotions"] = manifest.get("promotions", [])
         self.config["packaging_types"] = manifest.get("packaging_types", [])
+
+        # Merge network enrichment config for replenisher + orchestrator
+        world_def = load_world_definition()
+        self.config["network_enrichment"] = (
+            world_def.get("topology", {}).get("network_enrichment", {})
+        )
 
         self.builder = WorldBuilder(manifest)
         self.world = self.builder.build()
@@ -247,9 +257,17 @@ class Orchestrator:
 
         # v0.69.2 PERF: Pre-build topology maps for push allocation
         # Avoids per-day full link scans in _push_excess_rdc_inventory
+        # v0.83.0: Primary-only — each DC assigned to shortest-distance RDC
+        #          to prevent double-counting with multi-source links.
+        #          Lateral RDC↔RDC links excluded (both endpoints are RDCs).
         self._rdc_downstream_dcs: dict[str, list[str]] = {}
         self._dc_downstream_stores: dict[str, list[str]] = {}
-        for link in self.world.links.values():
+        dc_assigned_rdc: set[str] = set()
+        # Sort links by distance so shortest (primary) is processed first
+        sorted_links = sorted(
+            self.world.links.values(), key=lambda lk: lk.distance_km
+        )
+        for link in sorted_links:
             src_node = self.world.nodes.get(link.source_id)
             tgt_node = self.world.nodes.get(link.target_id)
             if src_node and tgt_node:
@@ -257,14 +275,28 @@ class Orchestrator:
                     src_node.type == NodeType.DC
                     and link.source_id.startswith("RDC-")
                     and tgt_node.type == NodeType.DC
+                    and not link.target_id.startswith("RDC-")
+                    and link.target_id not in dc_assigned_rdc
                 ):
                     self._rdc_downstream_dcs.setdefault(
                         link.source_id, []
                     ).append(link.target_id)
+                    dc_assigned_rdc.add(link.target_id)
                 if tgt_node.type == NodeType.STORE:
                     self._dc_downstream_stores.setdefault(
                         link.source_id, []
                     ).append(link.target_id)
+
+        # v0.83.0: Pre-build lateral RDC↔RDC link list for transshipment
+        self._lateral_rdc_links: list[tuple[str, str, Link]] = []
+        for link in self.world.links.values():
+            if (
+                link.source_id.startswith("RDC-")
+                and link.target_id.startswith("RDC-")
+            ):
+                self._lateral_rdc_links.append(
+                    (link.source_id, link.target_id, link)
+                )
         # v0.55.0: Diagnostic counters for need-based deployment
         self._deployment_total_need = 0.0
         self._deployment_total_deployed = 0.0
@@ -283,12 +315,19 @@ class Orchestrator:
         Calculate the share of global POS demand served by each deployment target.
         Deployment targets = RDCs + plant-direct DCs (DCs sourced from plants).
         Used to route production proportional to demand (physics-based flow).
+
+        v0.83.0: Primary-only upstream map (sorted by distance, first-wins)
+        to prevent multi-source links from inflating demand shares.
         """
-        # Build upstream and downstream maps
+        # Build primary-only upstream + full downstream maps
         upstream_map: dict[str, str] = {}
         downstream_map: dict[str, list[str]] = {}
-        for link in self.world.links.values():
-            upstream_map[link.target_id] = link.source_id
+        sorted_links = sorted(
+            self.world.links.values(), key=lambda lk: lk.distance_km
+        )
+        for link in sorted_links:
+            if link.target_id not in upstream_map:
+                upstream_map[link.target_id] = link.source_id
             downstream_map.setdefault(link.source_id, []).append(link.target_id)
 
         # Deployment targets = RDCs + DCs sourced directly from plants
@@ -369,11 +408,15 @@ class Orchestrator:
             replen_params.get("share_ceiling_headroom", 1.5)
         )
 
-        # Build upstream map for source plant identification
+        # Build primary-only upstream map (sorted by distance, first-wins)
         upstream_map: dict[str, str] = {}
         downstream_map: dict[str, list[str]] = {}
-        for link in self.world.links.values():
-            upstream_map[link.target_id] = link.source_id
+        sorted_links = sorted(
+            self.world.links.values(), key=lambda lk: lk.distance_km
+        )
+        for link in sorted_links:
+            if link.target_id not in upstream_map:
+                upstream_map[link.target_id] = link.source_id
             downstream_map.setdefault(link.source_id, []).append(
                 link.target_id
             )
@@ -1330,6 +1373,14 @@ class Orchestrator:
             # PERF: Use batch method to update in-transit tensor incrementally
             self.state.add_shipments_batch(push_shipments)
 
+        # 10b. v0.83.0: Lateral RDC transshipment (balance inventory across
+        # adjacent RDCs when one is critically low and another has excess)
+        lateral_shipments = self._execute_lateral_transshipment(day)
+        if lateral_shipments:
+            self.auditor.record_plant_shipments_out(lateral_shipments)
+            self._apply_logistics_quirks_and_risks(lateral_shipments)
+            self.state.add_shipments_batch(lateral_shipments)
+
         # 11. Validation & Resilience
         self._apply_post_step_validation(day, arrived)
 
@@ -1343,7 +1394,9 @@ class Orchestrator:
 
         # 12. Monitors & Data Logging
         total_demand = np.sum(daily_demand)
-        daily_shipments = new_shipments + plant_shipments + push_shipments
+        daily_shipments = (
+            new_shipments + plant_shipments + push_shipments + lateral_shipments
+        )
 
         total_shipped_qty = sum(
             line.quantity for s in daily_shipments for line in s.lines
@@ -2597,6 +2650,98 @@ class Orchestrator:
                 push_shipments.append(shipment)
 
         return push_shipments
+
+    def _execute_lateral_transshipment(self, day: int) -> list[Shipment]:
+        """Transfer inventory between adjacent RDCs when imbalanced.
+
+        v0.83.0: For each lateral RDC↔RDC link, checks DOS at both endpoints.
+        If target DOS < critical threshold AND source DOS > excess threshold,
+        transfers up to max_transfer_fraction of the source's excess.
+        """
+        enrichment = self.config.get("network_enrichment", {})
+        lat_cfg = enrichment.get("lateral_transshipment", {})
+        if not lat_cfg.get("enabled", False):
+            return []
+        if not self._lateral_rdc_links:
+            return []
+
+        critical_dos = float(lat_cfg.get("critical_dos_threshold", 3.0))
+        excess_dos = float(lat_cfg.get("excess_dos_threshold", 15.0))
+        max_frac = float(lat_cfg.get("max_transfer_fraction", 0.3))
+
+        lateral_shipments: list[Shipment] = []
+        counter = 0
+
+        for src_rdc, tgt_rdc, link in self._lateral_rdc_links:
+            src_idx = self.state.node_id_to_idx.get(src_rdc)
+            tgt_idx = self.state.node_id_to_idx.get(tgt_rdc)
+            if src_idx is None or tgt_idx is None:
+                continue
+
+            src_demand = self._target_expected_demand.get(src_rdc)
+            tgt_demand = self._target_expected_demand.get(tgt_rdc)
+            if src_demand is None or tgt_demand is None:
+                continue
+
+            src_inv = self.state.actual_inventory[src_idx, :]
+            tgt_inv = self.state.actual_inventory[tgt_idx, :]
+
+            src_dos = src_inv / np.maximum(src_demand, 0.1)
+            tgt_dos = tgt_inv / np.maximum(tgt_demand, 0.1)
+
+            # Identify products: target critically low AND source has excess
+            transfer_mask = (tgt_dos < critical_dos) & (src_dos > excess_dos)
+            if not np.any(transfer_mask):
+                continue
+
+            # Calculate transfer quantities
+            src_excess = src_inv - (src_demand * excess_dos)
+            tgt_need = (tgt_demand * critical_dos) - tgt_inv
+            transfer_qty = np.minimum(
+                np.maximum(src_excess, 0) * max_frac,
+                np.maximum(tgt_need, 0),
+            )
+            transfer_qty[~transfer_mask] = 0
+            transfer_qty = np.floor(transfer_qty)
+
+            if np.sum(transfer_qty) < 1:
+                continue
+
+            # Build shipment
+            lines: list[OrderLine] = []
+            total_wt = 0.0
+            for p_idx in np.nonzero(transfer_qty)[0]:
+                qty = transfer_qty[int(p_idx)]
+                p_id = self.state.idx_to_product_id[int(p_idx)]
+                product = self.world.products.get(p_id)
+                if product and qty > 0:
+                    lines.append(OrderLine(
+                        product_id=p_id,
+                        quantity=qty,
+                        product_idx=int(p_idx),
+                    ))
+                    total_wt += qty * product.weight_kg
+                    # Deduct from source inventory
+                    self.state.update_inventory(src_rdc, p_id, -qty)
+
+            if not lines:
+                continue
+
+            counter += 1
+            lateral_shipments.append(Shipment(
+                id=f"LAT-{day}-{src_rdc}-{tgt_rdc}-{counter}",
+                source_id=src_rdc,
+                target_id=tgt_rdc,
+                creation_day=day,
+                arrival_day=day + int(link.lead_time_days),
+                lines=lines,
+                status=ShipmentStatus.IN_TRANSIT,
+                total_weight_kg=total_wt,
+                source_idx=self.state.node_id_to_idx.get(src_rdc, -1),
+                target_idx=self.state.node_id_to_idx.get(tgt_rdc, -1),
+            ))
+
+        return lateral_shipments
 
 
 if __name__ == "__main__":

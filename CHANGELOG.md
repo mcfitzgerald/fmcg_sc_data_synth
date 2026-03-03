@@ -5,6 +5,40 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.83.0] - 2026-03-02
+
+### Feat: Network Topology Enrichment — Ontology Feedback Chunk 3 (S7)
+
+Enriches the strict tree topology with lateral transshipment links, multi-source DCs, and secondary-source ordering, making the network realistic for VKG benchmark questions Q31, Q38, Q39 (route alternatives, resilience analysis).
+
+#### Network Generator (`generators/network.py`)
+- **Lateral RDC↔RDC links:** 4 closest RDC pairs (by haversine) get bidirectional links = 8 directed links. Pairs: MW↔SO, SO↔SE, WE↔SW, NE↔MW.
+- **Multi-source DCs:** ~10% of RDC-routed customer DCs (6 DCs) get a secondary upstream RDC link. Selected by proximity to second-nearest RDC.
+- Total links: ~4,008 (up from ~3,994).
+
+#### Replenishment (`agents/replenishment.py`)
+- **Primary-only supplier map:** `_build_supplier_map()` sorts links by distance; shortest = primary, second = secondary.
+- **Probabilistic secondary sourcing:** 20% of orders from multi-source DCs route to secondary upstream (config: `secondary_source_order_fraction`).
+- Lead time adjusts to secondary link's lead time.
+
+#### Orchestrator (`simulation/orchestrator.py`)
+- **Primary-only topology maps:** `_rdc_downstream_dcs`, `_calculate_deployment_shares()`, `_precompute_deployment_targets()` all use sorted-by-distance + first-wins pattern to prevent double-counting.
+- **Lateral transshipment (step 10b):** New `_execute_lateral_transshipment()` — transfers inventory between adjacent RDCs when target DOS < 3.0 and source DOS > 15.0. Conservative: max 30% of excess, expected ~1-3% of RDC volume.
+
+#### Config
+- **`world_definition.json`:** New `topology.network_enrichment` section (lateral_rdc_pairs, multi_source_dc_fraction, secondary_source_order_fraction, lateral_transshipment thresholds).
+- **`cost_master.json`:** New `rdc_to_rdc` route cost ($1.75/km, $0.15/case handling).
+
+#### ERP Generator
+- **`scripts/erp/transactional.py`:** Added `("rdc", "rdc"): "rdc_to_rdc"` to `ROUTE_KEY_MAP`.
+
+#### Validation (50-day + 20-day runs)
+- No mass balance violations
+- Fill rate 95.6% (within baseline ±1%)
+- Lateral links confirmed in `links.csv` (8 RDC↔RDC)
+- Multi-source orders confirmed: ECOM-FC-005 orders split ~64% RDC-MW / ~36% RDC-NE
+- Lateral shipments fire rarely (conservative thresholds) — as designed
+
 ## [0.82.0] - 2026-03-02
 
 ### Feat: Lifecycle & GL Anomalies — Ontology Feedback Chunk 2 (S4+S6)

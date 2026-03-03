@@ -61,6 +61,7 @@ ROUTE_KEY_MAP: dict[tuple[str, str], str] = {
     ("plant", "rdc"): "plant_to_rdc",
     ("plant", "customer_dc"): "plant_to_dc",
     ("plant", "store"): "plant_to_dc",
+    ("rdc", "rdc"): "rdc_to_rdc",
     ("rdc", "customer_dc"): "rdc_to_dc",
     ("rdc", "store"): "rdc_to_dc",
     ("customer_dc", "store"): "dc_to_store",

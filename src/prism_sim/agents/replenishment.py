@@ -1,9 +1,10 @@
-from collections import deque
+from collections import defaultdict, deque
 from typing import Any
 
 import numpy as np
 
 from prism_sim.network.core import (
+    Link,
     NodeType,
     Order,
     OrderLine,
@@ -266,6 +267,13 @@ class MinMaxReplenisher:
         # PERF: Pre-computed lookup caches for O(1) array access
         # Replaces 49M+ dict.get() calls with direct array indexing
         self._build_lookup_caches()
+
+        # v0.83.0: Multi-source replenishment (secondary source probabilistic routing)
+        enrichment = config.get("network_enrichment", {})
+        self._secondary_order_fraction = float(
+            enrichment.get("secondary_source_order_fraction", 0.0)
+        )
+        self._secondary_rng = np.random.default_rng(seed=777)
 
         # v0.21.0: Removed pending_orders dict (memory explosion fix)
         # Real retail systems don't track pending orders per-SKU. Instead, they:
@@ -827,12 +835,30 @@ class MinMaxReplenisher:
         return np.array(np.mean(self.inflow_history, axis=0))
 
     def _build_supplier_map(self) -> dict[str, str]:
-        """Builds a lookup map for Store -> Source ID."""
-        mapping = {}
-        self._link_lead_time: dict[str, float] = {}
+        """Builds a lookup map for Store -> Source ID (primary = shortest link).
+
+        Also builds secondary source maps for multi-source DCs.
+        """
+        # Group links by target, sort by distance to identify primary (shortest)
+        target_links: dict[str, list[Link]] = defaultdict(list)
         for link in self.world.links.values():
-            mapping[link.target_id] = link.source_id
-            self._link_lead_time[link.target_id] = link.lead_time_days
+            target_links[link.target_id].append(link)
+
+        mapping: dict[str, str] = {}
+        self._link_lead_time: dict[str, float] = {}
+        self._secondary_source_map: dict[str, str] = {}
+        self._secondary_lead_time: dict[str, float] = {}
+
+        for target_id, links in target_links.items():
+            links.sort(key=lambda lk: lk.distance_km)
+            # Primary = shortest distance
+            mapping[target_id] = links[0].source_id
+            self._link_lead_time[target_id] = links[0].lead_time_days
+            # Secondary = second shortest (if exists)
+            if len(links) >= 2:  # noqa: PLR2004
+                self._secondary_source_map[target_id] = links[1].source_id
+                self._secondary_lead_time[target_id] = links[1].lead_time_days
+
         return mapping
 
     def generate_orders(self, day: int, demand_signal: np.ndarray) -> list[Order]:
@@ -1404,6 +1430,16 @@ class MinMaxReplenisher:
             if not source_id:
                 continue
 
+            # v0.83.0: Probabilistic secondary source for multi-source DCs
+            use_secondary = False
+            if (
+                self._secondary_order_fraction > 0
+                and target_id in self._secondary_source_map
+                and self._secondary_rng.random() < self._secondary_order_fraction
+            ):
+                source_id = self._secondary_source_map[target_id]
+                use_secondary = True
+
             target_node = self.world.nodes.get(target_id)
 
             # PERF v0.69.3: Promo check moved from inner loop to finalization.
@@ -1443,7 +1479,11 @@ class MinMaxReplenisher:
                 priority = OrderPriority.RUSH
 
             order_count += 1
-            lead_time = self._link_lead_time.get(target_id, 3.0)
+            lead_time = (
+                self._secondary_lead_time.get(target_id, 3.0)
+                if use_secondary
+                else self._link_lead_time.get(target_id, 3.0)
+            )
             orders.append(Order(
                 id=f"ORD-{day}-{target_id}-{order_count}",
                 source_id=source_id,

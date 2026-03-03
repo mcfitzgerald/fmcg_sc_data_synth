@@ -4,6 +4,7 @@
     "routes": {
       "plant_to_rdc":      { "mode": "FTL", "cost_per_km": 1.85, "handling_cost_per_case": 0.15 },
       "plant_to_dc":       { "mode": "FTL", "cost_per_km": 1.85, "handling_cost_per_case": 0.15 },
+      "rdc_to_rdc":        { "mode": "FTL", "cost_per_km": 1.75, "handling_cost_per_case": 0.15 },
       "rdc_to_dc":         { "mode": "FTL", "cost_per_km": 1.65, "handling_cost_per_case": 0.20 },
       "dc_to_store":       { "mode": "LTL", "cost_per_case": 0.75, "handling_cost_per_case": 0.30 },
       "supplier_to_plant": { "mode": "FTL", "cost_per_km": 2.00, "handling_cost_per_case": 0.10 }

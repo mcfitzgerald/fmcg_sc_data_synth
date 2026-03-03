@@ -25,7 +25,8 @@ The simulation enforces these constraints - violations indicate bugs:
    - Capacity is modeled as **Discrete Parallel Lines** with per-line changeover penalties.
 5. **Inventory Positivity:** Cannot ship what you don't have.
 6. **Geospatial Coherence:**
-   - Topology is distance-based (Nearest Neighbor).
+   - Topology is distance-based (Nearest Neighbor) with enrichment:
+     lateral RDC↔RDC links (4 pairs), multi-source DCs (~10%), secondary-source ordering (20%).
    - Production routing is Demand-Proportional (Supply follows Demand).
 
 ---
@@ -365,6 +366,7 @@ Every `tick()` (1 day) in `Orchestrator._run_day()`:
 9.  PRODUCTION    → TransformEngine executes manufacturing (Work Orders → Batches)
 10. DEPLOYMENT    → _create_plant_shipments() need-based deployment (Plant→RDC/DC)
 10a.PUSH EXCESS   → _push_excess_rdc_inventory() RDC→DC overflow valve
+10b.LATERAL XFER  → _execute_lateral_transshipment() RDC↔RDC inventory balancing
 11. POST-QUIRKS   → Apply logistics delays/congestion (QuirkManager)
 12. MONITORING    → PhysicsAuditor validates mass balance, records KPIs (inc. age-based SLOB)
 13. DATA LOGGING  → SimulationWriter records daily metrics
@@ -458,6 +460,9 @@ need = max(0, target_dos × expected_demand × seasonal_factor - current_positio
 
 ### `_push_excess_rdc_inventory()` — RDC→DC Overflow
 Active as secondary overflow valve: pushes excess RDC inventory to customer DCs when RDC DOS exceeds threshold (`push_threshold_dos=12.0`, ~1.33× the 9 DOS target). DOS calculations use seasonally-adjusted demand (same factor as deployment). Push receive cap is ABC-differentiated — `dc_buffer_days × ABC_mult × push_receive_headroom(1.15)` → A≈12.1, B≈16.1, C≈20.1 DOS.
+
+### `_execute_lateral_transshipment()` — RDC↔RDC Balancing (v0.83.0)
+Emergency inventory transfer between adjacent RDCs. Triggered when target DOS < 3.0 (critical) AND source DOS > 15.0 (excess). Transfers up to 30% of source excess. Configured via `network_enrichment.lateral_transshipment` in `world_definition.json`. 8 directed links (4 bidirectional pairs) between geographically closest RDCs. Volume is ~1-3% of RDC throughput. Uses primary-only topology maps to avoid double-counting with multi-source links.
 
 ### Key Design: Plant FG as Natural Backpressure
 Unneeded FG stays at the plant and enters MRP's inventory position calculation (`_calculate_inventory_position()` includes plant FG in pipeline IP). This creates a natural negative feedback loop: high plant FG → high IP → MRP reduces production → equilibrium.
@@ -928,6 +933,9 @@ Orchestrator
     │
     ├──→ _push_excess_rdc_inventory() [OVERFLOW]
     │         └──→ RDC→DC when RDC DOS > threshold
+    │
+    ├──→ _execute_lateral_transshipment() [LATERAL BALANCING]
+    │         └──→ RDC↔RDC when target DOS < 3 AND source DOS > 15
     │
     └──→ PhysicsAuditor.audit()
               └──→ validate mass balance

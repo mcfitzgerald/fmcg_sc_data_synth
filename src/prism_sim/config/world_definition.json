@@ -112,6 +112,17 @@
       "Capitol Compounds Inc", "SunCoast Packaging Ltd", "Appalachian Chemical Corp",
       "Midland Supply Group", "Diamond Ridge Materials"
     ],
+    "network_enrichment": {
+      "lateral_rdc_pairs": 4,
+      "multi_source_dc_fraction": 0.1,
+      "secondary_source_order_fraction": 0.2,
+      "lateral_transshipment": {
+        "enabled": true,
+        "critical_dos_threshold": 3.0,
+        "excess_dos_threshold": 15.0,
+        "max_transfer_fraction": 0.3
+      }
+    },
     "sourcing_lead_times": {
       "LOCAL":    {"base_days": 5,  "variance_days": 10, "cost_premium": 1.0,  "min_order_qty": 50},
       "REGIONAL": {"base_days": 15, "variance_days": 15, "cost_premium": 1.15, "min_order_qty": 100},
