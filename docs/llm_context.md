@@ -27,6 +27,7 @@ The simulation enforces these constraints - violations indicate bugs:
 6. **Geospatial Coherence:**
    - Topology is distance-based (Nearest Neighbor) with enrichment:
      lateral RDC↔RDC links (6 pairs), multi-source DCs (~30%, all channels), secondary-source ordering (20%).
+   - Deployment shares, expected demand vectors, and push DOS all account for secondary-source fraction (v0.85.0).
    - Production routing is Demand-Proportional (Supply follows Demand).
 
 ---
@@ -459,7 +460,7 @@ need = max(0, target_dos × expected_demand × seasonal_factor - current_positio
 | **RDCs** | 9.0d | 9.0d | 9.0d | Flat `_rdc_target_dos` (flow-through cross-dock, actual DOS ≈8.4) |
 
 ### `_push_excess_rdc_inventory()` — RDC→DC Overflow
-Active as secondary overflow valve: pushes excess RDC inventory to customer DCs when RDC DOS exceeds threshold (`push_threshold_dos=12.0`, ~1.33× the 9 DOS target). DOS calculations use seasonally-adjusted demand (same factor as deployment). Push receive cap is ABC-differentiated — `dc_buffer_days × ABC_mult × push_receive_headroom(1.15)` → A≈12.1, B≈16.1, C≈20.1 DOS.
+Active as secondary overflow valve: pushes excess RDC inventory to customer DCs when RDC DOS exceeds threshold (`push_threshold_dos=12.0`, ~1.33× the 9 DOS target). DOS calculations use seasonally-adjusted demand (same factor as deployment). Push receive cap is ABC-differentiated — `dc_buffer_days × ABC_mult × push_receive_headroom(1.15)` → A≈12.1, B≈16.1, C≈20.1 DOS. v0.85.0: Multi-source DCs contribute `(1 - frac)` to primary RDC's expected demand; secondary DCs contribute `frac`. Secondary DCs are also included as push candidates with frac-weighted demand shares.
 
 ### `_execute_lateral_transshipment()` — RDC↔RDC Balancing (v0.83.0)
 Emergency inventory transfer between adjacent RDCs. Triggered when target DOS < 3.0 (critical) AND source DOS > 15.0 (excess). Transfers up to 30% of source excess. Configured via `network_enrichment.lateral_transshipment` in `world_definition.json`. 12 directed links (6 bidirectional pairs) between geographically closest RDCs. Volume is ~1-3% of RDC throughput. Uses primary-only topology maps to avoid double-counting with multi-source links.

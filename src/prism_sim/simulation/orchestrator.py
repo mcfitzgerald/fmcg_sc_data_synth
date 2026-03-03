@@ -309,6 +309,35 @@ class Orchestrator:
                 self._lateral_rdc_links.append(
                     (link.source_id, link.target_id, link)
                 )
+        # v0.85.0: Secondary-source topology maps for deployment awareness
+        # Maps DC → its secondary RDC, and RDC → DCs using it as secondary
+        enrichment = self.config.get("network_enrichment", {})
+        self._secondary_order_fraction = float(
+            enrichment.get("secondary_source_order_fraction", 0.0)
+        )
+        self._dc_secondary_rdc: dict[str, str] = {}
+        self._rdc_secondary_dcs: dict[str, list[str]] = {}
+        if self._secondary_order_fraction > 0:
+            # Group links by customer DC target, sorted by distance
+            dc_links: dict[str, list[Link]] = {}
+            for link in sorted_links:
+                tgt_node = self.world.nodes.get(link.target_id)
+                if (
+                    tgt_node
+                    and tgt_node.type == NodeType.DC
+                    and not link.target_id.startswith("RDC-")
+                ):
+                    dc_links.setdefault(link.target_id, []).append(link)
+            # Second link (by distance) = secondary source; capture if RDC
+            for dc_id, links in dc_links.items():
+                if len(links) >= 2:  # noqa: PLR2004
+                    sec_src = links[1].source_id
+                    if sec_src.startswith("RDC-"):
+                        self._dc_secondary_rdc[dc_id] = sec_src
+                        self._rdc_secondary_dcs.setdefault(
+                            sec_src, []
+                        ).append(dc_id)
+
         # v0.55.0: Diagnostic counters for need-based deployment
         self._deployment_total_need = 0.0
         self._deployment_total_deployed = 0.0
@@ -388,6 +417,35 @@ class Orchestrator:
             target_demand[target_id] = target_total
             total_network_demand += target_total
 
+        # v0.85.0: Shift secondary-source demand from primary to secondary RDC
+        # Zero-sum: total_network_demand unchanged, shares still sum to 1.0
+        if self._secondary_order_fraction > 0:
+            frac = self._secondary_order_fraction
+            for dc_id, sec_rdc in self._dc_secondary_rdc.items():
+                if sec_rdc not in target_demand:
+                    continue
+                # Find primary deployment target: if DC is itself a target
+                # (plant-direct), use dc_id; otherwise use upstream (RDC)
+                if dc_id in target_demand:
+                    pri_target = dc_id
+                else:
+                    pri_target = upstream_map.get(dc_id)
+                if pri_target is None or pri_target not in target_demand:
+                    continue
+                # Sum store demand under this DC
+                dc_store_demand = 0.0
+                for store_id in downstream_map.get(dc_id, []):
+                    s_node = self.world.nodes.get(store_id)
+                    if s_node and s_node.type == NodeType.STORE:
+                        s_idx = self.state.node_id_to_idx.get(store_id)
+                        if s_idx is not None:
+                            dc_store_demand += float(
+                                np.sum(base_demand_matrix[s_idx, :])
+                            )
+                shift = dc_store_demand * frac
+                target_demand[pri_target] -= shift
+                target_demand[sec_rdc] += shift
+
         # Convert to shares
         shares: dict[str, float] = {}
         if total_network_demand > 0:
@@ -456,7 +514,37 @@ class Orchestrator:
                                 demand += base_demand[s_idx, :]
                         else:
                             stack.append(child_id)
-            self._target_expected_demand[target_id] = np.maximum(demand, 0.1)
+            self._target_expected_demand[target_id] = demand
+
+        # v0.85.0: Shift secondary-source demand vectors (per-product)
+        if self._secondary_order_fraction > 0:
+            frac = self._secondary_order_fraction
+            for dc_id, sec_rdc in self._dc_secondary_rdc.items():
+                if sec_rdc not in self._target_expected_demand:
+                    continue
+                if dc_id in self._target_expected_demand:
+                    pri_target = dc_id
+                else:
+                    pri_target = upstream_map.get(dc_id)
+                if pri_target is None or pri_target not in self._target_expected_demand:
+                    continue
+                # Per-product store demand under this DC
+                dc_demand_vec = np.zeros(n_p)
+                for store_id in downstream_map.get(dc_id, []):
+                    s_node = self.world.nodes.get(store_id)
+                    if s_node and s_node.type == NodeType.STORE:
+                        s_idx = self.state.node_id_to_idx.get(store_id)
+                        if s_idx is not None:
+                            dc_demand_vec += base_demand[s_idx, :]
+                shift_vec = dc_demand_vec * frac
+                self._target_expected_demand[pri_target] -= shift_vec
+                self._target_expected_demand[sec_rdc] += shift_vec
+
+        # Apply floor after all adjustments
+        for target_id in self._target_expected_demand:
+            self._target_expected_demand[target_id] = np.maximum(
+                self._target_expected_demand[target_id], 0.1
+            )
 
         # Source plant mapping: plant-direct DCs -> specific plant,
         # RDCs -> None (dynamic, pick plant with most FG)
@@ -2517,12 +2605,31 @@ class Orchestrator:
 
             # Calculate expected daily demand for this RDC based on downstream POS
             # v0.69.2 PERF: Use pre-built _dc_downstream_stores map
+            # v0.85.0: Multi-source DCs contribute (1-frac) to primary,
+            #           secondary DCs contribute frac
             rdc_expected_demand = np.zeros(self.state.n_products)
+            sec_frac = self._secondary_order_fraction
             for dc_id in downstream_dcs:
+                dc_demand = np.zeros(self.state.n_products)
                 for store_id in self._dc_downstream_stores.get(dc_id, []):
                     store_idx = self.state.node_id_to_idx.get(store_id)
                     if store_idx is not None:
-                        rdc_expected_demand += base_demand_matrix[store_idx, :]
+                        dc_demand += base_demand_matrix[store_idx, :]
+                # Scale down if this DC also orders from a secondary RDC
+                if sec_frac > 0 and dc_id in self._dc_secondary_rdc:
+                    dc_demand *= (1.0 - sec_frac)
+                rdc_expected_demand += dc_demand
+            # Add demand from DCs using this RDC as secondary source
+            if sec_frac > 0:
+                for sec_dc_id in self._rdc_secondary_dcs.get(rdc_id, []):
+                    sec_dc_demand = np.zeros(self.state.n_products)
+                    for store_id in self._dc_downstream_stores.get(
+                        sec_dc_id, []
+                    ):
+                        store_idx = self.state.node_id_to_idx.get(store_id)
+                        if store_idx is not None:
+                            sec_dc_demand += base_demand_matrix[store_idx, :]
+                    rdc_expected_demand += sec_dc_demand * sec_frac
 
             # v0.61.0: Seasonal scaling
             rdc_expected_demand *= seasonal_factor
@@ -2556,6 +2663,7 @@ class Orchestrator:
             # POS demand
             # Calculate each DC's share of downstream demand (using stable POS signal)
             # v0.69.2 PERF: Use pre-built _dc_downstream_stores map
+            # v0.85.0: Include secondary DCs with frac-weighted demand
             dc_demands: dict[str, np.ndarray] = {}
             total_dc_demand = np.zeros(self.state.n_products)
             for dc_id in downstream_dcs:
@@ -2564,8 +2672,24 @@ class Orchestrator:
                     store_idx = self.state.node_id_to_idx.get(store_id)
                     if store_idx is not None:
                         dc_pos_demand += base_demand_matrix[store_idx, :]
+                # Scale down multi-source DCs
+                if sec_frac > 0 and dc_id in self._dc_secondary_rdc:
+                    dc_pos_demand *= (1.0 - sec_frac)
                 dc_demands[dc_id] = dc_pos_demand
                 total_dc_demand += dc_pos_demand
+            # Add secondary DCs with frac-weighted demand
+            if sec_frac > 0:
+                for sec_dc_id in self._rdc_secondary_dcs.get(rdc_id, []):
+                    sec_dc_demand = np.zeros(self.state.n_products)
+                    for store_id in self._dc_downstream_stores.get(
+                        sec_dc_id, []
+                    ):
+                        store_idx = self.state.node_id_to_idx.get(store_id)
+                        if store_idx is not None:
+                            sec_dc_demand += base_demand_matrix[store_idx, :]
+                    sec_dc_demand *= sec_frac
+                    dc_demands[sec_dc_id] = sec_dc_demand
+                    total_dc_demand += sec_dc_demand
 
             total_dc_demand_safe = np.maximum(total_dc_demand, 0.1)
 

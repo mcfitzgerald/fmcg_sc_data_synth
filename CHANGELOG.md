@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.85.0] - 2026-03-03
+
+### Fix: Multi-Source DC Deployment Awareness
+
+v0.83.0 introduced multi-source DCs (30% of customer DCs order 20% from a secondary RDC),
+but three orchestrator systems only accounted for primary-tree demand — causing primary RDCs
+to accumulate (34 DOS vs 9 target) and secondary RDCs to deplete. Fill rate dropped to ~81.5%.
+
+#### Orchestrator Changes (`simulation/orchestrator.py`)
+- **Secondary-source topology maps** — `_dc_secondary_rdc` (DC→secondary RDC) and
+  `_rdc_secondary_dcs` (RDC→secondary DCs), built from sorted link distance. 4 DCs mapped
+  (1 RDC-primary + 3 plant-direct).
+- **Deployment shares** — `_calculate_deployment_shares()` shifts `frac × dc_store_demand`
+  from primary target to secondary RDC. Zero-sum: total demand unchanged, shares sum to 1.0.
+- **Expected demand vectors** — `_precompute_deployment_targets()` applies same per-product
+  shift. Floor applied after all adjustments.
+- **Push DOS + distribution** — `_push_excess_rdc_inventory()` scales primary DC demand by
+  `(1 - frac)` and adds secondary DCs at `frac`-weighted demand. Secondary DCs included as
+  push candidates.
+
+#### What Does NOT Change
+- Replenisher (already has correct secondary routing)
+- Config files (`secondary_source_order_fraction` already exists)
+- Allocation, Logistics, MRP, Transform engines
+
 ## [0.84.0] - 2026-03-02
 
 ### Feat: Variable BOM Depth — Ontology Feedback Chunk 4 (S8)
