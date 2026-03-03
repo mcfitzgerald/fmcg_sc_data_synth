@@ -473,31 +473,43 @@ Production backpressure is handled entirely by MRP DOS caps + plant FG in IP —
 
 ---
 
-## 9. Recipe Matrix: 3-Level BOM
+## 9. Recipe Matrix: N-Level BOM (Variable Depth)
 
 The `RecipeMatrixBuilder` creates a dense matrix for BOM calculations:
 
 ```
-Shape: [n_products, n_products]   (products = RM + bulk intermediates + SKUs)
+Shape: [n_products, n_products]   (~640 products = RM + sub-intermediates + bulks + SKUs)
 Value R[i,j] = quantity of product j needed to make 1 unit of product i
 
-3-Level BOM Structure:
-  Level 2 (Raw Materials): BLK-*, ACT-*, PKG-*  — purchased leaf nodes
-  Level 1 (Bulk Intermediates): BULK-*  — compounded in-house
-  Level 0 (Finished SKUs): SKU-*  — packed shippable cases
+N-Level BOM Structure (v0.84.0):
+  Level 2+ (Raw Materials):        BLK-*, ACT-*, PKG-*   — purchased leaf nodes (78)
+  Level 2  (Sub-Intermediates):    PREMIX-*              — premixes, BULK_INTERMEDIATE cat (13)
+  Level 1  (Bulk Intermediates):   BULK-*                — compounded in-house (49, incl 4 blends)
+  Level 0  (Finished SKUs):        SKU-*                 — packed shippable cases (500)
+
+Variable depth across portfolio:
+  ~70% SKUs: 2-level (SKU → 1 bulk → RM)
+  ~20% SKUs: 3-level (SKU → bulk → premix → RM), diamond dependencies
+  ~10% SKUs: multi-intermediate (SKU → primary bulk + secondary "blend" bulk → RM)
 
 Matrix entries:
-  R[SKU-X, BULK-Y]     = 1.0    (SKU needs 1 bulk intermediate)
-  R[SKU-X, PKG-TUBE-1] = 1.0    (SKU needs packaging)
-  R[BULK-Y, BLK-WATER] = 0.005  (bulk needs raw material)
-  R[BULK-Y, ACT-SLS]   = 3.57   (bulk needs active chemical)
+  R[SKU-X, BULK-Y]       = 1.0     (standard SKU → 1 bulk)
+  R[SKU-X, BULK-Y]       = 0.7     (multi-intermediate: primary bulk)
+  R[SKU-X, BULK-Z-BLEND] = 0.3     (multi-intermediate: secondary blend)
+  R[BULK-Y, PREMIX-001]  = 0.083   (3-level: bulk → premix)
+  R[BULK-Y, BLK-WATER]   = 0.005   (bulk → raw material, direct)
+  R[PREMIX-001, ACT-SLS] = 3.57    (premix → raw material)
 
-MRP uses two-step explosion:
-  Step 1: sku_production @ R → bulk + packaging needs
-  Step 2: bulk_needs @ R → raw material needs
+MRP uses N-step level-by-level explosion:
+  Level 1: sku_production @ R → bulk + packaging needs
+  Level 2: bulk_shortfall @ R → premix + raw material needs
+  Level N: premix_shortfall @ R → raw material needs
+  Final: accumulate all non-intermediate requirements
 ```
 
 This enables O(1) MRP calculations with dependent demand explosion.
+TransformEngine sorts production by `-bom_level` (descending), so
+level-2 premixes are produced before level-1 bulks within each day.
 
 ---
 

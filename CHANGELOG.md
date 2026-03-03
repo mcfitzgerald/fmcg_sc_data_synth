@@ -5,6 +5,61 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.84.0] - 2026-03-02
+
+### Feat: Variable BOM Depth — Ontology Feedback Chunk 4 (S8)
+
+Extends the uniform 3-level BOM to variable 2-4 level depth across the portfolio,
+making VKG benchmark questions Q20, Q24, Q25, Q56 (deep BOM traversal, cycle detection,
+diamond dependencies) non-trivial.
+
+#### Product Portfolio (~640 products, was 623)
+- **~70% of SKUs (31 bulk families)**: 2-level depth, unchanged
+- **~20% of SKUs (9 bulk families)**: 3-level depth — bulk consumes PREMIX sub-intermediates
+  that consume raw materials. 13 premixes generated (bom_level=2, BULK_INTERMEDIATE category)
+- **~10% of SKUs (4 bulk families)**: Multi-intermediate — SKU references primary bulk (0.7)
+  + secondary "blend" bulk (0.3). 4 secondary bulks generated (bom_level=1)
+- **10 diamond dependencies** emerge naturally from shared raw materials between premix
+  recipes and remaining direct bulk inputs
+
+#### Config (`world_definition.json`)
+- Added `multi_level_bom` section: depth distribution, premix prefix/weight/cost, components
+  per sub-intermediate, run rate multiplier
+
+#### Hierarchy Generator (`generators/hierarchy.py`)
+- New `generate_sub_intermediates()` method: partitions bulk families into Groups A/B/C
+  using separate RNG stream (minimizes perturbation of existing generation)
+- Group B: generates PREMIX-{CAT}-{VARIANT}-{N} products (bom_level=2)
+- Group C: generates BULK-{CAT}-{VARIANT}-BLEND-{N} secondary bulks (bom_level=1)
+- `generate_recipes()` adds Stage 0 (premix + secondary bulk recipes) before existing stages
+- `_inject_premix_refs()` replaces ~50% of active chemical inputs with premix references
+- `_create_sku_recipe()` supports multi-bulk (primary 0.7 + secondary 0.3) for Group C
+- `_select_from_index()` and `_create_bulk_recipe()` accept optional `rng` parameter
+
+#### MRP Engine (`simulation/mrp.py`)
+- Replaced flat `_bulk_product_mask` with `_intermediate_masks: dict[int, np.ndarray]`
+  (per-level) and `_all_intermediate_mask` (union). Backward-compat alias kept.
+- `_intermediate_ids_by_level: dict[int, list[str]]` groups intermediates by bom_level
+- `_generate_dependent_bulk_orders()` refactored to N-step level-by-level explosion:
+  processes levels ascending (1, 2, ...), each level's shortfall orders feed the next
+- `generate_purchase_orders()` refactored: N-step BOM explosion accumulates non-intermediate
+  requirements across all levels
+
+#### ERP Generator
+- `master_tables.py`: `_generate_formulas()` uses product table bom_level lookup instead
+  of `startswith("BULK-")`
+- `transactional.py`: `_generate_batches()` uses product category+bom_level lookup instead
+  of `startswith("BULK-")`
+
+#### Static World Script (`scripts/generate_static_world.py`)
+- Inserts sub-intermediate generation between bulk intermediates and recipes
+- Stats output includes sub-intermediate count
+
+#### Validation (50-day run)
+- Fill rate 94.7%, inventory turns 5.4x (within baseline)
+- No physics violations
+- DAG valid (no cycles), 10 diamond dependencies, 44 multi-intermediate SKUs
+
 ## [0.83.1] - 2026-03-02
 
 ### Fix: Topology Enrichment v2 — Make Network Meaningfully Non-Tree

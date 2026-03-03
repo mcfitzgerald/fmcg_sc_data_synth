@@ -61,12 +61,20 @@ def main() -> None:
     print("Generating Bulk Intermediates...")
     bulk_intermediates = prod_gen.generate_bulk_intermediates(finished_goods)
 
-    all_products = ingredients + bulk_intermediates + finished_goods
+    # 4b. Sub-Intermediates (premixes + secondary bulks for variable BOM depth)
+    print("Generating Sub-Intermediates (variable BOM depth)...")
+    sub_intermediates = prod_gen.generate_sub_intermediates(
+        bulk_intermediates, ingredients
+    )
 
-    # 5. Recipes (3-level BOM)
+    all_products = (
+        ingredients + sub_intermediates + bulk_intermediates + finished_goods
+    )
+
+    # 5. Recipes (N-level BOM)
     print("Generating Recipes...")
     recipes = prod_gen.generate_recipes(
-        finished_goods, bulk_intermediates, ingredients
+        finished_goods, bulk_intermediates, ingredients, sub_intermediates
     )
 
     # 6. Network
@@ -103,6 +111,7 @@ def main() -> None:
     print("Stats:")
     print(f"  Products: {len(all_products)}")
     print(f"    - Raw Materials: {len(ingredients)}")
+    print(f"    - Sub-Intermediates: {len(sub_intermediates)}")
     print(f"    - Bulk Intermediates: {len(bulk_intermediates)}")
     print(f"    - Finished SKUs: {len(finished_goods)}")
     print(f"  Recipes:  {len(recipes)}")

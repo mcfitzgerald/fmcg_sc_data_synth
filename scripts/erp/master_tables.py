@@ -254,11 +254,18 @@ def _generate_formulas(
 ) -> None:
     """Parse recipes.csv into formulas + formula_ingredients.
 
-    Each recipe has a product_id (BULK-* or SKU-*) and an ingredients dict.
-    BULK-* recipes: bom_level=1 (BULK → raw materials)
-    SKU-* recipes: bom_level=0 (SKU → BULK intermediates + packaging)
+    Each recipe has a product_id and an ingredients dict.
+    bom_level is looked up from the products table (supports PREMIX and
+    other intermediates in addition to BULK-* prefixed products).
     """
     import ast
+
+    # Build product_id → bom_level lookup from products table
+    product_bom_levels: dict[str, int] = {}
+    for pid, bl in db.execute(
+        "SELECT id, bom_level FROM raw_products"
+    ).fetchall():
+        product_bom_levels[pid] = int(bl)
 
     rows = db.execute(
         "SELECT product_id, ingredients, run_rate_cases_per_hour, "
@@ -278,7 +285,7 @@ def _generate_formulas(
         formula_code = f"FORM-{product_id}"
         formula_pk = mapper.get("formulas", formula_code)
 
-        bom_level = 1 if product_id.startswith("BULK-") else 0
+        bom_level = product_bom_levels.get(product_id, 0)
 
         formulas.append(
             (formula_pk, formula_code, f"Formula for {product_id}",

@@ -553,6 +553,14 @@ def _generate_batches(
     """Generate batches.csv from batches.parquet."""
     logger.info("  Generating batches...")
 
+    # Build product_id → (category, bom_level) lookup for correct typing
+    product_info: dict[str, tuple[str, int]] = {}
+    for pid, cat, bl in db.execute(
+        "SELECT id, category, bom_level FROM raw_products"
+    ).fetchall():
+        cat_str = str(cat).split(".")[-1]
+        product_info[pid] = (cat_str, int(bl))
+
     rows = db.execute("""
         SELECT batch_id, production_order_id, plant_id, product_id,
                day_produced, quantity, yield_pct, status
@@ -570,8 +578,9 @@ def _generate_batches(
         plant_pk = mapper.lookup("locations", plant_id) or 0
         formula_pk = mapper.lookup("formulas", f"FORM-{prod_id}") or 0
         product_pk = mapper.lookup("products", prod_id) or 0
-        product_type = "bulk_intermediate" if prod_id.startswith("BULK-") else "finished_good"
-        bom_level = 1 if prod_id.startswith("BULK-") else 0
+        cat, bl = product_info.get(prod_id, ("", 0))
+        product_type = "bulk_intermediate" if cat == "BULK_INTERMEDIATE" else "finished_good"
+        bom_level = bl
         seq_id = day_produced * DAY_MULTIPLIER + 1 * CAT_MULTIPLIER + batch_pk
         status = _lifecycle_status("batches", day_produced, reporting_date)
 

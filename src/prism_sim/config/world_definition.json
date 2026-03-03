@@ -340,6 +340,18 @@
     "run_rate_multiplier": 1.0,
     "bom_level": 1
   },
+  "multi_level_bom": {
+    "depth_distribution": {
+      "2_level": 0.70,
+      "3_level": 0.20,
+      "multi_intermediate": 0.10
+    },
+    "sub_intermediate_prefix": "PREMIX",
+    "weight_per_unit_kg": 15.0,
+    "cost_multiplier_range": [0.2, 0.4],
+    "components_per_sub_intermediate": [2, 4],
+    "run_rate_multiplier": 1.5
+  },
   "recipe_logic": {
     "ORAL_CARE": {
       "base_pct": 0.85,

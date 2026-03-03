@@ -179,6 +179,12 @@ class MRPEngine:
         self._rdc_ids: list[str] = []
         self._plant_ids: list[str] = []
         self._finished_product_ids: list[str] = []
+
+        # N-level intermediate tracking (replaces flat _bulk_product_ids)
+        self._intermediate_ids_by_level: dict[int, list[str]] = {}
+        self._intermediate_masks: dict[int, np.ndarray] = {}
+        self._all_intermediate_mask: np.ndarray = np.zeros(0)
+        # Flat list for backward compat (all BULK_INTERMEDIATE products)
         self._bulk_product_ids: list[str] = []
 
         # Map of plant_id -> list of supported category names
@@ -187,12 +193,21 @@ class MRPEngine:
 
         self._cache_node_info()
 
-        # Boolean mask for bulk intermediate product indices (for BOM explosion)
-        self._bulk_product_mask = np.zeros(self.state.n_products, dtype=bool)
-        for p_id in self._bulk_product_ids:
-            p_idx = self.state.product_id_to_idx.get(p_id)
-            if p_idx is not None:
-                self._bulk_product_mask[p_idx] = True
+        # Build level-based masks for N-level BOM explosion
+        self._all_intermediate_mask = np.zeros(
+            self.state.n_products, dtype=bool
+        )
+        for level, id_list in self._intermediate_ids_by_level.items():
+            mask = np.zeros(self.state.n_products, dtype=bool)
+            for p_id in id_list:
+                p_idx = self.state.product_id_to_idx.get(p_id)
+                if p_idx is not None:
+                    mask[p_idx] = True
+            self._intermediate_masks[level] = mask
+            self._all_intermediate_mask |= mask
+
+        # Backward compat alias
+        self._bulk_product_mask = self._all_intermediate_mask
 
         # v0.19.8: Cache max daily plant capacity for ingredient ordering
         # Must be after _cache_node_info() to have _plant_ids populated
@@ -652,12 +667,18 @@ class MRPEngine:
                 self._plant_ids.append(node_id)
 
         # Cache finished product IDs (sellable SKUs only)
-        # and bulk intermediate IDs (dependent demand products)
+        # and intermediate IDs grouped by bom_level
         for product_id, product in self.world.products.items():
             if product.is_finished_good:
                 self._finished_product_ids.append(product_id)
             elif product.category == ProductCategory.BULK_INTERMEDIATE:
                 self._bulk_product_ids.append(product_id)
+                level = product.bom_level
+                if level not in self._intermediate_ids_by_level:
+                    self._intermediate_ids_by_level[level] = []
+                self._intermediate_ids_by_level[level].append(
+                    product_id
+                )
 
     def _calculate_inventory_position(
         self,
@@ -1390,19 +1411,16 @@ class MRPEngine:
         sku_production_orders: list[ProductionOrder],
         active_production_orders: list[ProductionOrder],
     ) -> list[ProductionOrder]:
-        """Generate production orders for bulk intermediates (dependent demand).
+        """Generate production orders for all intermediate levels (dependent demand).
 
-        Bulk intermediates have no independent demand — their requirements are
-        derived from planned SKU production via the recipe matrix. This method:
-        1. Groups SKU production by plant
-        2. Explodes each plant's SKU production to get per-plant bulk needs
-        3. Checks plant-local inventory for each bulk intermediate
-        4. Creates production orders at the SAME plant that needs them
+        N-step BOM explosion: processes intermediate levels ascending (1, 2, ...)
+        so that each level's shortfall orders become the parent demand for the
+        next level. This supports variable-depth BOMs (2-4 levels).
 
-        Bulk must be produced at the same plant as the SKU consuming it,
-        because TransformEngine checks material availability per-plant.
+        Intermediates must be produced at the same plant as the consuming
+        product, because TransformEngine checks material availability per-plant.
 
-        v0.70.0: 3-level BOM dependent demand explosion.
+        v0.84.0: N-level BOM dependent demand explosion (was 1-level in v0.70.0).
         """
         if not self._bulk_product_ids:
             return []
@@ -1410,22 +1428,7 @@ class MRPEngine:
         recipe_matrix = self.state.recipe_matrix
         bulk_id_set = set(self._bulk_product_ids)
 
-        # 1. Group SKU production by plant
-        plant_sku_vecs: dict[str, np.ndarray] = {}
-        for po in sku_production_orders:
-            p_idx = self.state.product_id_to_idx.get(po.product_id)
-            if p_idx is None:
-                continue
-            if po.plant_id not in plant_sku_vecs:
-                plant_sku_vecs[po.plant_id] = np.zeros(
-                    self.state.n_products, dtype=np.float64
-                )
-            plant_sku_vecs[po.plant_id][p_idx] += po.quantity_cases
-
-        if not plant_sku_vecs:
-            return []
-
-        # 2. Pre-compute active bulk production by (plant, product)
+        # Pre-compute active intermediate production by (plant, product)
         bulk_in_prod: dict[tuple[str, str], float] = {}
         for po in active_production_orders:
             if (
@@ -1434,52 +1437,99 @@ class MRPEngine:
             ):
                 key = (po.plant_id, po.product_id)
                 remaining = po.quantity_cases - po.produced_quantity
-                bulk_in_prod[key] = bulk_in_prod.get(key, 0.0) + remaining
+                bulk_in_prod[key] = (
+                    bulk_in_prod.get(key, 0.0) + remaining
+                )
 
-        # 3. For each plant, compute bulk needs and create shortfall orders
-        bulk_orders: list[ProductionOrder] = []
-        for plant_id, sku_vec in plant_sku_vecs.items():
-            # Explode SKU production → direct requirements
-            direct_reqs = sku_vec @ recipe_matrix
-            # Extract only bulk intermediate needs
-            bulk_reqs = direct_reqs * self._bulk_product_mask
+        # Initialize parent demand vectors from SKU production orders
+        plant_parent_vecs: dict[str, np.ndarray] = {}
+        for po in sku_production_orders:
+            p_idx = self.state.product_id_to_idx.get(po.product_id)
+            if p_idx is None:
+                continue
+            if po.plant_id not in plant_parent_vecs:
+                plant_parent_vecs[po.plant_id] = np.zeros(
+                    self.state.n_products, dtype=np.float64
+                )
+            plant_parent_vecs[po.plant_id][p_idx] += po.quantity_cases
 
-            plant_idx = self.state.node_id_to_idx.get(plant_id)
-            if plant_idx is None:
+        if not plant_parent_vecs:
+            return []
+
+        all_orders: list[ProductionOrder] = []
+
+        # Process levels ascending: level 1 first (bulks from SKUs),
+        # then level 2 (premixes from bulks), etc.
+        sorted_levels = sorted(self._intermediate_ids_by_level.keys())
+
+        for level in sorted_levels:
+            level_mask = self._intermediate_masks.get(level)
+            level_ids = self._intermediate_ids_by_level.get(level, [])
+            if level_mask is None or not level_ids:
                 continue
 
-            for bulk_id in self._bulk_product_ids:
-                p_idx = self.state.product_id_to_idx.get(bulk_id)
-                if p_idx is None:
+            # For each plant, explode parent demand → this level's needs
+            next_parent_vecs: dict[str, np.ndarray] = {}
+
+            for plant_id, parent_vec in plant_parent_vecs.items():
+                plant_idx = self.state.node_id_to_idx.get(plant_id)
+                if plant_idx is None:
                     continue
 
-                needed = bulk_reqs[p_idx]
-                if needed <= 0:
-                    continue
+                # Explode parent production → direct requirements
+                direct_reqs = parent_vec @ recipe_matrix
+                # Extract only this level's intermediate needs
+                level_reqs = direct_reqs * level_mask
 
-                on_hand = max(
-                    0.0,
-                    float(self.state.actual_inventory[plant_idx, p_idx]),
-                )
-                in_prod = bulk_in_prod.get((plant_id, bulk_id), 0.0)
-                shortfall = needed - on_hand - in_prod
+                for int_id in level_ids:
+                    p_idx = self.state.product_id_to_idx.get(int_id)
+                    if p_idx is None:
+                        continue
 
-                if shortfall <= 0:
-                    continue
+                    needed = level_reqs[p_idx]
+                    if needed <= 0:
+                        continue
 
-                po = ProductionOrder(
-                    id=self._generate_po_id(current_day),
-                    plant_id=plant_id,
-                    product_id=bulk_id,
-                    quantity_cases=shortfall,
-                    creation_day=current_day,
-                    due_day=current_day + self.production_lead_time,
-                    status=ProductionOrderStatus.PLANNED,
-                    planned_start_day=current_day + 1,
-                )
-                bulk_orders.append(po)
+                    on_hand = max(
+                        0.0,
+                        float(
+                            self.state.actual_inventory[
+                                plant_idx, p_idx
+                            ]
+                        ),
+                    )
+                    in_prod = bulk_in_prod.get(
+                        (plant_id, int_id), 0.0
+                    )
+                    shortfall = needed - on_hand - in_prod
 
-        return bulk_orders
+                    if shortfall <= 0:
+                        continue
+
+                    po = ProductionOrder(
+                        id=self._generate_po_id(current_day),
+                        plant_id=plant_id,
+                        product_id=int_id,
+                        quantity_cases=shortfall,
+                        creation_day=current_day,
+                        due_day=current_day
+                        + self.production_lead_time,
+                        status=ProductionOrderStatus.PLANNED,
+                        planned_start_day=current_day + 1,
+                    )
+                    all_orders.append(po)
+
+                    # This shortfall becomes parent demand for next level
+                    if plant_id not in next_parent_vecs:
+                        next_parent_vecs[plant_id] = np.zeros(
+                            self.state.n_products, dtype=np.float64
+                        )
+                    next_parent_vecs[plant_id][p_idx] += shortfall
+
+            # Propagate: this level's shortfall orders feed the next level
+            plant_parent_vecs = next_parent_vecs
+
+        return all_orders
 
     def _get_abc_class(self, product_id: str) -> int:
         """Return ABC class for a product: 0=A, 1=B, 2=C."""
@@ -1739,28 +1789,51 @@ class MRPEngine:
         n_plants = len(self._plant_ids)
         plant_production_share = daily_production / n_plants
 
-        # 2. Calculate Ingredient Requirements Vector (two-step BOM explosion)
-        # With 3-level BOM: SKU → bulk + packaging, bulk → raw materials.
-        # Single multiply only captures one level; we need both.
+        # 2. Calculate Ingredient Requirements Vector (N-step BOM explosion)
+        # With N-level BOM: SKU → bulk + packaging, bulk → premix + RM,
+        # premix → RM. Level-by-level explosion captures all levels.
         recipe_matrix = self.state.recipe_matrix
-        has_bulk = np.any(self._bulk_product_mask)
+        has_intermediates = np.any(self._all_intermediate_mask)
 
-        if has_bulk:
-            # Step 1: SKU production → direct requirements (bulk + packaging)
-            sku_only = plant_production_share.copy()
-            sku_only[self._bulk_product_mask] = 0.0
-            sku_direct = sku_only @ recipe_matrix
+        if has_intermediates:
+            # Start with SKU-only production (zero out all intermediates)
+            current_production = plant_production_share.copy()
+            current_production[self._all_intermediate_mask] = 0.0
 
-            # Step 2: Bulk intermediate production → raw material requirements
-            # Use the greater of derived bulk needs vs existing bulk backlog
-            derived_bulk = sku_direct * self._bulk_product_mask
-            existing_bulk = plant_production_share * self._bulk_product_mask
-            effective_bulk = np.maximum(derived_bulk, existing_bulk)
-            bulk_direct = effective_bulk @ recipe_matrix
+            ingredient_reqs = np.zeros(
+                self.state.n_products, dtype=np.float64
+            )
 
-            # Combine: packaging (from SKU) + raw materials (from bulk)
-            ingredient_reqs = sku_direct + bulk_direct
-            ingredient_reqs[self._bulk_product_mask] = 0.0
+            # Explode level by level ascending (1, 2, ...)
+            sorted_levels = sorted(
+                self._intermediate_ids_by_level.keys()
+            )
+            for level in sorted_levels:
+                level_mask = self._intermediate_masks.get(level)
+                if level_mask is None:
+                    continue
+
+                # Explode current level's parent production
+                direct_reqs = current_production @ recipe_matrix
+
+                # Accumulate non-intermediate requirements (RM + packaging)
+                non_int_reqs = direct_reqs.copy()
+                non_int_reqs[self._all_intermediate_mask] = 0.0
+                ingredient_reqs += non_int_reqs
+
+                # This level's intermediate needs become next iteration's
+                # parent production. Use max of derived vs existing backlog.
+                derived = direct_reqs * level_mask
+                existing = (
+                    plant_production_share * level_mask
+                )
+                current_production = np.maximum(derived, existing)
+
+            # Final explosion: lowest-level intermediates → raw materials
+            if np.any(current_production > 0):
+                final_reqs = current_production @ recipe_matrix
+                final_reqs[self._all_intermediate_mask] = 0.0
+                ingredient_reqs += final_reqs
         else:
             # Flat BOM fallback: single multiply
             ingredient_reqs = plant_production_share @ recipe_matrix
