@@ -113,8 +113,8 @@
       "Midland Supply Group", "Diamond Ridge Materials"
     ],
     "network_enrichment": {
-      "lateral_rdc_pairs": 4,
-      "multi_source_dc_fraction": 0.1,
+      "lateral_rdc_pairs": 6,
+      "multi_source_dc_fraction": 0.3,
       "secondary_source_order_fraction": 0.2,
       "lateral_transshipment": {
         "enabled": true,

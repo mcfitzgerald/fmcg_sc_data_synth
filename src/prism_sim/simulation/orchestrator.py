@@ -267,6 +267,18 @@ class Orchestrator:
         sorted_links = sorted(
             self.world.links.values(), key=lambda lk: lk.distance_km
         )
+        # Pre-populate dc_assigned_rdc with plant-direct DCs so their
+        # secondary RDC links don't add them to _rdc_downstream_dcs
+        for link in sorted_links:
+            tgt_node = self.world.nodes.get(link.target_id)
+            if (
+                tgt_node
+                and tgt_node.type == NodeType.DC
+                and not link.target_id.startswith("RDC-")
+                and link.target_id not in dc_assigned_rdc
+                and link.source_id.startswith("PLANT-")
+            ):
+                dc_assigned_rdc.add(link.target_id)
         for link in sorted_links:
             src_node = self.world.nodes.get(link.source_id)
             tgt_node = self.world.nodes.get(link.target_id)

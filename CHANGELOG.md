@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.83.1] - 2026-03-02
+
+### Fix: Topology Enrichment v2 — Make Network Meaningfully Non-Tree
+
+Expands multi-source DCs from 3 (5%, ecom-only) to 16 (29%, all channels) so VKG benchmark questions Q31/Q38/Q39 have genuine path diversity. Fixes two bugs from v0.83.0.
+
+#### Config (`world_definition.json`)
+- `lateral_rdc_pairs`: 4 → 6 (all 6 RDC pairs, 12 directed links)
+- `multi_source_dc_fraction`: 0.1 → 0.3 (~16 DCs instead of 3)
+
+#### Network Generator (`generators/network.py`)
+- **Bug fix: duplicate link IDs** — When two DCs picked the same secondary RDC, `add_geo_link()` created links with identical IDs. Now tracks `existing_links: set[tuple[str, str]]` and skips duplicates.
+- **All-channel multi-source** — Expanded candidate pool from RDC-routed only to ALL customer DCs. Plant-direct DCs (MASS_RETAIL, CLUB) get nearest RDC as secondary; RDC-routed DCs get second-nearest RDC. Result: 16 multi-source DCs across RET, CLUB, and ECOM channels.
+
+#### Orchestrator (`simulation/orchestrator.py`)
+- **Bug fix: plant-direct DC push allocation** — Pre-populates `dc_assigned_rdc` with all DCs whose primary upstream is a plant. Prevents their secondary RDC links from incorrectly adding them to `_rdc_downstream_dcs`, which would double-count demand in push allocation.
+
+#### Validation (50-day run)
+- No mass balance violations
+- Fill rate 95.8% (within baseline ±1%)
+- 0 duplicate link IDs
+- 12 lateral RDC links (6 pairs), 4,025 total links
+
 ## [0.83.0] - 2026-03-02
 
 ### Feat: Network Topology Enrichment — Ontology Feedback Chunk 3 (S7)

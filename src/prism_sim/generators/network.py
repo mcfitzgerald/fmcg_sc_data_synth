@@ -449,29 +449,42 @@ class NetworkGenerator:
                 dists.sort(key=lambda x: x[0])
                 add_geo_link(dists[0][1], dc)
 
-        # Multi-source DCs: ~10% of customer DCs get a secondary upstream link
+        # Multi-source DCs: ~30% of ALL customer DCs get a secondary upstream link
+        # RDC-routed DCs get second-nearest RDC; plant-direct DCs get nearest RDC
         multi_src_frac = enrichment_cfg.get("multi_source_dc_fraction", 0.0)
         if multi_src_frac > 0 and len(rdcs) >= 2:  # noqa: PLR2004
-            # Candidates: RDC-routed DCs from high-DC-count channels
-            rdc_routed = [
-                dc for dc in customer_dcs
-                if dc.channel not in plant_direct_channels
-            ]
-            n_multi = max(1, int(len(rdc_routed) * multi_src_frac))
-            # For each candidate, compute distance to second-nearest RDC
+            n_multi = max(1, int(len(customer_dcs) * multi_src_frac))
+            # Track existing (source_id, target_id) to prevent duplicate links
+            existing_links: set[tuple[str, str]] = {
+                (lk.source_id, lk.target_id) for lk in links
+            }
+            # Build candidates from ALL customer DCs
             candidates: list[tuple[float, Node, Node]] = []
-            for dc in rdc_routed:
+            for dc in customer_dcs:
                 rdc_dists = sorted(
                     [(self._haversine(dc.lat, dc.lon, r.lat, r.lon), r) for r in rdcs],
                     key=lambda x: x[0],
                 )
-                if len(rdc_dists) >= 2:  # noqa: PLR2004
-                    # Second-nearest RDC — lower distance = better candidate
-                    candidates.append((rdc_dists[1][0], dc, rdc_dists[1][1]))
-            # Pick the N DCs closest to their second RDC (best multi-source candidates)
+                if dc.channel in plant_direct_channels:
+                    # Plant-direct DC: secondary = nearest RDC (primary is a plant)
+                    secondary_rdc = rdc_dists[0][1]
+                    secondary_dist = rdc_dists[0][0]
+                else:
+                    # RDC-routed DC: secondary = second-nearest RDC
+                    if len(rdc_dists) < 2:  # noqa: PLR2004
+                        continue
+                    secondary_rdc = rdc_dists[1][1]
+                    secondary_dist = rdc_dists[1][0]
+                # Skip if this link already exists
+                if (secondary_rdc.id, dc.id) in existing_links:
+                    continue
+                candidates.append((secondary_dist, dc, secondary_rdc))
+            # Pick the N DCs closest to their secondary RDC (best candidates)
             candidates.sort(key=lambda x: x[0])
             for _, dc, secondary_rdc in candidates[:n_multi]:
-                add_geo_link(secondary_rdc, dc)
+                if (secondary_rdc.id, dc.id) not in existing_links:
+                    add_geo_link(secondary_rdc, dc)
+                    existing_links.add((secondary_rdc.id, dc.id))
 
         # Customer DCs -> Stores (Hierarchical)
         for dc_id, dc_stores in dc_to_stores.items():
