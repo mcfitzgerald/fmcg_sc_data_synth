@@ -172,8 +172,6 @@
         "_share_ceiling_note": "v0.55.0: Max deploy per target = demand_share x available x headroom.",
         "push_allocation_enabled": true,
         "push_threshold_dos": 12.0,
-        "push_receive_headroom": 1.15,
-        "_push_receive_note": "v0.64.0: ABC-differentiated push cap = dc_buffer × ABC mult × headroom. A≈12.1, B≈16.1, C≈20.1. Replaces scalar push_receive_dos_cap.",
         "channel_profiles": {
           "MASS_RETAIL": {
             "target_days": 6.0,

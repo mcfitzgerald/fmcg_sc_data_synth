@@ -902,6 +902,7 @@ class ProductGenerator:
         if bulk_id:
             if sec_bulk_id:
                 # Group C: co-blended (primary 0.7 + secondary 0.3)
+                # TODO(config): move blend ratios to world_definition.json multi_level_bom
                 bom[bulk_id] = 0.7
                 bom[sec_bulk_id] = 0.3
             else:

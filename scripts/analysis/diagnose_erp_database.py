@@ -256,8 +256,9 @@ def run_section0(conn: psycopg.Connection) -> dict[str, int]:
     print(f"  Suppliers:  {n_suppliers:>6}")
     print(f"  SKUs:       {n_skus:>6}")
 
-    # Plants 4-6 (base; friction duplicates can push higher), stores >3500, SKUs >400
-    ok = n_plants >= 4 and n_stores > 3500 and n_skus > 400
+    # Plants 4-6 (base; friction duplicates can push higher), stores >3500, SKUs >= 500
+    # v0.84.0: 500 SKUs + 140 intermediates = 640 total products
+    ok = n_plants >= 4 and n_stores > 3500 and n_skus >= 500
     v = "PASS" if ok else "FAIL"
     print(f"  Verdict: {v}")
     counts[v.lower()] += 1

@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.88.0] - 2026-03-04
+
+### Fixed: RDC Accumulation / Low Fill Rate
+
+RDCs were accumulating 1M+ cases/day (36 DOS vs 9 target), starving stores (fill rate 79.9% vs 94% target).
+Production was fine (P/D=1.002) — problem was purely distribution: push mechanism couldn't drain RDCs.
+
+#### Root causes & fixes
+- **Push target DOS** (`orchestrator.py`): Push drained to threshold (12 DOS) instead of target (9 DOS).
+  Now drains to `_rdc_target_dos` (9.0) while trigger stays at 12.0 (hysteresis preserved).
+- **Need-based push limit** (`orchestrator.py`): Replaced artificial `push_receive_headroom` cap
+  (1.15→2.0→5.0, repeatedly tuned, no real-world analog) with deployment-target-based room check.
+  Push quantity per DC is capped at remaining room below ABC-differentiated deployment target
+  (A=10.5, B=14.0, C=17.5 DOS) — same targets used by `_compute_deployment_needs()`. Closes the
+  positive feedback loop: uncapped push → DC inventory rises → pull decreases → RDC excess grows →
+  more push. Room check uses on-hand inventory (not IP): simpler, self-correcting at daily granularity.
+
 ## [0.87.0] - 2026-03-03
 
 ### Performance: Phase 2 — Vectorized Order Batch + Shipment Arrays (24% speedup)

@@ -567,9 +567,8 @@ class LogisticsEngine:
         """
         returns: list[Return] = []
 
-        # Configurable return rate (e.g. 1% of shipments have returns)
-        # return_prob = 0.01
-        # For simulation visibility, let's make it 5% for now
+        # TODO(config): move return_prob, restock_probability, min_return_qty
+        # to simulation_config.json returns section
         return_prob = 0.05
 
         for shipment in arrived_shipments:

@@ -1,0 +1,18 @@
+  v0.85.0 — Multi-Source DC Deployment Awareness
+
+  Problem
+
+  v0.83.0's multi-source DCs ordered 20% from secondary RDCs, but three orchestrator systems only saw primary-tree demand. Primary RDCs
+  accumulated (34 DOS vs 9 target), secondary RDCs depleted, fill rate dropped to ~81.5%.
+
+  Changes (all in orchestrator.py)
+
+  1. Secondary-source topology maps (__init__) — Built _dc_secondary_rdc (DC→secondary RDC) and _rdc_secondary_dcs (RDC→DCs). 4 DCs mapped:
+   1 RDC-primary (ECOM-FC-005→RDC-NE) + 3 plant-direct (RET-DC-008→RDC-SO, RET-DC-009→RDC-MW, RET-DC-012→RDC-WE).
+  2. Deployment shares (_calculate_deployment_shares) — Shifts frac × dc_store_demand from primary target to secondary RDC. Handles both
+  RDC-primary and plant-direct DCs. Zero-sum.
+  3. Expected demand vectors (_precompute_deployment_targets) — Same per-product shift. Floor applied after all adjustments.
+  4. Push mechanism (_push_excess_rdc_inventory) — DOS calculation scales primary DC demand by (1-frac), adds secondary DC demand at frac.
+  Push distribution includes secondary DCs as candidates with frac-weighted shares.
+
+  Verification

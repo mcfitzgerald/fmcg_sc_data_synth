@@ -252,9 +252,6 @@ class Orchestrator:
         # 8. Finished Goods Mask for Metrics (excludes ingredients from inventory turns)
         self._fg_product_mask = self._build_finished_goods_mask()
 
-        # v0.47.0: Diagnostic counter for push suppression (Fix 3 + Fix 5)
-        self._push_suppression_count = 0
-
         # v0.69.2 PERF: Pre-build topology maps for push allocation
         # Avoids per-day full link scans in _push_excess_rdc_inventory
         # v0.83.0: Primary-only — each DC assigned to shortest-distance RDC
@@ -1232,7 +1229,7 @@ class Orchestrator:
                     else:
                         ingredient_demand = direct_demand
 
-                    # Target days supply for ingredients (default 14 from policy)
+                    # TODO(config): move ingredient target_days to simulation_config.json
                     target_days = 14.0
                     ing_policy = mfg_config.get(
                         "inventory_policies", {}
@@ -1628,7 +1625,7 @@ class Orchestrator:
         abc_class_a = 0
         abc_class_b = 1
         abc_class_c = 2
-        # Minimum FG inventory threshold to avoid divide-by-small-number
+        # TODO(config): move min_fg_inventory_threshold to simulation_config.json
         min_fg_inventory_threshold = 100.0
 
         # Record Service Level (Fill Rate)
@@ -1775,22 +1772,19 @@ class Orchestrator:
 
             unmet_magnitude = float(np.sum(self.state.get_unmet_demand()))
 
-            # Pull suppression counts from replenisher (Fix 1) and push method (Fix 3)
+            # Pull suppression count from replenisher (Fix 1)
             dc_suppress = self.replenisher._dc_order_suppression_count
-            push_suppress = self._push_suppression_count
 
             logger.info(
-                "v47 Diag: dc_dos=%s, order_suppress=%d, push_suppress=%d, "
+                "v47 Diag: dc_dos=%s, order_suppress=%d, "
                 "unmet_mag=%.0f",
                 channel_summaries,
                 dc_suppress,
-                push_suppress,
                 unmet_magnitude,
             )
 
             # Reset daily counters
             self.replenisher._dc_order_suppression_count = 0
-            self._push_suppression_count = 0
 
         log_config = self.config.get("simulation_parameters", {}).get("logistics", {})
         constraints = log_config.get("constraints", {})
@@ -2681,7 +2675,9 @@ class Orchestrator:
                 continue
 
             # Calculate excess inventory to push
-            target_dos = push_threshold_dos
+            # v0.88.0: Drain to _rdc_target_dos (9), not push_threshold (12).
+            # Trigger stays at 12 (hysteresis), but once triggered, drain to 9.
+            target_dos = self._rdc_target_dos
             target_inventory = rdc_demand_safe * target_dos
             excess_inventory = np.maximum(0, rdc_inventory - target_inventory)
 
@@ -2727,41 +2723,27 @@ class Orchestrator:
 
             total_dc_demand_safe = np.maximum(total_dc_demand, 0.1)
 
-            # v0.64.0: ABC-differentiated push receive cap — derived from
-            # DC deployment targets (dc_buffer_days x ABC mult x headroom)
-            push_headroom = float(
-                replen_params.get("push_receive_headroom", 1.15)
-            )
-            dc_buffer = float(replen_params.get("dc_buffer_days", 7.0))
-            abc_mults = np.array([
-                float(replen_params.get("dc_dos_cap_mult_a", 1.5)),
-                float(replen_params.get("dc_dos_cap_mult_b", 2.0)),
-                float(replen_params.get("dc_dos_cap_mult_c", 2.5)),
-            ])
-            # Build per-product cap vector from ABC class
-            push_receive_cap_vec = np.empty(self.state.n_products)
-            for p_idx in range(self.state.n_products):
-                abc = int(self.mrp_engine.abc_class[p_idx])
-                push_receive_cap_vec[p_idx] = (
-                    dc_buffer * abc_mults[abc] * push_headroom
-                )
+            # v0.88.0: Need-based push limit — reuse deployment targets (same as
+            # _compute_deployment_needs) to prevent pushing DCs above their target
+            # DOS.  Replaces artificial push_receive_headroom cap (removed v0.88.0).
+            abc = self.mrp_engine.abc_class
+            dc_target_dos_vec = np.full(self.state.n_products, self._dc_deploy_dos_c)
+            dc_target_dos_vec[abc == 0] = self._dc_deploy_dos_a
+            dc_target_dos_vec[abc == 1] = self._dc_deploy_dos_b
 
             for dc_id, dc_demand in dc_demands.items():
                 # Calculate this DC's share (proportional to demand)
                 share_ratio = dc_demand / total_dc_demand_safe
                 dc_push_qty = excess_inventory * share_ratio
 
-                # v0.47.0 Fix 3: Check target DC inventory before pushing
+                # Cap push at DC's remaining room below deployment target
                 dc_idx = self.state.node_id_to_idx.get(dc_id)
                 if dc_idx is not None:
                     dc_inv = self.state.actual_inventory[dc_idx, :]
-                    dc_demand_safe = np.maximum(dc_demand * seasonal_factor, 0.1)
-                    dc_dos = dc_inv / dc_demand_safe
-                    # Suppress push for products where DC already has enough
-                    dc_over_cap = dc_dos >= push_receive_cap_vec
-                    suppressed = int(np.sum((dc_push_qty >= 10) & dc_over_cap))  # noqa: PLR2004
-                    self._push_suppression_count += suppressed
-                    dc_push_qty = np.where(dc_over_cap, 0.0, dc_push_qty)
+                    dc_demand_safe = np.maximum(dc_demand, 0.1)
+                    dc_target_inv = dc_target_dos_vec * dc_demand_safe
+                    dc_room = np.maximum(0.0, dc_target_inv - dc_inv)
+                    dc_push_qty = np.minimum(dc_push_qty, dc_room)
 
                 # Create order lines for products with significant push qty
                 lines = []

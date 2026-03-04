@@ -374,6 +374,7 @@ class MRPEngine:
             if p_idx is None:
                 continue
 
+            # TODO(config): move ingredient prefix→policy mapping to config
             # Determine Policy Key
             key = "DEFAULT"
             if p_id == spof_id:

@@ -176,6 +176,7 @@ def run_section2(bundle: DataBundle, results: dict) -> dict:
     print(f"  {'-' * 24}  {'-' * 12}  {'-' * 12}  {'-' * 8}")
     _kpi_row("K1 Fill Rate", f"{svc:.1%}", ">=97%",
              _traffic(svc, 0.97, 1.0, 0.93, 1.0))
+    # TODO: read turns range from benchmark_manifest.json (currently 8.2-12.0)
     _kpi_row("K2 Inventory Turns", f"{turns:.1f}x", "8.5-12x",
              _traffic(turns, 8.5, 12, 6, 14))
     _kpi_row("K3 SLOB %", f"{slob_val:.1%}", "<15%",

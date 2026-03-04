@@ -107,9 +107,15 @@ def compute_bom_cost_rollup(bundle: DataBundle) -> dict[str, Any] | None:
         batch_ings["bom_level"] = batch_ings["ingredient_id"].map(bom_level_map).fillna(-1)
         level_agg = batch_ings.groupby("bom_level")["material_cost"].sum()
         for level, cost in level_agg.items():
-            label = {2: "L2 (Raw materials)", 1: "L1 (Bulk compound)", 0: "L0 (Packaging+fill)"}.get(
-                int(level), f"L{int(level)}"
-            )
+            # v0.84.0: Variable BOM depth (2-4 levels)
+            # L0 = Packaging+fill (SKU), L1 = Bulk compound/blend,
+            # L2 = Sub-intermediate (PREMIX), L3+ = Raw materials
+            label = {
+                0: "L0 (Packaging+fill)",
+                1: "L1 (Bulk compound)",
+                2: "L2 (Sub-intermediate)",
+                3: "L3 (Raw materials)",
+            }.get(int(level), f"L{int(level)}")
             by_bom_level[label] = {
                 "cost": float(cost),
                 "pct_of_material": float(cost / total_material * 100) if total_material > 0 else 0,

@@ -215,7 +215,7 @@ class DRPPlanner:
         safety_stock[abc_class == 1] = (
             safe_forecast[abc_class == 1] * self.safety_days_b
         )
-        abc_c_class = 2
+        abc_c_class = 2  # TODO(config): ABC class thresholds to config
         safety_stock[abc_class >= abc_c_class] = (
             safe_forecast[abc_class >= abc_c_class] * self.safety_days_c
         )
