@@ -171,7 +171,7 @@
         "share_ceiling_headroom": 1.5,
         "_share_ceiling_note": "v0.55.0: Max deploy per target = demand_share x available x headroom.",
                 "drp_distribution": {
-          "enabled": false,
+          "enabled": true,
           "rdc_safety_dos": 3.0,
           "min_ship_cases": 10,
           "suppress_dc_pull": false,
