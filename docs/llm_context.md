@@ -54,7 +54,7 @@ The simulation enforces these constraints - violations indicate bugs:
 |---------|------|----------------------|
 | **Production planning** | `simulation/mrp.py` | `MRPEngine.generate_production_orders()` — SKU + dependent bulk intermediate orders |
 | **DRP-Lite (B/C production)** | `simulation/drp.py` | `DRPPlanner.plan_requirements()` — forward-netting daily targets for B/C items |
-| **DRP Distribution (RDC→DC)** | `simulation/drp_distribution.py` | `DRPDistributionEngine` — always initialized for demand signals; shipping gated by `_drp_ships` flag (disabled by default v0.89.1) |
+| **DRP Distribution (RDC→DC)** | `simulation/drp_distribution.py` | `DRPDistributionEngine` — proactive RDC→DC distribution + demand signals for priming/deployment. Default: hybrid mode (DRP + DC pull). Shipping gated by `_drp_ships` flag. |
 | **Ingredient procurement** | `simulation/mrp.py` | `MRPEngine.generate_purchase_orders()` — two-step BOM explosion for 3-level BOM. Supplier selection via Kraljic catalog → SPOF → fallback |
 | **Recipe matrix (BOM)** | `network/recipe_matrix.py` | `RecipeMatrixBuilder` — dense [n_products, n_products] matrix |
 | **Production execution** | `simulation/transform.py` | `TransformEngine` — two-pass: bulk intermediates first, then SKUs |
@@ -388,9 +388,8 @@ Every `tick()` (1 day) in `Orchestrator._run_day()`:
 7a. RETURNS       → LogisticsEngine generates returns from arrivals (Damage/Recall)
 8.  MRP           → MRPEngine plans production (uses POS demand signal + DRP for B/C)
 9.  PRODUCTION    → TransformEngine executes manufacturing (Work Orders → Batches)
-9a. DRP DISTRIB   → DRPDistributionEngine.compute_and_execute() — demand signal always computed; shipments only if _drp_ships (disabled by default v0.89.1)
 10. DEPLOYMENT    → _create_plant_shipments() need-based deployment (Plant→RDC/DC); uses DRP demand when _drp_enabled, else recursive store POS
-10a.PUSH EXCESS   → _push_excess_rdc_inventory() RDC→DC overflow valve
+10a.DRP DISTRIB   → DRPDistributionEngine.compute_and_execute() — proactive RDC→DC distribution (hybrid mode: DRP + DC pull, default v0.89.1)
 10b.LATERAL XFER  → _execute_lateral_transshipment() RDC↔RDC inventory balancing
 11. POST-QUIRKS   → Apply logistics delays/congestion (QuirkManager)
 12. MONITORING    → PhysicsAuditor validates mass balance, records KPIs (inc. age-based SLOB)
@@ -483,8 +482,8 @@ need = max(0, target_dos × expected_demand × seasonal_factor - current_positio
 | **DCs** | `dc_buffer_days × 1.5` (≈10.5d) | `dc_buffer_days × 2.0` (14d) | `dc_buffer_days × 2.5` (17.5d) | `dc_buffer_days=7.0` |
 | **RDCs** | 9.0d | 9.0d | 9.0d | Flat `_rdc_target_dos` (flow-through cross-dock, actual DOS ≈8.4) |
 
-### `_push_excess_rdc_inventory()` — RDC→DC Overflow
-Active as secondary overflow valve: pushes excess RDC inventory to customer DCs when RDC DOS exceeds threshold (`push_threshold_dos=12.0`, ~1.33× the 9 DOS target). Once triggered, drains to `_rdc_target_dos` (9.0), not the threshold — hysteresis band of 9-12 DOS prevents push/deploy oscillation (v0.88.0). DOS calculations use seasonally-adjusted demand (same factor as deployment). Push quantity is capped at each DC's remaining room below its ABC-differentiated deployment target (A=10.5, B=14.0, C=17.5 DOS) — same targets used by `_compute_deployment_needs()` (v0.88.0). This need-based limit replaces the artificial `push_receive_headroom` cap (removed v0.88.0) and closes the positive feedback loop where uncapped push → rising DC inventory → reduced pull → rising RDC excess → more push. Room check uses on-hand inventory (not IP): simpler, self-correcting at daily granularity (yesterday's in-transit push arrives → on-hand rises → room shrinks). v0.85.0: Multi-source DCs contribute `(1 - frac)` to primary RDC's expected demand; secondary DCs contribute `frac`. Secondary DCs are also included as push candidates with frac-weighted demand shares.
+### `DRPDistributionEngine.compute_and_execute()` — RDC→DC Distribution (v0.89.0+)
+Proactive need-based distribution from RDCs to DCs. Per-DC need = `target_dos × demand - inventory_position`. Fair-share allocation against RDC available stock (on-hand minus safety reserve). v0.89.1: Default hybrid mode — DRP handles bulk positioning, DC (s,S) pull handles product-specific gaps. `_compute_dc_need()` uses replenisher's rolling-avg DC outflow when available (floors at base POS to prevent demand collapse during stockouts). Config: `dc_target_amplification` (bullwhip buffer, default 1.0), `suppress_dc_pull` (disable DC pull for pure DRP mode, default false). Pure DRP suffers product-mix mismatch with (s,S) store batching (72.6% fill); hybrid gives 92.9%.
 
 ### `_execute_lateral_transshipment()` — RDC↔RDC Balancing (v0.83.0)
 Emergency inventory transfer between adjacent RDCs. Triggered when target DOS < 3.0 (critical) AND source DOS > 15.0 (excess). Transfers up to 30% of source excess. Configured via `network_enrichment.lateral_transshipment` in `world_definition.json`. 12 directed links (6 bidirectional pairs) between geographically closest RDCs. Volume is ~1-3% of RDC throughput. Uses primary-only topology maps to avoid double-counting with multi-source links.
@@ -963,17 +962,14 @@ Orchestrator
     │         ├──→ consume ingredients
     │         └──→ produce finished goods (parallel lines)
     │
-    ├──→ DRPDistributionEngine.compute_and_execute() [DRP DISTRIBUTION]
-    │         ├──→ _compute_dc_need() per DC (uses dc_outflow when available)
-    │         └──→ ships RDC→DC only if _drp_ships (disabled by default v0.89.1)
-    │
     ├──→ _create_plant_shipments() [DEPLOYMENT]
     │         ├──→ _compute_deployment_needs() per target
     │         ├──→ _select_sourcing_plant_for_product()
     │         └──→ fair-share allocation when constrained
     │
-    ├──→ _push_excess_rdc_inventory() [OVERFLOW]
-    │         └──→ RDC→DC when RDC DOS > threshold
+    ├──→ DRPDistributionEngine.compute_and_execute() [DRP DISTRIBUTION]
+    │         ├──→ _compute_dc_need() per DC (uses dc_outflow when available)
+    │         └──→ ships RDC→DC (hybrid mode: DRP + DC pull, v0.89.1)
     │
     ├──→ _execute_lateral_transshipment() [LATERAL BALANCING]
     │         └──→ RDC↔RDC when target DOS < 3 AND source DOS > 15
