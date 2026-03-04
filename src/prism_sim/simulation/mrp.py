@@ -1691,6 +1691,27 @@ class MRPEngine:
         self.demand_history[self._history_ptr] = daily_vol
         self._history_ptr = (self._history_ptr + 1) % self._history_days
 
+    def record_drp_demand(self, total_drp_qty: np.ndarray) -> None:
+        """Record DRP distribution quantities as MRP demand signal.
+
+        v0.89.0: When DC pull is suppressed, DRP shipments replace pull orders
+        as the primary production demand signal.  Uses the same clamping and
+        circular-buffer mechanism as ``record_order_demand_batch``.
+
+        Args:
+            total_drp_qty: Shape ``[n_products]`` -- total DRP shipment
+                quantities aggregated across all RDC->DC shipments for the day.
+        """
+        daily_vol = total_drp_qty.copy()
+
+        if self.expected_daily_demand is not None:
+            max_signal = self.expected_daily_demand * 4.0
+            daily_vol = np.minimum(daily_vol, max_signal)
+            daily_vol = np.maximum(daily_vol, self.expected_daily_demand)
+
+        self.demand_history[self._history_ptr] = daily_vol
+        self._history_ptr = (self._history_ptr + 1) % self._history_days
+
     def record_consumption(self, actual_sales: np.ndarray) -> None:
         """
         v0.39.2: Record actual consumption for demand signal calibration.

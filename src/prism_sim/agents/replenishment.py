@@ -150,6 +150,10 @@ class MinMaxReplenisher:
         self.store_batch_size = float(params.get("store_batch_size_cases", 20.0))
         self.rush_threshold_days = float(params.get("rush_threshold_days", 2.0))
 
+        # v0.89.0: DRP suppresses DC→RDC pull orders when enabled
+        drp_cfg = params.get("drp_distribution", {})
+        self._drp_suppresses_dc_pull = bool(drp_cfg.get("suppress_dc_pull", False))
+
         # v0.45.0: Load format scale factors for store batch sizing
         demand_config = config.get("simulation_parameters", {}).get("demand", {})
         self.format_scale_factors: dict[str, float] = demand_config.get(
@@ -1021,7 +1025,11 @@ class MinMaxReplenisher:
             node = self.world.nodes.get(n_id)
             if node and (
                 node.type == NodeType.STORE
-                or (node.type == NodeType.DC and "RDC" not in node.id)
+                or (
+                    node.type == NodeType.DC
+                    and "RDC" not in node.id
+                    and not self._drp_suppresses_dc_pull
+                )
             ):
                 idx = self.state.node_id_to_idx.get(n_id)
                 if idx is None:

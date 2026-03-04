@@ -30,6 +30,7 @@ from prism_sim.network.core import (
 from prism_sim.product.core import ProductCategory
 from prism_sim.simulation.builder import WorldBuilder
 from prism_sim.simulation.demand import POSEngine
+from prism_sim.simulation.drp_distribution import DRPDistributionEngine
 from prism_sim.simulation.logistics import LogisticsEngine
 from prism_sim.simulation.monitor import (
     PhysicsAuditor,
@@ -252,8 +253,7 @@ class Orchestrator:
         # 8. Finished Goods Mask for Metrics (excludes ingredients from inventory turns)
         self._fg_product_mask = self._build_finished_goods_mask()
 
-        # v0.69.2 PERF: Pre-build topology maps for push allocation
-        # Avoids per-day full link scans in _push_excess_rdc_inventory
+        # v0.69.2 PERF: Pre-build topology maps for DRP distribution
         # v0.83.0: Primary-only — each DC assigned to shortest-distance RDC
         #          to prevent double-counting with multi-source links.
         #          Lateral RDC↔RDC links excluded (both endpoints are RDCs).
@@ -350,6 +350,26 @@ class Orchestrator:
             ):
                 self._is_production_source[idx] = True
 
+        # v0.89.0: DRP Distribution Engine (replaces push at step 10a)
+        # Init BEFORE deployment shares so deployment can use DRP throughput demand.
+        _sim_p = self.config.get("simulation_parameters", {})
+        _replen_p = _sim_p.get("agents", {}).get("replenishment", {})
+        drp_cfg = _replen_p.get("drp_distribution", {})
+        self._drp_enabled = drp_cfg.get("enabled", True)
+        self.drp_distribution = DRPDistributionEngine(
+            world=self.world,
+            state=self.state,
+            config=self.config,
+            pos_engine=self.pos_engine,
+            mrp_engine=self.mrp_engine,
+            rdc_downstream_dcs=self._rdc_downstream_dcs,
+            dc_downstream_stores=self._dc_downstream_stores,
+            dc_secondary_rdc=self._dc_secondary_rdc,
+            rdc_secondary_dcs=self._rdc_secondary_dcs,
+            secondary_order_fraction=self._secondary_order_fraction,
+            route_map=self.logistics.route_map,
+        )
+
         # v0.45.0: Calculate deployment shares for production routing
         # Includes both RDCs and plant-direct DCs
         self.deployment_shares = self._calculate_deployment_shares()
@@ -395,51 +415,58 @@ class Orchestrator:
         base_demand_matrix = self.pos_engine.get_base_demand_matrix()
 
         for target_id in deployment_targets:
-            # Recursive demand aggregation (target -> DCs -> Stores)
-            target_total = 0.0
-            visited: set[str] = set()
-            stack = [target_id]
+            # v0.89.0: RDC targets use DRP throughput demand (DC-level, not
+            # recursive store POS) so deployment matches actual RDC outflow.
+            if self._drp_enabled and target_id.startswith("RDC-"):
+                target_total = float(
+                    np.sum(
+                        self.drp_distribution.get_rdc_throughput_demand(
+                            target_id
+                        )
+                    )
+                )
+            else:
+                # Plant-direct DCs: recursive demand aggregation
+                target_total = 0.0
+                visited: set[str] = set()
+                stack = [target_id]
 
-            while stack:
-                current = stack.pop()
-                if current in visited:
-                    continue
-                visited.add(current)
+                while stack:
+                    current = stack.pop()
+                    if current in visited:
+                        continue
+                    visited.add(current)
 
-                children = downstream_map.get(current, [])
-                for child_id in children:
-                    child_node = self.world.nodes.get(child_id)
-                    if child_node:
-                        if child_node.type == NodeType.STORE:
-                            # Aggregate POS demand
-                            idx = self.state.node_id_to_idx.get(child_id)
-                            if idx is not None:
-                                target_total += float(
-                                    np.sum(base_demand_matrix[idx, :])
-                                )
-                        else:
-                            # Keep traversing logistics layer
-                            stack.append(child_id)
+                    children = downstream_map.get(current, [])
+                    for child_id in children:
+                        child_node = self.world.nodes.get(child_id)
+                        if child_node:
+                            if child_node.type == NodeType.STORE:
+                                idx = self.state.node_id_to_idx.get(child_id)
+                                if idx is not None:
+                                    target_total += float(
+                                        np.sum(base_demand_matrix[idx, :])
+                                    )
+                            else:
+                                stack.append(child_id)
 
             target_demand[target_id] = target_total
             total_network_demand += target_total
 
         # v0.85.0: Shift secondary-source demand from primary to secondary RDC
-        # Zero-sum: total_network_demand unchanged, shares still sum to 1.0
-        if self._secondary_order_fraction > 0:
+        # v0.89.0: Skip when DRP enabled — DRP throughput demand already
+        # accounts for secondary fractions in RDC targets.
+        if self._secondary_order_fraction > 0 and not self._drp_enabled:
             frac = self._secondary_order_fraction
             for dc_id, sec_rdc in self._dc_secondary_rdc.items():
                 if sec_rdc not in target_demand:
                     continue
-                # Find primary deployment target: if DC is itself a target
-                # (plant-direct), use dc_id; otherwise use upstream (RDC)
                 if dc_id in target_demand:
                     pri_target = dc_id
                 else:
                     pri_target = upstream_map.get(dc_id)
                 if pri_target is None or pri_target not in target_demand:
                     continue
-                # Sum store demand under this DC
                 dc_store_demand = 0.0
                 for store_id in downstream_map.get(dc_id, []):
                     s_node = self.world.nodes.get(store_id)
@@ -504,27 +531,40 @@ class Orchestrator:
         self._target_expected_demand: dict[str, np.ndarray] = {}
 
         for target_id in self.deployment_shares:
-            demand = np.zeros(n_p)
-            visited: set[str] = set()
-            stack = [target_id]
-            while stack:
-                current = stack.pop()
-                if current in visited:
-                    continue
-                visited.add(current)
-                for child_id in downstream_map.get(current, []):
-                    child_node = self.world.nodes.get(child_id)
-                    if child_node:
-                        if child_node.type == NodeType.STORE:
-                            s_idx = self.state.node_id_to_idx.get(child_id)
-                            if s_idx is not None:
-                                demand += base_demand[s_idx, :]
-                        else:
-                            stack.append(child_id)
+            # v0.89.0: RDC targets use DRP throughput demand (DC-level) so
+            # deployment fills RDCs proportional to actual outflow, not
+            # recursive store POS which over-estimates by ~5x.
+            if self._drp_enabled and target_id.startswith("RDC-"):
+                demand = self.drp_distribution.get_rdc_throughput_demand(
+                    target_id
+                )
+            else:
+                # Plant-direct DCs: recursive downstream POS aggregation
+                demand = np.zeros(n_p)
+                visited: set[str] = set()
+                stack = [target_id]
+                while stack:
+                    current = stack.pop()
+                    if current in visited:
+                        continue
+                    visited.add(current)
+                    for child_id in downstream_map.get(current, []):
+                        child_node = self.world.nodes.get(child_id)
+                        if child_node:
+                            if child_node.type == NodeType.STORE:
+                                s_idx = self.state.node_id_to_idx.get(
+                                    child_id
+                                )
+                                if s_idx is not None:
+                                    demand += base_demand[s_idx, :]
+                            else:
+                                stack.append(child_id)
             self._target_expected_demand[target_id] = demand
 
         # v0.85.0: Shift secondary-source demand vectors (per-product)
-        if self._secondary_order_fraction > 0:
+        # v0.89.0: Skip when DRP enabled — DRP throughput demand already
+        # accounts for secondary fractions in RDC targets.
+        if self._secondary_order_fraction > 0 and not self._drp_enabled:
             frac = self._secondary_order_fraction
             for dc_id, sec_rdc in self._dc_secondary_rdc.items():
                 if sec_rdc not in self._target_expected_demand:
@@ -535,7 +575,6 @@ class Orchestrator:
                     pri_target = upstream_map.get(dc_id)
                 if pri_target is None or pri_target not in self._target_expected_demand:
                     continue
-                # Per-product store demand under this DC
                 dc_demand_vec = np.zeros(n_p)
                 for store_id in downstream_map.get(dc_id, []):
                     s_node = self.world.nodes.get(store_id)
@@ -1360,8 +1399,11 @@ class Orchestrator:
             self.replenisher.record_inflow_batch(order_batch)
 
             # v0.45.0: MRP signal — vectorized, replaces list comprehension filter
-            prod_mask = self._is_production_source[order_batch.source_idx]
-            self.mrp_engine.record_order_demand_batch(order_batch, prod_mask)
+            # v0.89.0: When DRP suppresses DC pull, DRP provides the MRP signal
+            # at step 10a instead (avoids double-advancing demand history pointer)
+            if not self._drp_enabled:
+                prod_mask = self._is_production_source[order_batch.source_idx]
+                self.mrp_engine.record_order_demand_batch(order_batch, prod_mask)
 
         # Generate Purchase Orders for Ingredients at Plants
         ing_orders = self.mrp_engine.generate_purchase_orders(
@@ -1489,15 +1531,25 @@ class Orchestrator:
         # PERF: Use batch method to update in-transit tensor incrementally
         self.state.add_shipments_batch(plant_shipments)
 
-        # 10a. v0.19.2: Push excess RDC inventory to Customer DCs
-        # This breaks the negative feedback spiral where RDCs accumulate
-        # inventory while downstream nodes starve.
-        push_shipments = self._push_excess_rdc_inventory(day)
-        if push_shipments:
-            self.auditor.record_plant_shipments_out(push_shipments)
-            self._apply_logistics_quirks_and_risks(push_shipments)
-            # PERF: Use batch method to update in-transit tensor incrementally
-            self.state.add_shipments_batch(push_shipments)
+        # 10a. v0.89.0: DRP distribution (RDC->DC need-based allocation)
+        drp_shipments = self.drp_distribution.compute_and_execute(day)
+        if drp_shipments:
+            self.auditor.record_plant_shipments_out(drp_shipments)
+            self._apply_logistics_quirks_and_risks(drp_shipments)
+            self.state.add_shipments_batch(drp_shipments)
+
+        # 10a-MRP. v0.89.0: Feed DRP distribution volumes to MRP as demand signal
+        if drp_shipments:
+            drp_total = np.zeros(self.state.n_products, dtype=np.float64)
+            for s in drp_shipments:
+                if s._line_product_idx is not None:
+                    np.add.at(drp_total, s._line_product_idx, s._line_quantity)
+            self.mrp_engine.record_drp_demand(drp_total)
+        else:
+            # No DRP shipments today -- still record baseline demand
+            self.mrp_engine.record_drp_demand(
+                np.zeros(self.state.n_products, dtype=np.float64)
+            )
 
         # 10b. v0.83.0: Lateral RDC transshipment (balance inventory across
         # adjacent RDCs when one is critically low and another has excess)
@@ -1521,7 +1573,7 @@ class Orchestrator:
         # 12. Monitors & Data Logging
         total_demand = np.sum(daily_demand)
         daily_shipments = (
-            new_shipments + plant_shipments + push_shipments + lateral_shipments
+            new_shipments + plant_shipments + drp_shipments + lateral_shipments
         )
 
         # v0.86.0 PERF: Use cached total_cases instead of iterating lines
@@ -2576,236 +2628,6 @@ class Orchestrator:
                         order.target_id, line.product_id, line.quantity
                     )
 
-    def _push_excess_rdc_inventory(self, day: int) -> list[Shipment]:
-        """
-        Push excess RDC inventory to Customer DCs when DOS > threshold.
-
-        v0.19.2: Implements push-based allocation to break the negative feedback
-        spiral. When RDCs accumulate inventory (because Customer DCs under-order),
-        this pushes excess downstream to maintain flow.
-        v0.61.0: Seasonal scaling of demand for DOS calculations.
-
-        Returns:
-            List of push shipments created
-        """
-        push_shipments: list[Shipment] = []
-
-        # Get config
-        sim_params = self.config.get("simulation_parameters", {})
-        replen_params = sim_params.get("agents", {}).get("replenishment", {})
-        push_threshold_dos = float(replen_params.get("push_threshold_dos", 30.0))
-        push_enabled = replen_params.get("push_allocation_enabled", True)
-
-        if not push_enabled:
-            return push_shipments
-
-        default_lead_time = (
-            sim_params.get("logistics", {}).get("default_lead_time_days", 3.0)
-        )
-
-        # v0.69.2 PERF: Use pre-built topology maps instead of per-day link scans
-        rdc_ids = list(self._rdc_downstream_dcs.keys())
-
-        if not rdc_ids:
-            return push_shipments
-
-        # Use POS-based demand (stable signal) instead of outflow demand
-        # (which collapses)
-        # This ensures push allocation doesn't under-push during the negative spiral
-        base_demand_matrix = self.pos_engine.get_base_demand_matrix()
-
-        # v0.61.0: Seasonal scaling for DOS calculations
-        seasonal_factor = self.mrp_engine._get_seasonal_factor(day)
-
-        shipment_counter = 0
-
-        for rdc_id in rdc_ids:
-            rdc_idx = self.state.node_id_to_idx.get(rdc_id)
-            if rdc_idx is None:
-                continue
-
-            downstream_dcs = self._rdc_downstream_dcs.get(rdc_id, [])
-            if not downstream_dcs:
-                continue
-
-            # Calculate RDC inventory and average outflow per product
-            rdc_inventory = self.state.actual_inventory[rdc_idx, :]
-
-            # Calculate expected daily demand for this RDC based on downstream POS
-            # v0.69.2 PERF: Use pre-built _dc_downstream_stores map
-            # v0.85.0: Multi-source DCs contribute (1-frac) to primary,
-            #           secondary DCs contribute frac
-            rdc_expected_demand = np.zeros(self.state.n_products)
-            sec_frac = self._secondary_order_fraction
-            for dc_id in downstream_dcs:
-                dc_demand = np.zeros(self.state.n_products)
-                for store_id in self._dc_downstream_stores.get(dc_id, []):
-                    store_idx = self.state.node_id_to_idx.get(store_id)
-                    if store_idx is not None:
-                        dc_demand += base_demand_matrix[store_idx, :]
-                # Scale down if this DC also orders from a secondary RDC
-                if sec_frac > 0 and dc_id in self._dc_secondary_rdc:
-                    dc_demand *= (1.0 - sec_frac)
-                rdc_expected_demand += dc_demand
-            # Add demand from DCs using this RDC as secondary source
-            if sec_frac > 0:
-                for sec_dc_id in self._rdc_secondary_dcs.get(rdc_id, []):
-                    sec_dc_demand = np.zeros(self.state.n_products)
-                    for store_id in self._dc_downstream_stores.get(
-                        sec_dc_id, []
-                    ):
-                        store_idx = self.state.node_id_to_idx.get(store_id)
-                        if store_idx is not None:
-                            sec_dc_demand += base_demand_matrix[store_idx, :]
-                    rdc_expected_demand += sec_dc_demand * sec_frac
-
-            # v0.61.0: Seasonal scaling
-            rdc_expected_demand *= seasonal_factor
-
-            # Floor demand to avoid division by zero
-            rdc_demand_safe = np.maximum(rdc_expected_demand, 0.1)
-
-            # Calculate DOS per product based on expected demand
-            dos_per_product = rdc_inventory / rdc_demand_safe
-
-            # Find products with DOS > threshold
-            excess_mask = dos_per_product > push_threshold_dos
-
-            if not np.any(excess_mask):
-                continue
-
-            # Calculate excess inventory to push
-            # v0.88.0: Drain to _rdc_target_dos (9), not push_threshold (12).
-            # Trigger stays at 12 (hysteresis), but once triggered, drain to 9.
-            target_dos = self._rdc_target_dos
-            target_inventory = rdc_demand_safe * target_dos
-            excess_inventory = np.maximum(0, rdc_inventory - target_inventory)
-
-            # Only push products with excess
-            excess_inventory[~excess_mask] = 0
-
-            # Skip if no significant excess
-            total_excess = np.sum(excess_inventory)
-            if total_excess < 100:  # noqa: PLR2004 (Min threshold)
-                continue
-
-            # Distribute excess proportionally to downstream DCs based on their
-            # POS demand
-            # Calculate each DC's share of downstream demand (using stable POS signal)
-            # v0.69.2 PERF: Use pre-built _dc_downstream_stores map
-            # v0.85.0: Include secondary DCs with frac-weighted demand
-            dc_demands: dict[str, np.ndarray] = {}
-            total_dc_demand = np.zeros(self.state.n_products)
-            for dc_id in downstream_dcs:
-                dc_pos_demand = np.zeros(self.state.n_products)
-                for store_id in self._dc_downstream_stores.get(dc_id, []):
-                    store_idx = self.state.node_id_to_idx.get(store_id)
-                    if store_idx is not None:
-                        dc_pos_demand += base_demand_matrix[store_idx, :]
-                # Scale down multi-source DCs
-                if sec_frac > 0 and dc_id in self._dc_secondary_rdc:
-                    dc_pos_demand *= (1.0 - sec_frac)
-                dc_demands[dc_id] = dc_pos_demand
-                total_dc_demand += dc_pos_demand
-            # Add secondary DCs with frac-weighted demand
-            if sec_frac > 0:
-                for sec_dc_id in self._rdc_secondary_dcs.get(rdc_id, []):
-                    sec_dc_demand = np.zeros(self.state.n_products)
-                    for store_id in self._dc_downstream_stores.get(
-                        sec_dc_id, []
-                    ):
-                        store_idx = self.state.node_id_to_idx.get(store_id)
-                        if store_idx is not None:
-                            sec_dc_demand += base_demand_matrix[store_idx, :]
-                    sec_dc_demand *= sec_frac
-                    dc_demands[sec_dc_id] = sec_dc_demand
-                    total_dc_demand += sec_dc_demand
-
-            total_dc_demand_safe = np.maximum(total_dc_demand, 0.1)
-
-            # v0.88.0: Need-based push limit — reuse deployment targets (same as
-            # _compute_deployment_needs) to prevent pushing DCs above their target
-            # DOS.  Replaces artificial push_receive_headroom cap (removed v0.88.0).
-            abc = self.mrp_engine.abc_class
-            dc_target_dos_vec = np.full(self.state.n_products, self._dc_deploy_dos_c)
-            dc_target_dos_vec[abc == 0] = self._dc_deploy_dos_a
-            dc_target_dos_vec[abc == 1] = self._dc_deploy_dos_b
-
-            for dc_id, dc_demand in dc_demands.items():
-                # Calculate this DC's share (proportional to demand)
-                share_ratio = dc_demand / total_dc_demand_safe
-                dc_push_qty = excess_inventory * share_ratio
-
-                # Cap push at DC's remaining room below deployment target
-                dc_idx = self.state.node_id_to_idx.get(dc_id)
-                if dc_idx is not None:
-                    dc_inv = self.state.actual_inventory[dc_idx, :]
-                    dc_demand_safe = np.maximum(dc_demand, 0.1)
-                    dc_target_inv = dc_target_dos_vec * dc_demand_safe
-                    dc_room = np.maximum(0.0, dc_target_inv - dc_inv)
-                    dc_push_qty = np.minimum(dc_push_qty, dc_room)
-
-                # Create order lines for products with significant push qty
-                lines = []
-                for p_idx in range(self.state.n_products):
-                    qty = dc_push_qty[p_idx]
-                    if qty >= 10:  # noqa: PLR2004 (Min 10 cases)
-                        p_id = self.state.product_idx_to_id[p_idx]
-                        lines.append(OrderLine(p_id, qty, product_idx=p_idx))
-
-                if not lines:
-                    continue
-
-                # Find link for lead time
-                link_obj = self._find_link(rdc_id, dc_id)
-                lead_time = (
-                    link_obj.lead_time_days if link_obj else default_lead_time
-                )
-
-                shipment_counter += 1
-                _push_rdc_idx = self.state.node_id_to_idx.get(rdc_id, -1)
-                _push_dc_idx = self.state.node_id_to_idx.get(dc_id, -1)
-                shipment = Shipment(
-                    id=f"PUSH-{day:03d}-{rdc_id}-{shipment_counter:04d}",
-                    source_id=rdc_id,
-                    target_id=dc_id,
-                    creation_day=day,
-                    arrival_day=day + int(lead_time),
-                    lines=lines,
-                    status=ShipmentStatus.IN_TRANSIT,
-                    total_cases=sum(ln.quantity for ln in lines),
-                    source_idx=_push_rdc_idx,
-                    target_idx=_push_dc_idx,
-                )
-
-                # Deduct from RDC inventory with FIFO age reduction
-                rdc_idx = self.state.node_id_to_idx.get(rdc_id)
-                for line in lines:
-                    # PERF v0.69.3: Use cached indices
-                    p_idx = (
-                        line.product_idx if line.product_idx >= 0
-                        else self.state.product_id_to_idx.get(line.product_id)
-                    )
-                    if rdc_idx is not None and p_idx is not None and p_idx >= 0:
-                        old_qty = max(
-                            0.0,
-                            float(self.state.actual_inventory[rdc_idx, p_idx]),
-                        )
-                        if old_qty > 0:
-                            frac = max(
-                                0.0, (old_qty - line.quantity) / old_qty
-                            )
-                            self.state.inventory_age[rdc_idx, p_idx] *= frac
-                    self.state.update_inventory(
-                        rdc_id, line.product_id, -line.quantity
-                    )
-
-                # PERF v0.87.0: Build parallel arrays
-                LogisticsEngine._populate_shipment_arrays(shipment)
-                push_shipments.append(shipment)
-
-        return push_shipments
-
     def _execute_lateral_transshipment(self, day: int) -> list[Shipment]:
         """Transfer inventory between adjacent RDCs when imbalanced.
 
@@ -2868,7 +2690,7 @@ class Orchestrator:
             total_cs = 0.0
             for p_idx in np.nonzero(transfer_qty)[0]:
                 qty = transfer_qty[int(p_idx)]
-                p_id = self.state.idx_to_product_id[int(p_idx)]
+                p_id = self.state.product_idx_to_id[int(p_idx)]
                 product = self.world.products.get(p_id)
                 if product and qty > 0:
                     lines.append(OrderLine(

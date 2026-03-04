@@ -170,8 +170,13 @@
         "_dc_deploy_dos_note": "v0.55.0: DC deployment targets are ABC-differentiated: dc_buffer_days x 1.5/2.0/2.5 (A/B/C). Physics-derived from dc_buffer_days.",
         "share_ceiling_headroom": 1.5,
         "_share_ceiling_note": "v0.55.0: Max deploy per target = demand_share x available x headroom.",
-        "push_allocation_enabled": true,
-        "push_threshold_dos": 12.0,
+        "drp_distribution": {
+          "enabled": true,
+          "rdc_safety_dos": 3.0,
+          "min_ship_cases": 10,
+          "suppress_dc_pull": true,
+          "_note": "v0.89.0: DRP replaces push + DC pull. suppress_dc_pull removes DC->RDC orders from replenisher."
+        },
         "channel_profiles": {
           "MASS_RETAIL": {
             "target_days": 6.0,
