@@ -16,6 +16,7 @@ import numpy as np
 from prism_sim.network.core import (
     NodeType,
     Order,
+    OrderBatch,
     OrderLine,
     ProductionOrder,
     ProductionOrderStatus,
@@ -1662,6 +1663,30 @@ class MRPEngine:
 
         # v0.20.0: REPLACE slot directly (no blending with shipments)
         # This is now the primary signal - advance pointer after writing
+        self.demand_history[self._history_ptr] = daily_vol
+        self._history_ptr = (self._history_ptr + 1) % self._history_days
+
+    def record_order_demand_batch(
+        self, batch: OrderBatch, mask: np.ndarray
+    ) -> None:
+        """Vectorized order demand recording from OrderBatch.
+
+        PERF v0.86.0: Single np.add.at() call replaces nested Order→OrderLine loop.
+
+        Args:
+            batch: OrderBatch from replenishment
+            mask: Boolean mask selecting lines sourced from RDC/Plant nodes
+        """
+        daily_vol = np.zeros(self.state.n_products)
+        if np.any(mask):
+            np.add.at(daily_vol, batch.product_idx[mask], batch.quantity[mask])
+
+        # Same clamping logic as record_order_demand
+        if self.expected_daily_demand is not None:
+            max_signal = self.expected_daily_demand * 4.0
+            daily_vol = np.minimum(daily_vol, max_signal)
+            daily_vol = np.maximum(daily_vol, self.expected_daily_demand)
+
         self.demand_history[self._history_ptr] = daily_vol
         self._history_ptr = (self._history_ptr + 1) % self._history_days
 

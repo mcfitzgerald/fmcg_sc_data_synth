@@ -343,6 +343,16 @@ class Orchestrator:
         self._deployment_total_deployed = 0.0
         self._deployment_retained_at_plant = 0.0
 
+        # v0.86.0 PERF: Pre-compute production-source boolean mask
+        # Used to filter OrderBatch lines for MRP signal (RDC + plant sources)
+        self._is_production_source = np.zeros(self.state.n_nodes, dtype=bool)
+        for n_id in self.world.nodes:
+            idx = self.state.node_id_to_idx.get(n_id)
+            if idx is not None and (
+                n_id.startswith("RDC-") or n_id.startswith("PLANT-")
+            ):
+                self._is_production_source[idx] = True
+
         # v0.45.0: Calculate deployment shares for production routing
         # Includes both RDCs and plant-direct DCs
         self.deployment_shares = self._calculate_deployment_shares()
@@ -604,6 +614,14 @@ class Orchestrator:
             self.replenisher._lt_history = ws.lt_history
             self.replenisher._lt_mu_cache_sparse = ws.lt_mu_cache
             self.replenisher._lt_sigma_cache_sparse = ws.lt_sigma_cache
+            # v0.86.0: Rebuild Welford accumulators from restored deques
+            for key, dq in ws.lt_history.items():
+                if len(dq) > 0:
+                    hist_arr = np.array(list(dq))
+                    n = len(hist_arr)
+                    mean_val = float(np.mean(hist_arr))
+                    m2 = float(np.sum((hist_arr - mean_val) ** 2))
+                    self.replenisher._lt_welford[key] = [n, mean_val, m2]
 
         # Inventory age
         if ws.inventory_age is not None:
@@ -806,6 +824,7 @@ class Orchestrator:
                         arrival_day=day_offset,
                         lines=lines,
                         status=ShipmentStatus.IN_TRANSIT,
+                        total_cases=sum(ln.quantity for ln in lines),
                         source_idx=self.state.node_id_to_idx.get(link.source_id, -1),
                         target_idx=tgt_idx,
                     )
@@ -933,10 +952,17 @@ class Orchestrator:
                 maxlen=lt_len,
             )
             self.replenisher._lt_history[key] = history
-            self.replenisher._lt_mu_cache_sparse[key] = link.lead_time_days
-            self.replenisher._lt_sigma_cache_sparse[key] = (
-                link.lead_time_days * lead_time_cv
-            )
+            mu = link.lead_time_days
+            sigma = link.lead_time_days * lead_time_cv
+            self.replenisher._lt_mu_cache_sparse[key] = mu
+            self.replenisher._lt_sigma_cache_sparse[key] = sigma
+            # v0.86.0: Initialize Welford accumulator to match primed history
+            hist_arr = np.array(history)
+            n = len(hist_arr)
+            m2 = float(np.sum((hist_arr - np.mean(hist_arr)) ** 2))
+            self.replenisher._lt_welford[key] = [
+                n, float(np.mean(hist_arr)), m2
+            ]
             lt_count += 1
 
         print(
@@ -1328,36 +1354,33 @@ class Orchestrator:
         self.mrp_engine.record_consumption(actual_sales)
 
         # 3. Replenishment Decision (The "Pull" Signal)
-        raw_orders = self.replenisher.generate_orders(day, daily_demand)
+        # v0.86.0 PERF: Returns OrderBatch (parallel numpy arrays) instead of
+        # list[Order].  Eliminates ~50K OrderLine + ~6.5K Order objects.
+        order_batch = self.replenisher.generate_orders(day, daily_demand)
 
         # v0.15.9: Record inflow (orders received) for true demand signal
-        # This captures what was REQUESTED before allocation constrains it
-        # Used by customer DCs to prevent demand signal attenuation
-        self.replenisher.record_inflow(raw_orders)
+        if order_batch is not None:
+            self.replenisher.record_inflow_batch(order_batch)
 
-        # v0.45.0: Pass order demand to MRP (pre-allocation, true demand)
-        # Include orders TO RDCs + orders sourced from plants (plant-direct DCs)
-        production_signal_orders = [
-            o for o in raw_orders
-            if o.source_id.startswith("RDC-") or o.source_id.startswith("PLANT-")
-        ]
-        self.mrp_engine.record_order_demand(production_signal_orders)
+            # v0.45.0: MRP signal — vectorized, replaces list comprehension filter
+            prod_mask = self._is_production_source[order_batch.source_idx]
+            self.mrp_engine.record_order_demand_batch(order_batch, prod_mask)
 
-        # Generate Purchase Orders for Ingredients at Plants (Milestone 5.1 extension)
-        # Uses production-based signal (active orders) instead of POS demand
-        # to ensure ingredient replenishment matches actual consumption
+        # Generate Purchase Orders for Ingredients at Plants
         ing_orders = self.mrp_engine.generate_purchase_orders(
             day, self.active_production_orders
         )
-        raw_orders.extend(ing_orders)
 
         # Capture Unconstrained Demand (before Allocator modifies in-place)
-        unconstrained_demand_qty = sum(
-            line.quantity for order in raw_orders for line in order.lines
+        # v0.86.0 PERF: Direct array sum replaces nested genexpr
+        batch_demand = order_batch.total_quantity() if order_batch is not None else 0.0
+        ing_demand = sum(
+            line.quantity for order in ing_orders for line in order.lines
         )
+        unconstrained_demand_qty = batch_demand + ing_demand
 
-        # 4. Allocation (Milestone 4.1)
-        allocation_result = self.allocator.allocate_orders(raw_orders)
+        # 4. Allocation (Milestone 4.1) — vectorized batch path
+        allocation_result = self.allocator.allocate_batch(order_batch, ing_orders)
         allocated_orders = allocation_result.allocated_orders
         self.auditor.record_allocation_out(allocation_result.allocation_matrix)
 
@@ -1376,11 +1399,8 @@ class Orchestrator:
         self.state.add_shipments_batch(new_shipments)
 
         # 6. Transit & Arrival (Milestone 4.3)
-        # PERF: Use batch removal to update in-transit tensor incrementally
-        _active, arrived = self.logistics.update_shipments(
-            self.state.active_shipments, day
-        )
-        self.state.remove_arrived_shipments(arrived)
+        # PERF v0.86.0: O(1) bucket pop replaces O(N) scan of all shipments
+        arrived = self.state.pop_arrived_shipments(day)
 
         # 7. Process Arrivals (Receive Inventory)
         self._process_arrivals(arrived)
@@ -1498,9 +1518,10 @@ class Orchestrator:
             new_shipments + plant_shipments + push_shipments + lateral_shipments
         )
 
-        total_shipped_qty = sum(
-            line.quantity for s in daily_shipments for line in s.lines
-        )
+        # v0.86.0 PERF: Use cached total_cases instead of iterating lines
+        total_shipped_qty = sum(s.total_cases for s in daily_shipments)
+        total_arrived_qty = sum(s.total_cases for s in arrived)
+        total_produced_qty = sum(b.quantity_cases for b in new_batches)
         shrinkage_qty = sum(e.quantity_lost for e in shrinkage_events)
 
         # Only record metrics and log data after burn-in period
@@ -1518,7 +1539,7 @@ class Orchestrator:
                 actual_sales=actual_sales,
             )
             self._log_daily_data(
-                raw_orders,
+                allocated_orders,
                 new_shipments,
                 plant_shipments,
                 new_batches,
@@ -1527,17 +1548,13 @@ class Orchestrator:
                 day,
             )
 
-        # 13. Logging / Metrics (Simple Print)
+        # 13. Logging / Metrics (Simple Print) — reuse pre-computed totals
         daily_summary = {
             "demand": total_demand,
             "ordered": unconstrained_demand_qty,
-            "shipped": sum(
-                line.quantity for shipment in daily_shipments for line in shipment.lines
-            ),
-            "arrived": sum(
-                line.quantity for shipment in arrived for line in shipment.lines
-            ),
-            "produced": sum(b.quantity_cases for b in new_batches),
+            "shipped": total_shipped_qty,
+            "arrived": total_arrived_qty,
+            "produced": total_produced_qty,
         }
         self._print_daily_status(day, daily_summary)
 
@@ -2346,6 +2363,7 @@ class Orchestrator:
         shipment_lines: dict[tuple[str, str], list[OrderLine]] = {}
         shipment_weights: dict[tuple[str, str], float] = {}
         shipment_volumes: dict[tuple[str, str], float] = {}
+        shipment_cases: dict[tuple[str, str], float] = {}
 
         for target_id, qty_vec in deploy_qty.items():
             if float(np.sum(qty_vec)) < 1.0:
@@ -2395,6 +2413,10 @@ class Orchestrator:
                     OrderLine(p_id, ship_qty, product_idx=p_idx)
                 )
                 product = self.world.products.get(p_id)
+                shipment_cases[key] = (
+                    shipment_cases.get(key, 0.0) + ship_qty
+                )
+                product = self.world.products.get(p_id)
                 if product:
                     shipment_weights[key] = (
                         shipment_weights.get(key, 0.0)
@@ -2426,6 +2448,7 @@ class Orchestrator:
                 status=ShipmentStatus.IN_TRANSIT,
                 total_weight_kg=shipment_weights.get(key, 0.0),
                 total_volume_m3=shipment_volumes.get(key, 0.0),
+                total_cases=shipment_cases.get(key, 0.0),
                 source_idx=self.state.node_id_to_idx.get(plant_id, -1),
                 target_idx=self.state.node_id_to_idx.get(target_id, -1),
             )
@@ -2757,6 +2780,7 @@ class Orchestrator:
                     arrival_day=day + int(lead_time),
                     lines=lines,
                     status=ShipmentStatus.IN_TRANSIT,
+                    total_cases=sum(ln.quantity for ln in lines),
                     source_idx=_push_rdc_idx,
                     target_idx=_push_dc_idx,
                 )
@@ -2846,6 +2870,7 @@ class Orchestrator:
             # Build shipment
             lines: list[OrderLine] = []
             total_wt = 0.0
+            total_cs = 0.0
             for p_idx in np.nonzero(transfer_qty)[0]:
                 qty = transfer_qty[int(p_idx)]
                 p_id = self.state.idx_to_product_id[int(p_idx)]
@@ -2857,6 +2882,7 @@ class Orchestrator:
                         product_idx=int(p_idx),
                     ))
                     total_wt += qty * product.weight_kg
+                    total_cs += qty
                     # Deduct from source inventory
                     self.state.update_inventory(src_rdc, p_id, -qty)
 
@@ -2873,6 +2899,7 @@ class Orchestrator:
                 lines=lines,
                 status=ShipmentStatus.IN_TRANSIT,
                 total_weight_kg=total_wt,
+                total_cases=total_cs,
                 source_idx=self.state.node_id_to_idx.get(src_rdc, -1),
                 target_idx=self.state.node_id_to_idx.get(tgt_rdc, -1),
             ))

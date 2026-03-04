@@ -360,24 +360,52 @@ class PhysicsAuditor:
             self.current_flows.sales += demand
 
     def record_receipts(self, shipments: list[Shipment]) -> None:
-        """Record inventory additions from arriving shipments."""
-        if not self.current_flows:
+        """Record inventory additions from arriving shipments.
+
+        PERF v0.86.0: Batch scatter-add via np.add.at() instead of per-line
+        element updates. Reduces ~920ms → ~100ms on 20-day profile.
+        """
+        if not self.current_flows or not shipments:
             return
+
+        # Estimate total lines for pre-allocation
+        n_est = len(shipments) * 10
+        node_arr = np.empty(n_est, dtype=np.intp)
+        prod_arr = np.empty(n_est, dtype=np.intp)
+        qty_arr = np.empty(n_est, dtype=np.float64)
+        n = 0
+        _nid_to_idx = self.state.node_id_to_idx
+        _pid_to_idx = self.state.product_id_to_idx
+
         for s in shipments:
-            # PERF v0.69.3: Use cached indices
             node_idx = (
                 s.target_idx if s.target_idx >= 0
-                else self.state.node_id_to_idx.get(s.target_id)
+                else _nid_to_idx.get(s.target_id)
             )
             if node_idx is None:
                 continue
             for line in s.lines:
                 prod_idx = (
                     line.product_idx if line.product_idx >= 0
-                    else self.state.product_id_to_idx.get(line.product_id)
+                    else _pid_to_idx.get(line.product_id)
                 )
                 if prod_idx is not None and prod_idx >= 0:
-                    self.current_flows.receipts[node_idx, prod_idx] += line.quantity
+                    if n >= n_est:
+                        n_est *= 2
+                        node_arr = np.resize(node_arr, n_est)
+                        prod_arr = np.resize(prod_arr, n_est)
+                        qty_arr = np.resize(qty_arr, n_est)
+                    node_arr[n] = node_idx
+                    prod_arr[n] = prod_idx
+                    qty_arr[n] = line.quantity
+                    n += 1
+
+        if n > 0:
+            np.add.at(
+                self.current_flows.receipts,
+                (node_arr[:n], prod_arr[:n]),
+                qty_arr[:n],
+            )
 
     def record_allocation_out(self, allocation_matrix: np.ndarray) -> None:
         """

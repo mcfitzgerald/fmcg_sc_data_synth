@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.86.0] - 2026-03-03
+
+### Performance: OrderBatch Vectorization + Hot-Path Optimizations
+
+Replaces Python object creation on the order→allocation hot path with parallel numpy arrays.
+~10% wall-clock improvement on 50+ day runs. Zero metric divergence from baseline.
+
+#### Core Change: OrderBatch (`network/core.py`, `agents/replenishment.py`, `agents/allocation.py`)
+- **OrderBatch** dataclass with parallel numpy arrays (source_idx, target_idx, product_idx, quantity, etc.)
+- `MinMaxReplenisher.generate_orders()` now returns `OrderBatch | None` instead of `list[Order]`
+- `AllocationAgent.allocate_batch()` is the new primary allocation entry point — modifies `batch.quantity` in-place
+- `AllocationAgent._materialize_orders()` converts surviving lines to `Order` objects post-allocation
+- String IDs deferred to materialization (only ~60-70% of lines survive allocation)
+- `record_inflow_batch()` / `record_order_demand_batch()` use `np.add.at()` scatter-add
+
+#### Supporting Optimizations
+- **Welford's LT cache** (`replenishment.py`) — O(1) windowed online mean/variance, replaces deque+np.std
+- **Vectorized record_receipts** (`monitor.py`) — batch scatter-add replaces nested Python loop
+- **Bucket shipments by arrival** (`state.py`) — `pop_arrived_shipments(day)` O(1) dict.pop vs O(N) scan
+- **Shipment.total_cases** (`core.py`, `logistics.py`, `orchestrator.py`) — cached line-qty sum for O(shipments) totals
+- **Bin-packing local vars** (`logistics.py`) — cached attribute lookups in inner loop
+- **Transform sort keys** (`transform.py`) — Schwartzian pre-computed key tuples
+
+#### Orchestrator Wiring (`simulation/orchestrator.py`)
+- Pre-computed `_is_production_source` boolean mask for MRP signal filtering
+- Eliminated duplicate `sum()` genexprs — pre-compute `total_shipped_qty`/`total_arrived_qty` once
+
 ## [0.85.0] - 2026-03-03
 
 ### Fix: Multi-Source DC Deployment Awareness

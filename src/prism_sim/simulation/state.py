@@ -1,6 +1,6 @@
 import numpy as np
 
-from prism_sim.network.core import Shipment
+from prism_sim.network.core import Shipment, ShipmentStatus
 from prism_sim.network.recipe_matrix import RecipeMatrixBuilder
 from prism_sim.simulation.world import World
 
@@ -60,6 +60,8 @@ class StateManager:
 
         # Discrete State (Levels 10-11)
         self.active_shipments: list[Shipment] = []
+        # v0.86.0 PERF: Bucket shipments by arrival day for O(1) arrival lookup
+        self._shipments_by_arrival: dict[int, list[Shipment]] = {}
 
         # PERF: Cached in-transit tensor - updated incrementally instead of
         # recomputing from all shipments each time. Shape [n_nodes, n_products].
@@ -204,6 +206,9 @@ class StateManager:
         Use this instead of directly appending to active_shipments.
         """
         self.active_shipments.append(shipment)
+        self._shipments_by_arrival.setdefault(
+            shipment.arrival_day, []
+        ).append(shipment)
 
         # Update in-transit tensor
         # PERF v0.69.3: Use cached indices from shipment/line objects
@@ -254,9 +259,11 @@ class StateManager:
 
         # Build delta tensor for all shipments
         delta = np.zeros((self.n_nodes, self.n_products), dtype=np.float64)
+        _by_arrival = self._shipments_by_arrival
 
         for shipment in shipments:
             self.active_shipments.append(shipment)
+            _by_arrival.setdefault(shipment.arrival_day, []).append(shipment)
             # PERF v0.69.3: Use cached indices
             target_idx = (
                 shipment.target_idx if shipment.target_idx >= 0
@@ -272,6 +279,46 @@ class StateManager:
                         delta[target_idx, p_idx] += line.quantity
 
         self._in_transit_tensor += delta
+
+    def pop_arrived_shipments(self, day: int) -> list[Shipment]:
+        """Pop shipments arriving on *day* from the bucket index.
+
+        PERF v0.86.0: O(1) dict.pop replaces O(N) scan of all active shipments.
+        Also updates in-transit tensor and active_shipments list.
+        """
+        arrived = self._shipments_by_arrival.pop(day, [])
+        # Also collect any earlier-day stragglers (e.g. from quirk delays)
+        stale_days = [d for d in self._shipments_by_arrival if d <= day]
+        for d in stale_days:
+            arrived.extend(self._shipments_by_arrival.pop(d))
+
+        if not arrived:
+            return arrived
+
+        # Update in-transit tensor
+        delta = np.zeros((self.n_nodes, self.n_products), dtype=np.float64)
+        for shipment in arrived:
+            shipment.status = ShipmentStatus.DELIVERED
+            target_idx = (
+                shipment.target_idx if shipment.target_idx >= 0
+                else self.node_id_to_idx.get(shipment.target_id)
+            )
+            if target_idx is not None:
+                for line in shipment.lines:
+                    p_idx = (
+                        line.product_idx if line.product_idx >= 0
+                        else self.product_id_to_idx.get(line.product_id)
+                    )
+                    if p_idx is not None and p_idx >= 0:
+                        delta[target_idx, p_idx] += line.quantity
+        self._in_transit_tensor -= delta
+
+        # Remove from flat list
+        arrived_set = set(id(s) for s in arrived)
+        self.active_shipments = [
+            s for s in self.active_shipments if id(s) not in arrived_set
+        ]
+        return arrived
 
     def remove_arrived_shipments(self, arrived: list[Shipment]) -> None:
         """

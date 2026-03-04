@@ -73,7 +73,7 @@ The simulation enforces these constraints - violations indicate bugs:
 ### Data Models
 | Concept | File | Key Classes |
 |---------|------|-------------|
-| **Network primitives** | `network/core.py` | `Node`, `Link`, `Order`, `Shipment`, `Batch` |
+| **Network primitives** | `network/core.py` | `Node`, `Link`, `Order`, `OrderBatch`, `Shipment`, `Batch` |
 | **Work Orders** | `network/core.py` | `ProductionOrder` (Status: Planned/Released/Complete) |
 | **Returns** | `network/core.py` | `Return`, `ReturnLine` (Status: Requested/Processed) |
 | **Channel enums** | `network/core.py` | `CustomerChannel`, `StoreFormat`, `OrderType` |
@@ -90,7 +90,21 @@ The simulation enforces these constraints - violations indicate bugs:
 - `Order.source_idx: int = -1` / `Order.target_idx: int = -1` — maps to `state.node_id_to_idx`
 - `Shipment.source_idx: int = -1` / `Shipment.target_idx: int = -1` — maps to `state.node_id_to_idx`
 
-Sentinel `-1` means "not populated" — all consumer sites use `x.product_idx if x.product_idx >= 0 else dict.get(...)` for backwards-compatible fallback. `OrderLine` uses `@dataclass(slots=True)` for reduced allocation overhead (155K created/day).
+Sentinel `-1` means "not populated" — all consumer sites use `x.product_idx if x.product_idx >= 0 else dict.get(...)` for backwards-compatible fallback. `OrderLine` uses `@dataclass(slots=True)` for reduced allocation overhead.
+
+#### OrderBatch (v0.86.0 Vectorized Hot Path)
+
+`OrderBatch` replaces `list[Order]` on the replenishment → allocation hot path. Parallel numpy arrays — one element per order-line:
+
+- `source_idx/target_idx/product_idx: np.ndarray[int32]` — node/product indices
+- `quantity: np.ndarray[float64]` — mutable (allocation modifies in-place via fill ratios)
+- `unit_price/order_type/priority/requested_date` — per-line metadata arrays
+- `_tgt_source_ids/_tgt_order_ids: list[str]` — per-target string IDs (deferred to materialization)
+- `_tgt_inverse: np.ndarray[int]` — maps line → target group index
+
+After allocation, `AllocationAgent._materialize_orders()` converts surviving lines (qty > epsilon) into `Order` objects for logistics. String IDs are only created at this point, avoiding ~50K unused objects/day.
+
+`Shipment.total_cases: float` caches line-quantity sum for O(1) shipped/arrived totals.
 
 ### Generators (Static World Creation)
 | Concept | File | Key Classes |
@@ -357,8 +371,8 @@ Every `tick()` (1 day) in `Orchestrator._run_day()`:
 0b. RISK & QUIRKS → Trigger disruptions + Phantom Inventory shrinkage
 1.  DEMAND        → POSEngine generates retail sales
 2.  CONSUMPTION   → Constrain sales to available inventory, record to MRP
-3.  REPLENISHMENT → MinMaxReplenisher creates orders (Physics-based SS + ABC)
-4.  ALLOCATION    → AllocationAgent allocates inventory to orders (Fair Share)
+3.  REPLENISHMENT → MinMaxReplenisher.generate_orders() → OrderBatch (numpy arrays, no Order objects)
+4.  ALLOCATION    → AllocationAgent.allocate_batch() modifies batch.quantity in-place, materializes Order objects
 5.  LOGISTICS     → LogisticsEngine creates shipments (FTL rules, Emissions)
 6.  TRANSIT       → Advance in-transit shipments
 7.  ARRIVALS      → Process arrivals (age-aware receipt)

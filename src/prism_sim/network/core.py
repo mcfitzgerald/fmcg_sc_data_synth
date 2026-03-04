@@ -1,6 +1,8 @@
 import enum
 from dataclasses import dataclass, field
 
+import numpy as np
+
 
 class NodeType(enum.Enum):
     PLANT = "plant"
@@ -106,7 +108,7 @@ class OrderLine:
     unit_price: float = 0.0
 
 
-@dataclass
+@dataclass(slots=True)
 class Order:
     id: str
     source_id: str  # Who is shipping (Supplier/RDC)
@@ -124,6 +126,46 @@ class Order:
     # PERF v0.69.3: Cached integer indices to avoid repeated dict lookups
     source_idx: int = -1
     target_idx: int = -1
+
+
+@dataclass(slots=True)
+class OrderBatch:
+    """Vectorized order representation — parallel arrays, one element per order-line.
+
+    Replaces list[Order] for the hot path from replenishment → allocation.
+    All pre-allocation consumers (record_inflow, record_order_demand,
+    unconstrained demand sum, allocation demand vector) only need
+    (source_idx, product_idx, quantity) which are direct array reads.
+
+    After allocation, call materialize_orders() to get list[Order] for
+    logistics (which still needs Order objects for held-order tracking).
+
+    PERF v0.86.0: Eliminates ~50K OrderLine + ~6.5K Order object creation.
+    String IDs are deferred to materialization (only for surviving lines).
+    """
+
+    # Per order-line arrays  (N = total non-zero entries from batched_qty)
+    source_idx: np.ndarray      # int32[N]
+    target_idx: np.ndarray      # int32[N]
+    product_idx: np.ndarray     # int32[N]
+    quantity: np.ndarray        # float64[N] — mutable (allocation modifies in-place)
+    unit_price: np.ndarray      # float64[N]
+    order_type: np.ndarray      # int8[N]  (OrderType enum → int mapping)
+    priority: np.ndarray        # int8[N]  (OrderPriority int value)
+    creation_day: int
+    requested_date: np.ndarray  # int32[N]
+    promo_ids: dict[int, str]   # target_idx → promo_id (sparse, most are None)
+    # Per-target (unique) data — indexed by group-index from np.unique
+    _tgt_source_ids: list[str]   # group_idx → source_id string
+    _tgt_order_ids: list[str]    # group_idx → order ID string
+    _tgt_inverse: np.ndarray     # int[N] — maps line → group_idx
+
+    @property
+    def n_lines(self) -> int:
+        return len(self.quantity)
+
+    def total_quantity(self) -> float:
+        return float(np.sum(self.quantity))
 
 
 
@@ -149,6 +191,7 @@ class Shipment:
     # Physicals
     total_weight_kg: float = 0.0
     total_volume_m3: float = 0.0
+    total_cases: float = 0.0  # PERF v0.86.0: cached line-qty sum
     truck_count: int = 1
     emissions_kg: float = 0.0
 

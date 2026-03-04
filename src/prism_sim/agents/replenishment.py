@@ -7,7 +7,7 @@ from prism_sim.network.core import (
     Link,
     NodeType,
     Order,
-    OrderLine,
+    OrderBatch,
     OrderPriority,
     OrderType,
     StoreFormat,
@@ -236,8 +236,8 @@ class MinMaxReplenisher:
         self._lt_default_mu = float(params.get("lead_time_days", 3.0))
         self._lt_default_sigma = 0.0  # No variability assumed until history builds
 
-        # Track which specific links need cache update (not all of them)
-        self._lt_dirty_links: set[tuple[int, int]] = set()
+        # v0.86.0: Welford accumulators per link — [count, mean, M2]
+        self._lt_welford: dict[tuple[int, int], list[float]] = {}
 
         # Physics Overhaul Phase 3: ABC Segmentation
         # Track cumulative volume per product for dynamic classification
@@ -286,9 +286,10 @@ class MinMaxReplenisher:
     ) -> None:
         """
         Record a realized lead time for a specific link.
-        Phase 1 of Physics Overhaul.
 
-        PERF: Uses sparse dict storage with deque as circular buffer.
+        PERF v0.86.0: Welford's online algorithm — O(1) update of running
+        mean and variance.  Eliminates np.array() + np.std() per dirty link.
+        The deque is kept for warm-start serialization compatibility.
         """
         t_idx = self.state.node_id_to_idx.get(target_id)
         s_idx = self.state.node_id_to_idx.get(source_id)
@@ -298,40 +299,61 @@ class MinMaxReplenisher:
 
         link_key = (t_idx, s_idx)
 
-        # Initialize deque for this link if needed (lazy allocation)
+        # Initialize deque for this link if needed (warm-start serialization)
         if link_key not in self._lt_history:
             self._lt_history[link_key] = deque(maxlen=self.lt_history_len)
 
-        # Append to circular buffer (deque handles maxlen automatically)
-        self._lt_history[link_key].append(lead_time_days)
+        dq = self._lt_history[link_key]
+        val = float(lead_time_days)
 
-        # PERF: Only mark THIS specific link as dirty (not all links)
-        self._lt_dirty_links.add(link_key)
+        # Windowed Welford: remove oldest sample if window full
+        welford = self._lt_welford.get(link_key)
+        if welford is None:
+            welford = [0, 0.0, 0.0]  # [count, mean, M2]
+            self._lt_welford[link_key] = welford
+
+        if len(dq) == dq.maxlen:
+            # Remove oldest value from running stats
+            old_val = dq[0]
+            n = welford[0]
+            if n > 1:
+                old_mean = welford[1]
+                new_n = n - 1
+                new_mean = (old_mean * n - old_val) / new_n
+                welford[2] -= (old_val - old_mean) * (old_val - new_mean)
+                welford[1] = new_mean
+                welford[0] = new_n
+            else:
+                welford[0] = 0
+                welford[1] = 0.0
+                welford[2] = 0.0
+
+        # Add new value (standard Welford update)
+        dq.append(val)
+        welford[0] += 1
+        n = welford[0]
+        delta = val - welford[1]
+        welford[1] += delta / n
+        delta2 = val - welford[1]
+        welford[2] += delta * delta2
+
+        # Update cache directly — no dirty set needed
+        self._lt_mu_cache_sparse[link_key] = welford[1]
+        if n >= 2:  # noqa: PLR2004
+            # Safety floor: M2 can go slightly negative from fp drift
+            m2 = max(0.0, welford[2])
+            self._lt_sigma_cache_sparse[link_key] = float(
+                np.sqrt(m2 / (n - 1))
+            )
+        else:
+            self._lt_sigma_cache_sparse[link_key] = 0.0
 
     def _update_lt_cache(self) -> None:
+        """No-op — stats are now maintained inline by record_lead_time().
+
+        Kept for API compatibility (called by generate_orders).
         """
-        PERF: Incremental update of lead time stats cache.
-        Only updates links that changed since last call.
-
-        Uses sparse dict storage instead of dense arrays.
-        """
-        if not self._lt_dirty_links:
-            return
-
-        # Only update stats for dirty links (not all links)
-        for link_key in self._lt_dirty_links:
-            history = self._lt_history.get(link_key)
-            if history and len(history) >= 2:  # noqa: PLR2004
-                history_arr = np.array(history)
-                self._lt_mu_cache_sparse[link_key] = float(np.mean(history_arr))
-                sigma = float(np.std(history_arr, ddof=1))
-                self._lt_sigma_cache_sparse[link_key] = sigma
-            elif history and len(history) == 1:
-                # Single sample: use it as mean, zero variance
-                self._lt_mu_cache_sparse[link_key] = history[0]
-                self._lt_sigma_cache_sparse[link_key] = 0.0
-
-        self._lt_dirty_links.clear()
+        pass
 
     def get_lead_time_stats(
         self, target_id: str, source_id: str
@@ -820,6 +842,25 @@ class MinMaxReplenisher:
         # Advance pointer for circular buffer
         self._inflow_ptr = (self._inflow_ptr + 1) % self._history_window
 
+    def record_inflow_batch(self, batch: OrderBatch) -> None:
+        """Record orders received BY each node — vectorized OrderBatch path.
+
+        PERF v0.86.0: Single np.add.at() call replacing nested Order→OrderLine loop.
+        """
+        hw = self._history_window
+        if self.inflow_history is None:
+            self.inflow_history = np.zeros(
+                (hw, self.state.n_nodes, self.state.n_products), dtype=np.float64
+            )
+
+        self.inflow_history[self._inflow_ptr] = 0
+        np.add.at(
+            self.inflow_history[self._inflow_ptr],
+            (batch.source_idx, batch.product_idx),
+            batch.quantity,
+        )
+        self._inflow_ptr = (self._inflow_ptr + 1) % self._history_window
+
     def get_inflow_demand(self) -> np.ndarray:
         """
         Get smoothed inflow-based demand signal for all nodes.
@@ -861,7 +902,9 @@ class MinMaxReplenisher:
 
         return mapping
 
-    def generate_orders(self, day: int, demand_signal: np.ndarray) -> list[Order]:
+    def generate_orders(
+        self, day: int, demand_signal: np.ndarray
+    ) -> OrderBatch | None:
         """
         Generates replenishment orders for Retail Stores and downstream DCs.
         Uses exponential smoothing on the demand signal to dampen bullwhip.
@@ -869,12 +912,15 @@ class MinMaxReplenisher:
 
         v0.38.0: Now includes unmet demand in signal calculation and decays
         unmet demand after orders are placed to prevent accumulation.
+
+        v0.86.0 PERF: Returns OrderBatch (parallel numpy arrays) instead of
+        list[Order].  Eliminates ~50K OrderLine + ~6.5K Order object creation.
         """
         self.current_day = day
         # 1. Identify Target Nodes
         target_indices, target_ids = self._identify_target_nodes(day)
         if not target_indices:
-            return []
+            return None
 
         # 2. Update Demand Smoothing
         self._update_demand_smoothing(demand_signal)
@@ -897,18 +943,12 @@ class MinMaxReplenisher:
         # 6. Finalize Quantities (Min Qty, Masking, Batching)
         batched_qty = self._finalize_quantities(target_indices, needs_order, raw_qty)
 
-        # 7. Create Order Objects
-        orders = self._create_order_objects(
+        # 7. Create OrderBatch (vectorized — no Order/OrderLine objects)
+        order_batch = self._create_order_batch(
             day, target_indices, target_ids, batched_qty, avg_demand, on_hand_inv
         )
 
         # v0.38.0: Decay unmet demand after orders placed to prevent accumulation.
-        # Orders should capture the unmet demand, so we decay what was recorded.
-        # v0.39.0: Slowed decay from 0.5 to 0.85 (15%/day) to preserve signal.
-        # v0.39.5: Further slowed to 0.95 (5%/day) for C-item recovery.
-        # v0.47.0: Config-driven decay (default 0.85, 15%/day). With 0.95 decay,
-        # a 1-day shortage persists ~60 days → permanent surplus. 0.85 gives ~15
-        # days persistence, still enough for C-item recovery with 1-day DC lead time.
         params = (
             self.config.get("simulation_parameters", {})
             .get("agents", {})
@@ -917,7 +957,7 @@ class MinMaxReplenisher:
         unmet_decay = float(params.get("unmet_demand_decay", 0.85))
         self.state.decay_unmet_demand(decay_factor=unmet_decay)
 
-        return orders
+        return order_batch
 
     def _identify_target_nodes(self, day: int) -> tuple[list[int], list[str]]:
         params = (
@@ -1369,15 +1409,50 @@ class MinMaxReplenisher:
         batched_qty = np.ceil(order_qty / batch_sz) * batch_sz
         return np.asarray(batched_qty)
 
-    def _create_order_objects(
+    def _create_order_batch(
         self,
         day: int,
         target_indices: list[int],
         target_ids: list[str],
         batched_qty: np.ndarray,
         avg_demand: np.ndarray,
-        on_hand_inv: np.ndarray
-    ) -> list[Order]:
+        on_hand_inv: np.ndarray,
+    ) -> OrderBatch | None:
+        """Build an OrderBatch from the non-zero entries of *batched_qty*.
+
+        PERF v0.86.0: Replaces _create_order_objects.  Zero Python object
+        creation for the hot path — all data lives in parallel numpy arrays.
+        """
+        rows, cols = np.nonzero(batched_qty)
+        if len(rows) == 0:
+            return None
+
+        # --- 1. Build per-line arrays directly from nonzero results -----------
+        product_idx_arr = cols.astype(np.int32)
+
+        # PERF v0.86.0: Vectorized fancy-indexing replaces Python loop
+        ti_arr = np.array(target_indices, dtype=np.int32)
+        target_idx_arr = ti_arr[rows]
+        quantity_arr = batched_qty[rows, cols].astype(np.float64)
+        unit_price_arr = self._price_arr[cols]
+
+        # Filter out zero/negative
+        alive = quantity_arr > 0
+        if not np.any(alive):
+            return None
+        if not np.all(alive):
+            target_idx_arr = target_idx_arr[alive]
+            product_idx_arr = product_idx_arr[alive]
+            quantity_arr = quantity_arr[alive]
+            unit_price_arr = unit_price_arr[alive]
+            rows = rows[alive]
+            cols = cols[alive]
+
+        # --- 2. Per-target metadata (order type, priority, source, promo) -----
+        # Unique targets in this batch (preserves order)
+        unique_targets, inverse = np.unique(target_idx_arr, return_inverse=True)
+
+        # Pre-compute active promos
         week = (day // 7) + 1
         active_promos: list[dict[str, Any]] = []
         promotions = self.config.get("promotions", [])
@@ -1385,52 +1460,40 @@ class MinMaxReplenisher:
             if p["start_week"] <= week <= p["end_week"]:
                 active_promos.append(p)
 
-        rows, cols = np.nonzero(batched_qty)
+        # Per-target data computed once, broadcast to per-line arrays later
+        n_targets = len(unique_targets)
+        tgt_order_type = np.full(n_targets, 3, dtype=np.int8)   # STANDARD=3
+        tgt_priority = np.full(n_targets, OrderPriority.STANDARD, dtype=np.int8)
+        tgt_source_id: list[str] = [""] * n_targets
+        tgt_source_idx = np.full(n_targets, -1, dtype=np.int32)
+        tgt_requested_date = np.full(n_targets, day + 3, dtype=np.int32)
+        tgt_order_id: list[str] = [""] * n_targets
+        tgt_promo_ids: dict[int, str] = {}
 
-        # PERF v0.69.3: Use parallel dicts instead of dict-of-dicts
-        # Eliminates string key hashing ("lines", "days_supply_min") per inner iteration
-        ot_lines: dict[int, list[OrderLine]] = {}
-        ot_min_dos: dict[int, float] = {}
+        # OrderType → int mapping for the batch (matches allocator priority_map)
+        _ot_map = {
+            OrderType.RUSH: 1,
+            OrderType.PROMOTIONAL: 2,
+            OrderType.STANDARD: 3,
+            OrderType.BACKORDER: 4,
+        }
 
-        for r, c in zip(rows, cols, strict=True):
-            qty = batched_qty[r, c]
-            if qty <= 0:
-                continue
+        # Compute per-target min DOS for rush detection
+        with np.errstate(divide="ignore", invalid="ignore"):
+            dos_per_line = np.where(
+                avg_demand[rows, cols] > 0,
+                on_hand_inv[rows, cols] / avg_demand[rows, cols],
+                np.inf,
+            )
 
-            t_idx = int(target_indices[r])
-            p_idx = int(c)
-            # PERF: Use cached array instead of dict lookup
-            p_id = self._product_id_arr[p_idx]
-
-            entry = ot_lines.get(t_idx)
-            if entry is None:
-                entry = []
-                ot_lines[t_idx] = entry
-                ot_min_dos[t_idx] = float("inf")
-
-            price = self._price_arr[p_idx]
-            entry.append(OrderLine(p_id, qty, product_idx=p_idx, unit_price=price))
-
-            # Days Supply Check
-            if avg_demand[r, c] > 0:
-                d_supply = on_hand_inv[r, c] / avg_demand[r, c]
-            else:
-                d_supply = float("inf")
-
-            cur_min = ot_min_dos[t_idx]
-            if d_supply < cur_min:
-                ot_min_dos[t_idx] = d_supply
-
-        orders: list[Order] = []
-        order_count = 0
-        for t_idx, t_lines in ot_lines.items():
-            # PERF: Use cached array instead of dict lookup
+        for gi in range(n_targets):
+            t_idx = int(unique_targets[gi])
             target_id = self._node_id_arr[t_idx]
+
+            # Source lookup (primary / secondary)
             source_id = self.store_supplier_map.get(target_id)
             if not source_id:
                 continue
-
-            # v0.83.0: Probabilistic secondary source for multi-source DCs
             use_secondary = False
             if (
                 self._secondary_order_fraction > 0
@@ -1440,12 +1503,25 @@ class MinMaxReplenisher:
                 source_id = self._secondary_source_map[target_id]
                 use_secondary = True
 
-            target_node = self.world.nodes.get(target_id)
+            tgt_source_id[gi] = source_id
+            tgt_source_idx[gi] = self.state.node_id_to_idx.get(source_id, -1)
 
-            # PERF v0.69.3: Promo check moved from inner loop to finalization.
-            # Promos apply per-target, not per-line. O(6500 targets) vs O(205K cells).
+            lead_time = (
+                self._secondary_lead_time.get(target_id, 3.0)
+                if use_secondary
+                else self._link_lead_time.get(target_id, 3.0)
+            )
+            tgt_requested_date[gi] = day + int(lead_time)
+            tgt_order_id[gi] = f"ORD-{day}-{target_id}-{gi + 1}"
+
+            # Compute line mask once per target (avoid duplicate inverse == gi)
+            line_mask = inverse == gi
+
+            # Promo check (per-target, not per-line)
             promo_id: str | None = None
+            target_node = self.world.nodes.get(target_id)
             if active_promos and target_node:
+                line_pidxs = product_idx_arr[line_mask]
                 for promo in active_promos:
                     affected_cats = promo.get("affected_categories", ["all"])
                     affected_chans = promo.get("affected_channels")
@@ -1460,45 +1536,68 @@ class MinMaxReplenisher:
                         if "all" in affected_cats:
                             promo_id = promo["code"]
                             break
-                        for line in t_lines:
-                            if (self._product_category_arr[line.product_idx]
-                                    in affected_cats):
+                        for lp in line_pidxs:
+                            if self._product_category_arr[lp] in affected_cats:
                                 promo_id = promo["code"]
                                 break
                         if promo_id:
                             break
 
+            # Determine order type + priority
             o_type = OrderType.STANDARD
-            priority = OrderPriority.STANDARD
-
+            priority_val = OrderPriority.STANDARD
             if promo_id:
                 o_type = OrderType.PROMOTIONAL
-                priority = OrderPriority.HIGH
-            elif ot_min_dos[t_idx] < self.rush_threshold_days:
-                o_type = OrderType.RUSH
-                priority = OrderPriority.RUSH
+                priority_val = OrderPriority.HIGH
+                tgt_promo_ids[t_idx] = promo_id
+            else:
+                # Min DOS across lines belonging to this target
+                min_dos = float(np.min(dos_per_line[line_mask]))
+                if min_dos < self.rush_threshold_days:
+                    o_type = OrderType.RUSH
+                    priority_val = OrderPriority.RUSH
 
-            order_count += 1
-            lead_time = (
-                self._secondary_lead_time.get(target_id, 3.0)
-                if use_secondary
-                else self._link_lead_time.get(target_id, 3.0)
-            )
-            orders.append(Order(
-                id=f"ORD-{day}-{target_id}-{order_count}",
-                source_id=source_id,
-                target_id=target_id,
-                creation_day=day,
-                lines=t_lines,
-                order_type=o_type,
-                promo_id=promo_id,
-                priority=priority,
-                requested_date=day + int(lead_time),
-                source_idx=self.state.node_id_to_idx.get(source_id, -1),
-                target_idx=t_idx,
-            ))
+            tgt_order_type[gi] = _ot_map.get(o_type, 3)
+            tgt_priority[gi] = int(priority_val)
 
-        return orders
+        # --- 3. Broadcast per-target metadata to per-line arrays ---------------
+        source_idx_arr = tgt_source_idx[inverse]
+        order_type_arr = tgt_order_type[inverse]
+        priority_arr = tgt_priority[inverse]
+        requested_date_arr = tgt_requested_date[inverse]
+        inverse_arr = inverse  # line → group_idx mapping for string ID lookup
+
+        # Filter lines whose target has no source
+        has_source = source_idx_arr >= 0
+        if not np.all(has_source):
+            target_idx_arr = target_idx_arr[has_source]
+            product_idx_arr = product_idx_arr[has_source]
+            quantity_arr = quantity_arr[has_source]
+            unit_price_arr = unit_price_arr[has_source]
+            source_idx_arr = source_idx_arr[has_source]
+            order_type_arr = order_type_arr[has_source]
+            priority_arr = priority_arr[has_source]
+            requested_date_arr = requested_date_arr[has_source]
+            inverse_arr = inverse_arr[has_source]
+
+        if len(quantity_arr) == 0:
+            return None
+
+        return OrderBatch(
+            source_idx=source_idx_arr,
+            target_idx=target_idx_arr,
+            product_idx=product_idx_arr,
+            quantity=quantity_arr,
+            unit_price=unit_price_arr,
+            order_type=order_type_arr,
+            priority=priority_arr,
+            creation_day=day,
+            requested_date=requested_date_arr,
+            promo_ids=tgt_promo_ids,
+            _tgt_source_ids=tgt_source_id,
+            _tgt_order_ids=tgt_order_id,
+            _tgt_inverse=inverse_arr,
+        )
 
     # =========================================================================
     # v0.21.0: Removed Pending Order Deduplication Methods

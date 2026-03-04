@@ -383,16 +383,22 @@ class TransformEngine:
         # 3. ABC Priority (A=1 first) -> Reserve capacity for runners
         # 4. Product ID -> Group same products (minimize changeovers)
         # 5. Due Date (Earliest first)
-        sorted_orders = sorted(
-            orders,
-            key=lambda o: (
-                o.plant_id,
-                -self._get_bom_level(o.product_id),
-                self._get_abc_priority(o.product_id),
-                o.product_id,
-                o.due_day,
-            ),
-        )
+        # PERF v0.86.0: Schwartzian transform — pre-compute sort key tuple
+        # once per order instead of O(n log n) closure evaluations.
+        _bom = self._get_bom_level
+        _abc = self._get_abc_priority
+        keyed = [
+            (
+                (
+                    o.plant_id, -_bom(o.product_id),
+                    _abc(o.product_id), o.product_id, o.due_day,
+                ),
+                o,
+            )
+            for o in orders
+        ]
+        keyed.sort(key=lambda x: x[0])
+        sorted_orders = [o for _, o in keyed]
 
         for order in sorted_orders:
             if order.status == ProductionOrderStatus.COMPLETE:

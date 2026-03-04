@@ -94,7 +94,7 @@ class LogisticsEngine:
         for link in self.world.links.values():
             self.route_map[(link.source_id, link.target_id)] = link
 
-    def create_shipments(self, orders: list[Order], current_day: int) -> list[Shipment]:
+    def create_shipments(self, orders: list[Order], current_day: int) -> list[Shipment]:  # noqa: PLR0915
         """
         Converts Allocations (Orders) into Shipments (Trucks).
 
@@ -239,6 +239,7 @@ class LogisticsEngine:
                 shipment.lines = valid_lines
                 shipment.total_weight_kg = route_weight
                 shipment.total_volume_m3 = route_volume
+                shipment.total_cases = total_cases
 
                 # Emissions
                 dist = link.distance_km if link else 0.0
@@ -263,6 +264,17 @@ class LogisticsEngine:
             shipment_counter += 1
 
             near_zero_threshold = 1e-9
+            # PERF v0.86.0: Cache attribute lookups for inner loop
+            _max_wt = self.max_weight_kg
+            _max_vol = self.max_volume_m3
+            _eps_wt = self.epsilon_weight
+            _eps_vol = self.epsilon_volume
+            _pw_arr = self._product_weight
+            _pv_arr = self._product_volume
+            cs_wt = current_shipment.total_weight_kg
+            cs_vol = current_shipment.total_volume_m3
+            cs_cases = 0.0
+            cs_lines = current_shipment.lines
 
             for line in lines_for_packing:
                 p_idx = (
@@ -272,20 +284,19 @@ class LogisticsEngine:
                 if p_idx is None or p_idx < 0:
                     continue
 
-                unit_weight = self._product_weight[p_idx]
-                unit_vol = self._product_volume[p_idx]
+                unit_weight = _pw_arr[p_idx]
+                unit_vol = _pv_arr[p_idx]
                 remaining_qty = line.quantity
 
                 while remaining_qty > near_zero_threshold:
-                    # Check space
-                    weight_space = self.max_weight_kg - current_shipment.total_weight_kg
-                    vol_space = self.max_volume_m3 - current_shipment.total_volume_m3
+                    weight_space = _max_wt - cs_wt
+                    vol_space = _max_vol - cs_vol
 
-                    if (
-                        weight_space <= self.epsilon_weight
-                        or vol_space <= self.epsilon_volume
-                    ):
-                        # Full, close and start new
+                    if weight_space <= _eps_wt or vol_space <= _eps_vol:
+                        # Full — flush cached weight/vol/cases, close, start new
+                        current_shipment.total_weight_kg = cs_wt
+                        current_shipment.total_volume_m3 = cs_vol
+                        current_shipment.total_cases = cs_cases
                         new_shipments.append(current_shipment)
                         current_shipment = self._new_shipment(
                             source_id,
@@ -298,22 +309,26 @@ class LogisticsEngine:
                             target_idx=_route_tgt_idx,
                         )
                         shipment_counter += 1
-                        weight_space = self.max_weight_kg
-                        vol_space = self.max_volume_m3
+                        cs_wt = 0.0
+                        cs_vol = 0.0
+                        cs_cases = 0.0
+                        cs_lines = current_shipment.lines
+                        weight_space = _max_wt
+                        vol_space = _max_vol
 
                     max_by_weight = weight_space / unit_weight
                     max_by_vol = vol_space / unit_vol
-
                     fit_qty = min(remaining_qty, max_by_weight, max_by_vol)
 
                     if fit_qty < near_zero_threshold:
-                        if not current_shipment.lines:
-                            # Item exceeds empty truck dimensions?
+                        if not cs_lines:
                             raise ValueError(
                                 f"Product {line.product_id} exceeds truck capacity"
                             )
                         else:
-                            # Full
+                            current_shipment.total_weight_kg = cs_wt
+                            current_shipment.total_volume_m3 = cs_vol
+                            current_shipment.total_cases = cs_cases
                             new_shipments.append(current_shipment)
                             current_shipment = self._new_shipment(
                                 source_id,
@@ -326,15 +341,24 @@ class LogisticsEngine:
                                 target_idx=_route_tgt_idx,
                             )
                             shipment_counter += 1
+                            cs_wt = 0.0
+                            cs_vol = 0.0
+                            cs_cases = 0.0
+                            cs_lines = current_shipment.lines
                             continue
 
-                    # Add to shipment
-                    current_shipment.lines.append(
+                    cs_lines.append(
                         OrderLine(line.product_id, fit_qty, product_idx=p_idx)
                     )
-                    current_shipment.total_weight_kg += fit_qty * unit_weight
-                    current_shipment.total_volume_m3 += fit_qty * unit_vol
+                    cs_wt += fit_qty * unit_weight
+                    cs_vol += fit_qty * unit_vol
+                    cs_cases += fit_qty
                     remaining_qty -= fit_qty
+
+            # Flush cached values back to shipment
+            current_shipment.total_weight_kg = cs_wt
+            current_shipment.total_volume_m3 = cs_vol
+            current_shipment.total_cases = cs_cases
 
             # Add final shipment
             if current_shipment.lines:
@@ -405,6 +429,7 @@ class LogisticsEngine:
                         stale_shipment.lines.append(line)
                         stale_shipment.total_weight_kg += line.quantity * unit_weight
                         stale_shipment.total_volume_m3 += line.quantity * unit_vol
+                        stale_shipment.total_cases += line.quantity
 
                 if stale_shipment.lines:
                     stale_shipment.emissions_kg = self._calculate_emissions(

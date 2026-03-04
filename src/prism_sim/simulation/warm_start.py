@@ -455,6 +455,7 @@ def _load_active_shipments(
                 arrival_day=data["arrival_day"] - checkpoint_day,
                 lines=data["lines"],
                 status=ShipmentStatus.IN_TRANSIT,
+                total_cases=sum(ln.quantity for ln in data["lines"]),
                 source_idx=state.node_id_to_idx.get(data["source_id"], -1),
                 target_idx=state.node_id_to_idx.get(data["target_id"], -1),
             )
