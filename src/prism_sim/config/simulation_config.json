@@ -170,12 +170,14 @@
         "_dc_deploy_dos_note": "v0.55.0: DC deployment targets are ABC-differentiated: dc_buffer_days x 1.5/2.0/2.5 (A/B/C). Physics-derived from dc_buffer_days.",
         "share_ceiling_headroom": 1.5,
         "_share_ceiling_note": "v0.55.0: Max deploy per target = demand_share x available x headroom.",
-        "drp_distribution": {
-          "enabled": true,
+                "drp_distribution": {
+          "enabled": false,
           "rdc_safety_dos": 3.0,
           "min_ship_cases": 10,
-          "suppress_dc_pull": true,
-          "_note": "v0.89.0: DRP replaces push + DC pull. suppress_dc_pull removes DC->RDC orders from replenisher."
+          "suppress_dc_pull": false,
+          "dc_target_amplification": 1.0,
+          "_note_enabled": "v0.89.1: 'enabled' controls RDC→DC DRP shipping. false=DCs use (s,S) pull (94.6% fill). true=DRP ships proactively (set suppress_dc_pull=false for hybrid 92.9% fill, or true for pure DRP 72.6%).",
+          "_note_hybrid": "Hybrid (enabled+suppress_dc_pull=false) recommended for VKG data richness: DRP handles bulk positioning, DC pull handles product-specific gaps."
         },
         "channel_profiles": {
           "MASS_RETAIL": {

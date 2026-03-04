@@ -128,6 +128,130 @@ class Orchestrator:
         )
         self.mrp_engine.drp_planner = self.drp_planner
 
+        # v0.89.1: Topology maps + DRP distribution engine moved BEFORE inventory
+        # priming so cold-start can use DRP throughput demand instead of recursive
+        # store POS aggregation (which massively overstocks RDCs).
+
+        # Pre-build topology maps for DRP distribution
+        # v0.83.0: Primary-only — each DC assigned to shortest-distance RDC
+        self._rdc_downstream_dcs: dict[str, list[str]] = {}
+        self._dc_downstream_stores: dict[str, list[str]] = {}
+        dc_assigned_rdc: set[str] = set()
+        sorted_links = sorted(
+            self.world.links.values(), key=lambda lk: lk.distance_km
+        )
+        # Pre-populate dc_assigned_rdc with plant-direct DCs
+        for link in sorted_links:
+            tgt_node = self.world.nodes.get(link.target_id)
+            if (
+                tgt_node
+                and tgt_node.type == NodeType.DC
+                and not link.target_id.startswith("RDC-")
+                and link.target_id not in dc_assigned_rdc
+                and link.source_id.startswith("PLANT-")
+            ):
+                dc_assigned_rdc.add(link.target_id)
+        for link in sorted_links:
+            src_node = self.world.nodes.get(link.source_id)
+            tgt_node = self.world.nodes.get(link.target_id)
+            if src_node and tgt_node:
+                if (
+                    src_node.type == NodeType.DC
+                    and link.source_id.startswith("RDC-")
+                    and tgt_node.type == NodeType.DC
+                    and not link.target_id.startswith("RDC-")
+                    and link.target_id not in dc_assigned_rdc
+                ):
+                    self._rdc_downstream_dcs.setdefault(
+                        link.source_id, []
+                    ).append(link.target_id)
+                    dc_assigned_rdc.add(link.target_id)
+                if tgt_node.type == NodeType.STORE:
+                    self._dc_downstream_stores.setdefault(
+                        link.source_id, []
+                    ).append(link.target_id)
+
+        # v0.83.0: Lateral RDC↔RDC links for transshipment
+        self._lateral_rdc_links: list[tuple[str, str, Link]] = []
+        for link in self.world.links.values():
+            if (
+                link.source_id.startswith("RDC-")
+                and link.target_id.startswith("RDC-")
+            ):
+                self._lateral_rdc_links.append(
+                    (link.source_id, link.target_id, link)
+                )
+
+        # v0.85.0: Secondary-source topology maps
+        enrichment = self.config.get("network_enrichment", {})
+        self._secondary_order_fraction = float(
+            enrichment.get("secondary_source_order_fraction", 0.0)
+        )
+        self._dc_secondary_rdc: dict[str, str] = {}
+        self._rdc_secondary_dcs: dict[str, list[str]] = {}
+        if self._secondary_order_fraction > 0:
+            dc_links: dict[str, list[Link]] = {}
+            for link in sorted_links:
+                tgt_node = self.world.nodes.get(link.target_id)
+                if (
+                    tgt_node
+                    and tgt_node.type == NodeType.DC
+                    and not link.target_id.startswith("RDC-")
+                ):
+                    dc_links.setdefault(link.target_id, []).append(link)
+            for dc_id, links in dc_links.items():
+                if len(links) >= 2:  # noqa: PLR2004
+                    sec_src = links[1].source_id
+                    if sec_src.startswith("RDC-"):
+                        self._dc_secondary_rdc[dc_id] = sec_src
+                        self._rdc_secondary_dcs.setdefault(
+                            sec_src, []
+                        ).append(dc_id)
+
+        # v0.55.0: Diagnostic counters for need-based deployment
+        self._deployment_total_need = 0.0
+        self._deployment_total_deployed = 0.0
+        self._deployment_retained_at_plant = 0.0
+
+        # v0.86.0 PERF: Pre-compute production-source boolean mask
+        self._is_production_source = np.zeros(self.state.n_nodes, dtype=bool)
+        for n_id in self.world.nodes:
+            idx = self.state.node_id_to_idx.get(n_id)
+            if idx is not None and (
+                n_id.startswith("RDC-") or n_id.startswith("PLANT-")
+            ):
+                self._is_production_source[idx] = True
+
+        # v0.89.0: DRP Distribution Engine (replaces push at step 10a)
+        # Build route_map inline (LogisticsEngine not yet initialized)
+        _route_map = {
+            (lk.source_id, lk.target_id): lk
+            for lk in self.world.links.values()
+        }
+        _sim_p = self.config.get("simulation_parameters", {})
+        _replen_p = _sim_p.get("agents", {}).get("replenishment", {})
+        drp_cfg = _replen_p.get("drp_distribution", {})
+        # v0.89.1: ``enabled`` controls whether DRP actively ships RDC→DC.
+        # When DRP ships, it also provides the demand signal for priming and
+        # deployment (DC-level throughput).  When disabled, DCs reorder via
+        # (s,S) pull and priming/deployment use recursive store POS (higher,
+        # accounts for (s,S) batching amplification).
+        self._drp_enabled = drp_cfg.get("enabled", True)
+        self._drp_ships = self._drp_enabled
+        self.drp_distribution = DRPDistributionEngine(
+            world=self.world,
+            state=self.state,
+            config=self.config,
+            pos_engine=self.pos_engine,
+            mrp_engine=self.mrp_engine,
+            rdc_downstream_dcs=self._rdc_downstream_dcs,
+            dc_downstream_stores=self._dc_downstream_stores,
+            dc_secondary_rdc=self._dc_secondary_rdc,
+            rdc_secondary_dcs=self._rdc_secondary_dcs,
+            secondary_order_fraction=self._secondary_order_fraction,
+            route_map=_route_map,
+        )
+
         # Initialize inventory: warm-start from parquet or cold-start from formulas
         if self._warm_start_dir:
             from prism_sim.simulation.warm_start import load_warm_start_state
@@ -252,123 +376,6 @@ class Orchestrator:
 
         # 8. Finished Goods Mask for Metrics (excludes ingredients from inventory turns)
         self._fg_product_mask = self._build_finished_goods_mask()
-
-        # v0.69.2 PERF: Pre-build topology maps for DRP distribution
-        # v0.83.0: Primary-only — each DC assigned to shortest-distance RDC
-        #          to prevent double-counting with multi-source links.
-        #          Lateral RDC↔RDC links excluded (both endpoints are RDCs).
-        self._rdc_downstream_dcs: dict[str, list[str]] = {}
-        self._dc_downstream_stores: dict[str, list[str]] = {}
-        dc_assigned_rdc: set[str] = set()
-        # Sort links by distance so shortest (primary) is processed first
-        sorted_links = sorted(
-            self.world.links.values(), key=lambda lk: lk.distance_km
-        )
-        # Pre-populate dc_assigned_rdc with plant-direct DCs so their
-        # secondary RDC links don't add them to _rdc_downstream_dcs
-        for link in sorted_links:
-            tgt_node = self.world.nodes.get(link.target_id)
-            if (
-                tgt_node
-                and tgt_node.type == NodeType.DC
-                and not link.target_id.startswith("RDC-")
-                and link.target_id not in dc_assigned_rdc
-                and link.source_id.startswith("PLANT-")
-            ):
-                dc_assigned_rdc.add(link.target_id)
-        for link in sorted_links:
-            src_node = self.world.nodes.get(link.source_id)
-            tgt_node = self.world.nodes.get(link.target_id)
-            if src_node and tgt_node:
-                if (
-                    src_node.type == NodeType.DC
-                    and link.source_id.startswith("RDC-")
-                    and tgt_node.type == NodeType.DC
-                    and not link.target_id.startswith("RDC-")
-                    and link.target_id not in dc_assigned_rdc
-                ):
-                    self._rdc_downstream_dcs.setdefault(
-                        link.source_id, []
-                    ).append(link.target_id)
-                    dc_assigned_rdc.add(link.target_id)
-                if tgt_node.type == NodeType.STORE:
-                    self._dc_downstream_stores.setdefault(
-                        link.source_id, []
-                    ).append(link.target_id)
-
-        # v0.83.0: Pre-build lateral RDC↔RDC link list for transshipment
-        self._lateral_rdc_links: list[tuple[str, str, Link]] = []
-        for link in self.world.links.values():
-            if (
-                link.source_id.startswith("RDC-")
-                and link.target_id.startswith("RDC-")
-            ):
-                self._lateral_rdc_links.append(
-                    (link.source_id, link.target_id, link)
-                )
-        # v0.85.0: Secondary-source topology maps for deployment awareness
-        # Maps DC → its secondary RDC, and RDC → DCs using it as secondary
-        enrichment = self.config.get("network_enrichment", {})
-        self._secondary_order_fraction = float(
-            enrichment.get("secondary_source_order_fraction", 0.0)
-        )
-        self._dc_secondary_rdc: dict[str, str] = {}
-        self._rdc_secondary_dcs: dict[str, list[str]] = {}
-        if self._secondary_order_fraction > 0:
-            # Group links by customer DC target, sorted by distance
-            dc_links: dict[str, list[Link]] = {}
-            for link in sorted_links:
-                tgt_node = self.world.nodes.get(link.target_id)
-                if (
-                    tgt_node
-                    and tgt_node.type == NodeType.DC
-                    and not link.target_id.startswith("RDC-")
-                ):
-                    dc_links.setdefault(link.target_id, []).append(link)
-            # Second link (by distance) = secondary source; capture if RDC
-            for dc_id, links in dc_links.items():
-                if len(links) >= 2:  # noqa: PLR2004
-                    sec_src = links[1].source_id
-                    if sec_src.startswith("RDC-"):
-                        self._dc_secondary_rdc[dc_id] = sec_src
-                        self._rdc_secondary_dcs.setdefault(
-                            sec_src, []
-                        ).append(dc_id)
-
-        # v0.55.0: Diagnostic counters for need-based deployment
-        self._deployment_total_need = 0.0
-        self._deployment_total_deployed = 0.0
-        self._deployment_retained_at_plant = 0.0
-
-        # v0.86.0 PERF: Pre-compute production-source boolean mask
-        # Used to filter OrderBatch lines for MRP signal (RDC + plant sources)
-        self._is_production_source = np.zeros(self.state.n_nodes, dtype=bool)
-        for n_id in self.world.nodes:
-            idx = self.state.node_id_to_idx.get(n_id)
-            if idx is not None and (
-                n_id.startswith("RDC-") or n_id.startswith("PLANT-")
-            ):
-                self._is_production_source[idx] = True
-
-        # v0.89.0: DRP Distribution Engine (replaces push at step 10a)
-        # Init BEFORE deployment shares so deployment can use DRP throughput demand.
-        _sim_p = self.config.get("simulation_parameters", {})
-        _replen_p = _sim_p.get("agents", {}).get("replenishment", {})
-        drp_cfg = _replen_p.get("drp_distribution", {})
-        self._drp_enabled = drp_cfg.get("enabled", True)
-        self.drp_distribution = DRPDistributionEngine(
-            world=self.world,
-            state=self.state,
-            config=self.config,
-            pos_engine=self.pos_engine,
-            mrp_engine=self.mrp_engine,
-            rdc_downstream_dcs=self._rdc_downstream_dcs,
-            dc_downstream_stores=self._dc_downstream_stores,
-            dc_secondary_rdc=self._dc_secondary_rdc,
-            rdc_secondary_dcs=self._rdc_secondary_dcs,
-            secondary_order_fraction=self._secondary_order_fraction,
-            route_map=self.logistics.route_map,
-        )
 
         # v0.45.0: Calculate deployment shares for production routing
         # Includes both RDCs and plant-direct DCs
@@ -790,7 +797,33 @@ class Orchestrator:
             return np.zeros(self.state.n_products)
 
         if tgt.type == NodeType.DC:
-            # Plant→DC or RDC→DC: flow is aggregate downstream demand
+            if self._drp_enabled:
+                # v0.89.1: RDC→DC links use DRP DC-level demand (not recursive
+                # store POS) to match actual DRP outflow and prevent overpriming.
+                is_rdc_to_dc = (
+                    link.source_id.startswith("RDC-")
+                    and not link.target_id.startswith("RDC-")
+                )
+                if is_rdc_to_dc:
+                    dc_demand = self.drp_distribution._dc_expected_demand.get(
+                        link.target_id, np.zeros(self.state.n_products)
+                    )
+                    # Scale by secondary fraction if this is a secondary link
+                    if link.target_id in self._dc_secondary_rdc:
+                        frac = self._secondary_order_fraction
+                        if self._dc_secondary_rdc[link.target_id] == link.source_id:
+                            dc_demand = dc_demand * frac
+                        else:
+                            dc_demand = dc_demand * (1.0 - frac)
+                    return dc_demand.copy()
+
+                # v0.89.1: Plant→RDC links use DRP throughput demand
+                if link.target_id.startswith("RDC-"):
+                    return self.drp_distribution.get_rdc_throughput_demand(
+                        link.target_id
+                    )
+
+            # Plant→DC (plant-direct) or other: aggregate downstream demand
             return self._aggregate_downstream_demand(link.target_id, base_demand)
 
         return np.zeros(self.state.n_products)
@@ -1071,10 +1104,15 @@ class Orchestrator:
             for abc_class, factor in abc_velocity_factors.items()
         }
 
-        # Same scaling for RDCs
+        # v0.89.1: RDC priming uses deployment target DOS (not rdc_days_supply)
+        # to match the level the deployment system expects.  If RDCs start at
+        # 7.5 DOS but deployment targets 15 DOS, the gap never closes because
+        # plants can't ramp up fast enough, leading to perpetual deficit.
+        replen_params = sim_params.get("agents", {}).get("replenishment", {})
+        rdc_target_dos = float(replen_params.get("rdc_target_dos", 15.0))
         rdc_abc_target_dos = {
-            abc_class: rdc_days_supply * factor
-            for abc_class, factor in abc_velocity_factors.items()
+            abc_class: rdc_target_dos  # uniform target (no ABC on RDC priming)
+            for abc_class in abc_velocity_factors
         }
 
         # v0.60.0: DC-specific priming targets matching deployment
@@ -1134,34 +1172,16 @@ class Orchestrator:
                 node_idx = self.state.node_id_to_idx.get(node_id)
                 if node_idx is not None:
                     if node_id.startswith("RDC-"):
-                        # Aggregate downstream demand per SKU
-                        rdc_downstream_demand = np.zeros(self.state.n_products)
-
-                        # Use recursive discovery for RDC downstream demand
-                        downstream_map: dict[str, list[str]] = {}
-                        for link in self.world.links.values():
-                            downstream_map.setdefault(
-                                link.source_id, []
-                            ).append(link.target_id)
-
-                        visited = set()
-                        stack = [node_id]
-                        while stack:
-                            current = stack.pop()
-                            if current in visited:
-                                continue
-                            visited.add(current)
-                            for child_id in downstream_map.get(current, []):
-                                child_node = self.world.nodes.get(child_id)
-                                if child_node:
-                                    if child_node.type == NodeType.STORE:
-                                        t_idx = self.state.node_id_to_idx.get(child_id)
-                                        if t_idx is not None:
-                                            rdc_downstream_demand += (
-                                                base_demand_matrix[t_idx, :]
-                                            )
-                                    else:
-                                        stack.append(child_id)
+                        # v0.89.1: Use DRP throughput demand (DC-level, not
+                        # recursive store POS) to match actual RDC outflow.
+                        # Old method aggregated all downstream store POS
+                        # (~600K/RDC/day) but DRP only pulls ~370K/RDC/day,
+                        # causing massive RDC overstock → DC starvation.
+                        rdc_downstream_demand = (
+                            self.drp_distribution.get_rdc_throughput_demand(
+                                node_id
+                            )
+                        )
 
                         # Skip priming if no demand (Ghost RDC fix)
                         if rdc_downstream_demand.sum() == 0:
@@ -1268,7 +1288,7 @@ class Orchestrator:
                     else:
                         ingredient_demand = direct_demand
 
-                    # TODO(config): move ingredient target_days to simulation_config.json
+                    # TODO(config): move ingredient target_days to config
                     target_days = 14.0
                     ing_policy = mfg_config.get(
                         "inventory_policies", {}
@@ -1399,9 +1419,9 @@ class Orchestrator:
             self.replenisher.record_inflow_batch(order_batch)
 
             # v0.45.0: MRP signal — vectorized, replaces list comprehension filter
-            # v0.89.0: When DRP suppresses DC pull, DRP provides the MRP signal
-            # at step 10a instead (avoids double-advancing demand history pointer)
-            if not self._drp_enabled:
+            # v0.89.1: When DRP ships, it provides the MRP signal at step 10a.
+            # When DRP is disabled, order-based signal feeds MRP here.
+            if not self._drp_ships:
                 prod_mask = self._is_production_source[order_batch.source_idx]
                 self.mrp_engine.record_order_demand_batch(order_batch, prod_mask)
 
@@ -1532,7 +1552,13 @@ class Orchestrator:
         self.state.add_shipments_batch(plant_shipments)
 
         # 10a. v0.89.0: DRP distribution (RDC->DC need-based allocation)
-        drp_shipments = self.drp_distribution.compute_and_execute(day)
+        # v0.89.1: Pass replenisher's outflow demand so DRP tracks actual
+        # DC→Store product mix instead of static base POS.
+        dc_outflow = self.replenisher.get_outflow_demand()
+        drp_shipments = (
+            self.drp_distribution.compute_and_execute(day, dc_outflow=dc_outflow)
+            if self._drp_ships else []
+        )
         if drp_shipments:
             self.auditor.record_plant_shipments_out(drp_shipments)
             self._apply_logistics_quirks_and_risks(drp_shipments)

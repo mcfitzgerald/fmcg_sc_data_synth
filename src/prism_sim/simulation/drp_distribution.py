@@ -101,12 +101,20 @@ class DRPDistributionEngine:
 
         n_p = state.n_products
 
-        # --- ABC-differentiated DC target DOS vector (same as deployment) ---
+        # --- ABC-differentiated DC target DOS vector ---
+        # v0.89.1: dc_target_amplification accounts for bullwhip between
+        # base POS demand and actual (s,S) replenisher ordering.  DCs serve
+        # batched store orders that are ~2x base demand on average.  Without
+        # this factor, DRP targets 10.5 DOS of base demand but DCs drain at
+        # 2x that rate, causing persistent stockouts.
         dc_buffer = float(replen_params.get("dc_buffer_days", 7.0))
-        self._dc_target_dos_vec = np.full(n_p, dc_buffer * 2.5, dtype=np.float64)  # C
+        dc_amp = float(drp_cfg.get("dc_target_amplification", 1.0))
+        self._dc_target_dos_vec = np.full(
+            n_p, dc_buffer * 2.5 * dc_amp, dtype=np.float64
+        )  # C
         abc = mrp_engine.abc_class
-        self._dc_target_dos_vec[abc == 0] = dc_buffer * 1.5  # A → 10.5
-        self._dc_target_dos_vec[abc == 1] = dc_buffer * 2.0  # B → 14.0
+        self._dc_target_dos_vec[abc == 0] = dc_buffer * 1.5 * dc_amp  # A
+        self._dc_target_dos_vec[abc == 1] = dc_buffer * 2.0 * dc_amp  # B
 
         # --- Pre-compute per-DC expected demand (base, no seasonality) ---
         base_demand = pos_engine.get_base_demand_matrix()  # [n_nodes, n_products]
@@ -176,8 +184,20 @@ class DRPDistributionEngine:
 
         return demand
 
-    def compute_and_execute(self, day: int) -> list[Shipment]:
+    def compute_and_execute(
+        self, day: int, dc_outflow: np.ndarray | None = None,
+    ) -> list[Shipment]:
         """Run DRP distribution for all RDCs on *day*.
+
+        Parameters
+        ----------
+        day : int
+            Current simulation day.
+        dc_outflow : np.ndarray | None
+            Shape ``[n_nodes, n_products]``.  Rolling-average outflow (what
+            DCs actually ship to stores).  When provided, DRP uses this as
+            the demand signal instead of static base POS -- fixing the
+            product-mix mismatch caused by (s,S) batching.
 
         Returns list of DRP shipments (already deducted from RDC inventory,
         ready for ``add_shipments_batch``).
@@ -208,6 +228,7 @@ class DRPDistributionEngine:
                 need = self._compute_dc_need(
                     dc_id, seasonal, in_transit, dc_target_dos,
                     is_primary=True, sec_frac=sec_frac,
+                    dc_outflow=dc_outflow,
                 )
                 dc_needs[dc_id] = need
                 total_need += need
@@ -217,6 +238,7 @@ class DRPDistributionEngine:
                 need = self._compute_dc_need(
                     sec_dc_id, seasonal, in_transit, dc_target_dos,
                     is_primary=False, sec_frac=sec_frac,
+                    dc_outflow=dc_outflow,
                 )
                 dc_needs[sec_dc_id] = need
                 total_need += need
@@ -324,15 +346,33 @@ class DRPDistributionEngine:
         *,
         is_primary: bool,
         sec_frac: float,
+        dc_outflow: np.ndarray | None = None,
     ) -> np.ndarray:
         """Compute per-product need vector for a single DC.
 
         need = max(0, target_inventory - inventory_position)
         Scaled by secondary-source fraction when applicable.
+
+        v0.89.1: When ``dc_outflow`` is provided (replenisher's rolling-avg
+        outflow), use it as the demand signal instead of static base POS.
+        This fixes the product-mix mismatch caused by (s,S) store batching:
+        outflow tracks what DCs actually ship to stores, not what stores
+        theoretically consume.
         """
         state = self._state
         n_p = state.n_products
-        demand = self._dc_expected_demand.get(dc_id, np.zeros(n_p)) * seasonal
+
+        # v0.89.1: Use actual DC outflow as demand signal when available,
+        # floored at base POS to prevent demand collapse during stockouts.
+        base_demand = self._dc_expected_demand.get(dc_id, np.zeros(n_p))
+        dc_idx = state.node_id_to_idx.get(dc_id)
+        if dc_idx is not None and dc_outflow is not None:
+            outflow = dc_outflow[dc_idx, :]
+            # Floor at base demand (outflow drops during stockouts;
+            # we don't want DRP to under-ship when DC is already dry)
+            demand = np.maximum(outflow, base_demand) * seasonal
+        else:
+            demand = base_demand * seasonal
         target = dc_target_dos * demand  # ABC-differentiated
 
         dc_idx = state.node_id_to_idx.get(dc_id)

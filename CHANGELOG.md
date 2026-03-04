@@ -5,6 +5,37 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.89.1] - 2026-03-04
+
+### Fix: DRP Shipping Disabled by Default — DC Pull Wins on Product-Mix Accuracy
+
+Pure DRP distribution suffers product-mix mismatch with (s,S) store batching: stores order specific SKU bundles,
+but DRP positions inventory based on aggregate demand signals — resulting in 72.6% fill rate. Hybrid (DRP+DC pull)
+gives 92.9%. DC pull only gives 94.6%. DRP shipping now disabled by default (`enabled: false`).
+
+#### DRP Engine Changes (`simulation/drp_distribution.py`, `simulation/orchestrator.py`)
+- **DRP always initialized** — provides demand signals for priming and deployment even when shipping disabled.
+  `_drp_enabled` controls whether priming/deployment use DRP throughput demand vs recursive store POS.
+  `_drp_ships` (= `_drp_enabled`) controls whether DRP actively ships RDC→DC.
+- **DRP execution gated by `_drp_ships`** — `compute_and_execute()` still called (for demand signal computation)
+  but shipment list only used when `_drp_ships` is true. Was running unconditionally.
+- **Outflow-based demand signal** — `_compute_dc_need()` uses replenisher's rolling-avg DC outflow instead of
+  static base POS when `dc_outflow` is provided. Floors at base POS to prevent demand collapse.
+- **`dc_target_amplification`** config — bullwhip buffer for DRP DC targets (default 1.0, no amplification).
+- **`suppress_dc_pull`** config — when true, suppresses DC (s,S) pull orders for DRP-managed routes (hybrid mode).
+
+#### Config (`simulation_config.json` → `distribution.drp`)
+- `enabled: false` — DRP shipping disabled by default (DCs use (s,S) pull)
+- `suppress_dc_pull: false` — DC pull not suppressed (only relevant when `enabled: true`)
+- `dc_target_amplification: 1.0` — no bullwhip buffer on DRP DC targets
+
+#### Architecture Note
+| Mode | Fill Rate | Mechanism |
+|------|-----------|-----------|
+| DC pull only (`enabled: false`) | **94.6%** | DCs order exactly what stores consumed via (s,S) |
+| Hybrid (`enabled: true`, `suppress_dc_pull: false`) | 92.9% | DRP positions bulk + DC pull fills gaps |
+| Pure DRP (`enabled: true`, `suppress_dc_pull: true`) | 72.6% | DRP alone — product-mix mismatch with store batching |
+
 ## [0.88.0] - 2026-03-04
 
 ### Fixed: RDC Accumulation / Low Fill Rate

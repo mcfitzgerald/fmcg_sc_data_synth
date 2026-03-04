@@ -54,6 +54,7 @@ The simulation enforces these constraints - violations indicate bugs:
 |---------|------|----------------------|
 | **Production planning** | `simulation/mrp.py` | `MRPEngine.generate_production_orders()` — SKU + dependent bulk intermediate orders |
 | **DRP-Lite (B/C production)** | `simulation/drp.py` | `DRPPlanner.plan_requirements()` — forward-netting daily targets for B/C items |
+| **DRP Distribution (RDC→DC)** | `simulation/drp_distribution.py` | `DRPDistributionEngine` — always initialized for demand signals; shipping gated by `_drp_ships` flag (disabled by default v0.89.1) |
 | **Ingredient procurement** | `simulation/mrp.py` | `MRPEngine.generate_purchase_orders()` — two-step BOM explosion for 3-level BOM. Supplier selection via Kraljic catalog → SPOF → fallback |
 | **Recipe matrix (BOM)** | `network/recipe_matrix.py` | `RecipeMatrixBuilder` — dense [n_products, n_products] matrix |
 | **Production execution** | `simulation/transform.py` | `TransformEngine` — two-pass: bulk intermediates first, then SKUs |
@@ -281,7 +282,7 @@ poetry run python scripts/generate_static_world.py
 Two initialization paths:
 
 ### Cold Start (default)
-1. **Demand-proportional priming** (`_initialize_inventory()`): Seeds on-hand inventory at every node proportional to expected demand and ABC class. Priming targets match operational targets: stores use `store_days_supply=6.0` × ABC factors; DCs use `dc_buffer_days × 1.5/2.0/2.5` (A/B/C); RDCs use `rdc_days_supply=9` × ABC factors with pipeline adjustment. Both RDCs and Customer DCs subtract upstream lead time to prevent double-stocking with pipeline inventory.
+1. **Demand-proportional priming** (`_initialize_inventory()`): Seeds on-hand inventory at every node proportional to expected demand and ABC class. Priming targets match operational targets: stores use `store_days_supply=6.0` × ABC factors; DCs use `dc_buffer_days × 1.5/2.0/2.5` (A/B/C); RDCs use `rdc_days_supply=9` × ABC factors with pipeline adjustment. Both RDCs and Customer DCs subtract upstream lead time to prevent double-stocking with pipeline inventory. When `_drp_enabled`, RDC priming uses DRP throughput demand instead of recursive store POS (v0.89.1).
 2. **Synthetic steady-state priming** (`_prime_synthetic_steady_state()`): Adds pipeline shipments, production WIP (plant FG at `plant_fg_prime_days`=3.5 per plant → 14 DOS total, matching MRP A-item target ~17 DOS with WIP+transit), history buffers, and inventory age
 3. **Stabilization** (default 10 days): Normal simulation steps excluded from metrics
 
@@ -387,7 +388,8 @@ Every `tick()` (1 day) in `Orchestrator._run_day()`:
 7a. RETURNS       → LogisticsEngine generates returns from arrivals (Damage/Recall)
 8.  MRP           → MRPEngine plans production (uses POS demand signal + DRP for B/C)
 9.  PRODUCTION    → TransformEngine executes manufacturing (Work Orders → Batches)
-10. DEPLOYMENT    → _create_plant_shipments() need-based deployment (Plant→RDC/DC)
+9a. DRP DISTRIB   → DRPDistributionEngine.compute_and_execute() — demand signal always computed; shipments only if _drp_ships (disabled by default v0.89.1)
+10. DEPLOYMENT    → _create_plant_shipments() need-based deployment (Plant→RDC/DC); uses DRP demand when _drp_enabled, else recursive store POS
 10a.PUSH EXCESS   → _push_excess_rdc_inventory() RDC→DC overflow valve
 10b.LATERAL XFER  → _execute_lateral_transshipment() RDC↔RDC inventory balancing
 11. POST-QUIRKS   → Apply logistics delays/congestion (QuirkManager)
@@ -469,7 +471,7 @@ need = max(0, target_dos × expected_demand × seasonal_factor - current_positio
 # current_position = on_hand + in_transit_to_target
 # seasonal_factor = MRPEngine._get_seasonal_factor(day)
 ```
-1. `_compute_deployment_needs()` calculates per-target, per-product need vectors (seasonally adjusted)
+1. `_compute_deployment_needs()` calculates per-target, per-product need vectors (seasonally adjusted). When `_drp_enabled`, uses DRP throughput demand for RDC targets instead of recursive store POS (v0.89.1).
 2. Available FG per product summed across all plants
 3. Fair-share allocation when constrained: `fill_ratio = min(available / total_need, 1.0)`
 4. Share ceiling headroom: 1.5× prevents any single target from consuming all supply
@@ -594,7 +596,7 @@ batch_qty        = max(net_requirement, 0)           # Skip if at/above target
 
 ### B/C Items: DRP-Lite + Campaign Triggers
 
-B/C items use DRP for forward-netting production targets, with campaign triggers as fallback:
+B/C items use DRP-Lite (`drp.py`) for forward-netting production targets, with campaign triggers as fallback. Note: DRP-Lite (production scheduling) is distinct from DRP Distribution (`drp_distribution.py`, RDC→DC shipping/demand signals, v0.89.0+).
 
 1. **DRP-Driven Production (Primary):** `DRPPlanner.plan_requirements()` projects inventory forward, nets against in-transit/in-production, and level-loads daily production targets
    - DRP daily target is scaled by ABC horizon for batch sizing
@@ -960,6 +962,10 @@ Orchestrator
     │         ├──→ check materials (vectorized)
     │         ├──→ consume ingredients
     │         └──→ produce finished goods (parallel lines)
+    │
+    ├──→ DRPDistributionEngine.compute_and_execute() [DRP DISTRIBUTION]
+    │         ├──→ _compute_dc_need() per DC (uses dc_outflow when available)
+    │         └──→ ships RDC→DC only if _drp_ships (disabled by default v0.89.1)
     │
     ├──→ _create_plant_shipments() [DEPLOYMENT]
     │         ├──→ _compute_deployment_needs() per target
