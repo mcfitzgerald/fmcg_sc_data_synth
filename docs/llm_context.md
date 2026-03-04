@@ -106,6 +106,14 @@ After allocation, `AllocationAgent._materialize_orders()` converts surviving lin
 
 `Shipment.total_cases: float` caches line-quantity sum for O(1) shipped/arrived totals.
 
+#### v0.87.0 Performance Layer
+
+**Per-target vectorization** (`replenishment.py`): Pre-computed source/lead-time/channel arrays (`_target_source_idx`, `_target_lead_time_arr`, `_target_has_secondary`, `_target_channel_arr` etc.) at `__init__`. `_create_order_batch` uses `np.minimum.reduceat` for rush detection and vectorized promo/order-type assignment — no per-target Python loop.
+
+**Shipment parallel arrays** (`core.py`): `Shipment._line_product_idx: np.ndarray[int32]` and `_line_quantity: np.ndarray[float64]` built by `LogisticsEngine._populate_shipment_arrays()`. Used by `add_shipments_batch`, `pop_arrived_shipments`, `record_receipts` via `np.add.at()` instead of per-line iteration.
+
+**`active_shipments` is a computed property** (`state.py`): Derived from `_shipments_by_arrival` bucket dict. No flat list maintenance overhead.
+
 ### Generators (Static World Creation)
 | Concept | File | Key Classes |
 |---------|------|-------------|

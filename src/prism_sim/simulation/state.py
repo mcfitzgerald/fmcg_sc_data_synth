@@ -59,7 +59,9 @@ class StateManager:
         self.cash = np.zeros((self.n_nodes,), dtype=np.float32)
 
         # Discrete State (Levels 10-11)
-        self.active_shipments: list[Shipment] = []
+        # v0.87.0 PERF: active_shipments is now a computed property from
+        # _shipments_by_arrival — eliminates O(N) list.append + set-based
+        # filtering on every add/remove.
         # v0.86.0 PERF: Bucket shipments by arrival day for O(1) arrival lookup
         self._shipments_by_arrival: dict[int, list[Shipment]] = {}
 
@@ -86,6 +88,22 @@ class StateManager:
         self.inventory_age = np.zeros(
             (self.n_nodes, self.n_products), dtype=np.float64
         )
+
+    @property
+    def active_shipments(self) -> list[Shipment]:
+        """PERF v0.87.0: Computed from bucket dict — no flat list maintenance."""
+        return [
+            s
+            for bucket in self._shipments_by_arrival.values()
+            for s in bucket
+        ]
+
+    @active_shipments.setter
+    def active_shipments(self, value: list[Shipment]) -> None:
+        """Support warm_start assignment of shipments list."""
+        self._shipments_by_arrival.clear()
+        for s in value:
+            self._shipments_by_arrival.setdefault(s.arrival_day, []).append(s)
 
     @property
     def inventory(self) -> np.ndarray:
@@ -205,7 +223,6 @@ class StateManager:
         PERF: Add a shipment and update the in-transit tensor incrementally.
         Use this instead of directly appending to active_shipments.
         """
-        self.active_shipments.append(shipment)
         self._shipments_by_arrival.setdefault(
             shipment.arrival_day, []
         ).append(shipment)
@@ -217,13 +234,21 @@ class StateManager:
             else self.node_id_to_idx.get(shipment.target_id)
         )
         if target_idx is not None:
-            for line in shipment.lines:
-                p_idx = (
-                    line.product_idx if line.product_idx >= 0
-                    else self.product_id_to_idx.get(line.product_id)
+            # PERF v0.87.0: Use parallel arrays when available
+            if shipment._line_product_idx is not None:
+                np.add.at(
+                    self._in_transit_tensor[target_idx],
+                    shipment._line_product_idx,
+                    shipment._line_quantity,
                 )
-                if p_idx is not None and p_idx >= 0:
-                    self._in_transit_tensor[target_idx, p_idx] += line.quantity
+            else:
+                for line in shipment.lines:
+                    p_idx = (
+                        line.product_idx if line.product_idx >= 0
+                        else self.product_id_to_idx.get(line.product_id)
+                    )
+                    if p_idx is not None and p_idx >= 0:
+                        self._in_transit_tensor[target_idx, p_idx] += line.quantity
 
     def remove_shipment(self, shipment: Shipment) -> None:
         """
@@ -231,23 +256,35 @@ class StateManager:
         Use this when shipments arrive instead of filtering active_shipments.
         """
         # Update in-transit tensor (subtract quantities)
-        # PERF v0.69.3: Use cached indices
         target_idx = (
             shipment.target_idx if shipment.target_idx >= 0
             else self.node_id_to_idx.get(shipment.target_id)
         )
         if target_idx is not None:
-            for line in shipment.lines:
-                p_idx = (
-                    line.product_idx if line.product_idx >= 0
-                    else self.product_id_to_idx.get(line.product_id)
+            if shipment._line_product_idx is not None:
+                np.add.at(
+                    self._in_transit_tensor[target_idx],
+                    shipment._line_product_idx,
+                    -shipment._line_quantity,
                 )
-                if p_idx is not None and p_idx >= 0:
-                    self._in_transit_tensor[target_idx, p_idx] -= line.quantity
+            else:
+                for line in shipment.lines:
+                    p_idx = (
+                        line.product_idx if line.product_idx >= 0
+                        else self.product_id_to_idx.get(line.product_id)
+                    )
+                    if p_idx is not None and p_idx >= 0:
+                        self._in_transit_tensor[target_idx, p_idx] -= line.quantity
 
-        # Remove from active list (O(n) but unavoidable for list)
-        if shipment in self.active_shipments:
-            self.active_shipments.remove(shipment)
+        # Remove from bucket dict
+        bucket = self._shipments_by_arrival.get(shipment.arrival_day)
+        if bucket:
+            try:
+                bucket.remove(shipment)
+            except ValueError:
+                pass
+            if not bucket:
+                del self._shipments_by_arrival[shipment.arrival_day]
 
     def add_shipments_batch(self, shipments: list[Shipment]) -> None:
         """
@@ -262,21 +299,27 @@ class StateManager:
         _by_arrival = self._shipments_by_arrival
 
         for shipment in shipments:
-            self.active_shipments.append(shipment)
             _by_arrival.setdefault(shipment.arrival_day, []).append(shipment)
-            # PERF v0.69.3: Use cached indices
             target_idx = (
                 shipment.target_idx if shipment.target_idx >= 0
                 else self.node_id_to_idx.get(shipment.target_id)
             )
             if target_idx is not None:
-                for line in shipment.lines:
-                    p_idx = (
-                        line.product_idx if line.product_idx >= 0
-                        else self.product_id_to_idx.get(line.product_id)
+                # PERF v0.87.0: Use parallel arrays when available
+                if shipment._line_product_idx is not None:
+                    np.add.at(
+                        delta[target_idx],
+                        shipment._line_product_idx,
+                        shipment._line_quantity,
                     )
-                    if p_idx is not None and p_idx >= 0:
-                        delta[target_idx, p_idx] += line.quantity
+                else:
+                    for line in shipment.lines:
+                        p_idx = (
+                            line.product_idx if line.product_idx >= 0
+                            else self.product_id_to_idx.get(line.product_id)
+                        )
+                        if p_idx is not None and p_idx >= 0:
+                            delta[target_idx, p_idx] += line.quantity
 
         self._in_transit_tensor += delta
 
@@ -304,20 +347,25 @@ class StateManager:
                 else self.node_id_to_idx.get(shipment.target_id)
             )
             if target_idx is not None:
-                for line in shipment.lines:
-                    p_idx = (
-                        line.product_idx if line.product_idx >= 0
-                        else self.product_id_to_idx.get(line.product_id)
+                # PERF v0.87.0: Use parallel arrays when available
+                if shipment._line_product_idx is not None:
+                    np.add.at(
+                        delta[target_idx],
+                        shipment._line_product_idx,
+                        shipment._line_quantity,
                     )
-                    if p_idx is not None and p_idx >= 0:
-                        delta[target_idx, p_idx] += line.quantity
+                else:
+                    for line in shipment.lines:
+                        p_idx = (
+                            line.product_idx if line.product_idx >= 0
+                            else self.product_id_to_idx.get(line.product_id)
+                        )
+                        if p_idx is not None and p_idx >= 0:
+                            delta[target_idx, p_idx] += line.quantity
         self._in_transit_tensor -= delta
 
-        # Remove from flat list
-        arrived_set = set(id(s) for s in arrived)
-        self.active_shipments = [
-            s for s in self.active_shipments if id(s) not in arrived_set
-        ]
+        # v0.87.0: No flat list to filter — arrived were already popped
+        # from _shipments_by_arrival above.
         return arrived
 
     def remove_arrived_shipments(self, arrived: list[Shipment]) -> None:
@@ -330,29 +378,41 @@ class StateManager:
 
         # Build delta tensor for all arrived shipments
         delta = np.zeros((self.n_nodes, self.n_products), dtype=np.float64)
-        arrived_set = set(id(s) for s in arrived)
 
         for shipment in arrived:
-            # PERF v0.69.3: Use cached indices
             target_idx = (
                 shipment.target_idx if shipment.target_idx >= 0
                 else self.node_id_to_idx.get(shipment.target_id)
             )
             if target_idx is not None:
-                for line in shipment.lines:
-                    p_idx = (
-                        line.product_idx if line.product_idx >= 0
-                        else self.product_id_to_idx.get(line.product_id)
+                # PERF v0.87.0: Use parallel arrays when available
+                if shipment._line_product_idx is not None:
+                    np.add.at(
+                        delta[target_idx],
+                        shipment._line_product_idx,
+                        shipment._line_quantity,
                     )
-                    if p_idx is not None and p_idx >= 0:
-                        delta[target_idx, p_idx] += line.quantity
+                else:
+                    for line in shipment.lines:
+                        p_idx = (
+                            line.product_idx if line.product_idx >= 0
+                            else self.product_id_to_idx.get(line.product_id)
+                        )
+                        if p_idx is not None and p_idx >= 0:
+                            delta[target_idx, p_idx] += line.quantity
 
         self._in_transit_tensor -= delta
 
-        # Filter active_shipments list (O(n) but only done once per batch)
-        self.active_shipments = [
-            s for s in self.active_shipments if id(s) not in arrived_set
-        ]
+        # v0.87.0: Remove from bucket dict instead of flat list
+        for shipment in arrived:
+            bucket = self._shipments_by_arrival.get(shipment.arrival_day)
+            if bucket:
+                try:
+                    bucket.remove(shipment)
+                except ValueError:
+                    pass
+                if not bucket:
+                    del self._shipments_by_arrival[shipment.arrival_day]
 
     def get_in_transit_by_target(self) -> np.ndarray:
         """

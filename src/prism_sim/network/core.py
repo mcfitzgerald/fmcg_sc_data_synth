@@ -199,6 +199,11 @@ class Shipment:
     source_idx: int = -1
     target_idx: int = -1
 
+    # PERF v0.87.0: Parallel arrays for vectorized tensor consumers
+    # When present, state.py / monitor.py use these instead of iterating lines.
+    _line_product_idx: np.ndarray | None = field(default=None, repr=False)
+    _line_quantity: np.ndarray | None = field(default=None, repr=False)
+
 
 # --- Manufacturing Primitives ---
 

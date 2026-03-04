@@ -9,7 +9,6 @@ from prism_sim.network.core import (
     Order,
     OrderBatch,
     OrderPriority,
-    OrderType,
     StoreFormat,
 )
 from prism_sim.simulation.state import StateManager
@@ -497,6 +496,12 @@ class MinMaxReplenisher:
         - _product_id_arr: p_idx -> product_id (str)
         - _product_category_arr: p_idx -> category.name (str)
         - _node_id_arr: n_idx -> node_id (str)
+        - _target_source_idx: n_idx -> primary source node_idx (PERF v0.87.0)
+        - _target_lead_time_arr: n_idx -> primary link lead time (PERF v0.87.0)
+        - _target_has_secondary: n_idx -> has secondary source (PERF v0.87.0)
+        - _secondary_source_idx_arr: n_idx -> secondary source node_idx (PERF v0.87.0)
+        - _secondary_lead_time_arr: n_idx -> secondary lead time (PERF v0.87.0)
+        - _target_channel_arr: n_idx -> channel.name string (PERF v0.87.0)
         """
         n_products = self.state.n_products
         n_nodes = self.state.n_nodes
@@ -521,6 +526,42 @@ class MinMaxReplenisher:
 
         for n_idx in range(n_nodes):
             self._node_id_arr[n_idx] = self.state.node_idx_to_id[n_idx]
+
+        # PERF v0.87.0: Pre-computed source/lead-time/channel arrays for
+        # vectorized _create_order_batch (replaces per-target dict lookups)
+        _nid_to_idx = self.state.node_id_to_idx
+        self._target_source_idx = np.full(n_nodes, -1, dtype=np.int32)
+        self._target_lead_time_arr = np.full(n_nodes, 3.0, dtype=np.float32)
+        self._target_has_secondary = np.zeros(n_nodes, dtype=bool)
+        self._secondary_source_idx_arr = np.full(n_nodes, -1, dtype=np.int32)
+        self._secondary_lead_time_arr = np.full(n_nodes, 3.0, dtype=np.float32)
+        self._target_channel_arr: np.ndarray = np.empty(n_nodes, dtype=object)
+
+        for n_idx in range(n_nodes):
+            n_id = self._node_id_arr[n_idx]
+            # Primary source
+            src_id = self.store_supplier_map.get(n_id)
+            if src_id:
+                self._target_source_idx[n_idx] = _nid_to_idx.get(src_id, -1)
+                self._target_lead_time_arr[n_idx] = self._link_lead_time.get(
+                    n_id, 3.0
+                )
+            # Secondary source
+            sec_id = self._secondary_source_map.get(n_id)
+            if sec_id:
+                self._target_has_secondary[n_idx] = True
+                self._secondary_source_idx_arr[n_idx] = _nid_to_idx.get(
+                    sec_id, -1
+                )
+                self._secondary_lead_time_arr[n_idx] = (
+                    self._secondary_lead_time.get(n_id, 3.0)
+                )
+            # Channel name
+            node = self.world.nodes.get(n_id)
+            if node and node.channel:
+                self._target_channel_arr[n_idx] = node.channel.name
+            else:
+                self._target_channel_arr[n_idx] = ""
 
     def _cache_customer_dcs(self) -> None:
         """
@@ -1449,10 +1490,57 @@ class MinMaxReplenisher:
             cols = cols[alive]
 
         # --- 2. Per-target metadata (order type, priority, source, promo) -----
+        # PERF v0.87.0: Fully vectorized — replaces per-target Python loop.
         # Unique targets in this batch (preserves order)
         unique_targets, inverse = np.unique(target_idx_arr, return_inverse=True)
+        n_targets = len(unique_targets)
 
-        # Pre-compute active promos
+        # -- 2a. Vectorized source lookup (primary / secondary) ----------------
+        tgt_source_idx = self._target_source_idx[unique_targets].copy()
+        tgt_lead_time = self._target_lead_time_arr[unique_targets].copy()
+
+        if self._secondary_order_fraction > 0:
+            has_sec = self._target_has_secondary[unique_targets]
+            rng_vals = self._secondary_rng.random(n_targets)
+            use_sec = has_sec & (rng_vals < self._secondary_order_fraction)
+            if np.any(use_sec):
+                tgt_source_idx[use_sec] = self._secondary_source_idx_arr[
+                    unique_targets[use_sec]
+                ]
+                tgt_lead_time[use_sec] = self._secondary_lead_time_arr[
+                    unique_targets[use_sec]
+                ]
+
+        # Build source_id strings and order IDs (unavoidable string ops)
+        _nid_lookup = self.state.node_idx_to_id
+        _node_id_arr = self._node_id_arr
+        tgt_source_id: list[str] = [
+            _nid_lookup[int(si)] if si >= 0 else ""
+            for si in tgt_source_idx
+        ]
+        tgt_order_id: list[str] = [
+            f"ORD-{day}-{_node_id_arr[int(unique_targets[gi])]}-{gi + 1}"
+            for gi in range(n_targets)
+        ]
+        tgt_requested_date = day + tgt_lead_time.astype(np.int32)
+
+        # -- 2b. Vectorized rush detection via np.minimum.reduceat -------------
+        with np.errstate(divide="ignore", invalid="ignore"):
+            dos_per_line = np.where(
+                avg_demand[rows, cols] > 0,
+                on_hand_inv[rows, cols] / avg_demand[rows, cols],
+                1e30,  # large sentinel (reduceat-safe, no inf)
+            )
+
+        # Sort lines by target group for reduceat
+        sort_order = np.argsort(inverse, kind="mergesort")
+        sorted_dos = dos_per_line[sort_order]
+        sorted_inverse = inverse[sort_order]
+        _, group_starts = np.unique(sorted_inverse, return_index=True)
+
+        min_dos_per_target = np.minimum.reduceat(sorted_dos, group_starts)
+
+        # -- 2c. Vectorized promo detection ------------------------------------
         week = (day // 7) + 1
         active_promos: list[dict[str, Any]] = []
         promotions = self.config.get("promotions", [])
@@ -1460,105 +1548,68 @@ class MinMaxReplenisher:
             if p["start_week"] <= week <= p["end_week"]:
                 active_promos.append(p)
 
-        # Per-target data computed once, broadcast to per-line arrays later
-        n_targets = len(unique_targets)
-        tgt_order_type = np.full(n_targets, 3, dtype=np.int8)   # STANDARD=3
-        tgt_priority = np.full(n_targets, OrderPriority.STANDARD, dtype=np.int8)
-        tgt_source_id: list[str] = [""] * n_targets
-        tgt_source_idx = np.full(n_targets, -1, dtype=np.int32)
-        tgt_requested_date = np.full(n_targets, day + 3, dtype=np.int32)
-        tgt_order_id: list[str] = [""] * n_targets
+        is_promo = np.zeros(n_targets, dtype=bool)
         tgt_promo_ids: dict[int, str] = {}
 
-        # OrderType → int mapping for the batch (matches allocator priority_map)
-        _ot_map = {
-            OrderType.RUSH: 1,
-            OrderType.PROMOTIONAL: 2,
-            OrderType.STANDARD: 3,
-            OrderType.BACKORDER: 4,
-        }
+        if active_promos:
+            tgt_channels = self._target_channel_arr[unique_targets]
+            sorted_prod_idx = product_idx_arr[sort_order]
+            sorted_cats = self._product_category_arr[sorted_prod_idx]
 
-        # Compute per-target min DOS for rush detection
-        with np.errstate(divide="ignore", invalid="ignore"):
-            dos_per_line = np.where(
-                avg_demand[rows, cols] > 0,
-                on_hand_inv[rows, cols] / avg_demand[rows, cols],
-                np.inf,
-            )
+            for promo in active_promos:
+                remaining = ~is_promo
+                if not np.any(remaining):
+                    break
+                affected_cats = promo.get("affected_categories", ["all"])
+                affected_chans = promo.get("affected_channels")
 
-        for gi in range(n_targets):
-            t_idx = int(unique_targets[gi])
-            target_id = self._node_id_arr[t_idx]
-
-            # Source lookup (primary / secondary)
-            source_id = self.store_supplier_map.get(target_id)
-            if not source_id:
-                continue
-            use_secondary = False
-            if (
-                self._secondary_order_fraction > 0
-                and target_id in self._secondary_source_map
-                and self._secondary_rng.random() < self._secondary_order_fraction
-            ):
-                source_id = self._secondary_source_map[target_id]
-                use_secondary = True
-
-            tgt_source_id[gi] = source_id
-            tgt_source_idx[gi] = self.state.node_id_to_idx.get(source_id, -1)
-
-            lead_time = (
-                self._secondary_lead_time.get(target_id, 3.0)
-                if use_secondary
-                else self._link_lead_time.get(target_id, 3.0)
-            )
-            tgt_requested_date[gi] = day + int(lead_time)
-            tgt_order_id[gi] = f"ORD-{day}-{target_id}-{gi + 1}"
-
-            # Compute line mask once per target (avoid duplicate inverse == gi)
-            line_mask = inverse == gi
-
-            # Promo check (per-target, not per-line)
-            promo_id: str | None = None
-            target_node = self.world.nodes.get(target_id)
-            if active_promos and target_node:
-                line_pidxs = product_idx_arr[line_mask]
-                for promo in active_promos:
-                    affected_cats = promo.get("affected_categories", ["all"])
-                    affected_chans = promo.get("affected_channels")
-                    chan_match = (
-                        not affected_chans
-                        or (
-                            target_node.channel
-                            and target_node.channel.name in affected_chans
-                        )
+                # Channel match (vectorized)
+                if affected_chans:
+                    chan_match = np.array(
+                        [cn in affected_chans for cn in tgt_channels],
+                        dtype=bool,
                     )
-                    if chan_match:
-                        if "all" in affected_cats:
-                            promo_id = promo["code"]
-                            break
-                        for lp in line_pidxs:
-                            if self._product_category_arr[lp] in affected_cats:
-                                promo_id = promo["code"]
-                                break
-                        if promo_id:
-                            break
+                else:
+                    chan_match = np.ones(n_targets, dtype=bool)
 
-            # Determine order type + priority
-            o_type = OrderType.STANDARD
-            priority_val = OrderPriority.STANDARD
-            if promo_id:
-                o_type = OrderType.PROMOTIONAL
-                priority_val = OrderPriority.HIGH
-                tgt_promo_ids[t_idx] = promo_id
-            else:
-                # Min DOS across lines belonging to this target
-                min_dos = float(np.min(dos_per_line[line_mask]))
-                if min_dos < self.rush_threshold_days:
-                    o_type = OrderType.RUSH
-                    priority_val = OrderPriority.RUSH
+                candidates = chan_match & remaining
+                if not np.any(candidates):
+                    continue
 
-            tgt_order_type[gi] = _ot_map.get(o_type, 3)
-            tgt_priority[gi] = int(priority_val)
+                if "all" in affected_cats:
+                    new_promo = candidates
+                else:
+                    # Per-line category match → reduceat to per-target "any"
+                    line_cat_match = np.array(
+                        [c in affected_cats for c in sorted_cats],
+                        dtype=np.int8,
+                    )
+                    any_cat = np.maximum.reduceat(
+                        line_cat_match, group_starts
+                    ).astype(bool)
+                    new_promo = candidates & any_cat
+
+                if np.any(new_promo):
+                    is_promo |= new_promo
+                    code = promo["code"]
+                    for gi in np.where(new_promo)[0]:
+                        tgt_promo_ids[int(unique_targets[gi])] = code
+
+        # -- 2d. Vectorized order type + priority assignment -------------------
+        is_rush = (
+            ~is_promo
+            & (min_dos_per_target < self.rush_threshold_days)
+        )
+
+        tgt_order_type = np.full(n_targets, 3, dtype=np.int8)   # STANDARD
+        tgt_order_type[is_promo] = 2   # PROMOTIONAL
+        tgt_order_type[is_rush] = 1    # RUSH
+
+        tgt_priority = np.full(
+            n_targets, int(OrderPriority.STANDARD), dtype=np.int8
+        )
+        tgt_priority[is_promo] = int(OrderPriority.HIGH)
+        tgt_priority[is_rush] = int(OrderPriority.RUSH)
 
         # --- 3. Broadcast per-target metadata to per-line arrays ---------------
         source_idx_arr = tgt_source_idx[inverse]

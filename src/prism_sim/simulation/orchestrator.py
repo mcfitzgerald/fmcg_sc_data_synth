@@ -1419,16 +1419,25 @@ class Orchestrator:
         ]
 
         # v0.69.2 PERF: Compute plant-sourced in-transit dict ONCE per day
-        # instead of separately in MRP and DRP (was a triple scan)
+        # v0.87.0 PERF: Use parallel arrays when available
         plant_id_set = set(self.mrp_engine._plant_ids)
         plant_in_transit_qty: dict[str, float] = {}
+        _pid_lookup = self.state.product_idx_to_id
         for shipment in self.state.active_shipments:
             if shipment.source_id in plant_id_set:
-                for line in shipment.lines:
-                    plant_in_transit_qty[line.product_id] = (
-                        plant_in_transit_qty.get(line.product_id, 0.0)
-                        + line.quantity
-                    )
+                if shipment._line_product_idx is not None:
+                    for i in range(len(shipment._line_product_idx)):
+                        p_id = _pid_lookup[int(shipment._line_product_idx[i])]
+                        plant_in_transit_qty[p_id] = (
+                            plant_in_transit_qty.get(p_id, 0.0)
+                            + float(shipment._line_quantity[i])
+                        )
+                else:
+                    for line in shipment.lines:
+                        plant_in_transit_qty[line.product_id] = (
+                            plant_in_transit_qty.get(line.product_id, 0.0)
+                            + line.quantity
+                        )
 
         # v0.19.1: Pass POS demand to MRP as signal floor
         # This prevents demand signal collapse when orders decline
@@ -2452,6 +2461,8 @@ class Orchestrator:
                 source_idx=self.state.node_id_to_idx.get(plant_id, -1),
                 target_idx=self.state.node_id_to_idx.get(target_id, -1),
             )
+            # PERF v0.87.0: Build parallel arrays for tensor consumers
+            LogisticsEngine._populate_shipment_arrays(shipment)
             shipments.append(shipment)
 
         # Update diagnostics
@@ -2807,6 +2818,8 @@ class Orchestrator:
                         rdc_id, line.product_id, -line.quantity
                     )
 
+                # PERF v0.87.0: Build parallel arrays
+                LogisticsEngine._populate_shipment_arrays(shipment)
                 push_shipments.append(shipment)
 
         return push_shipments
@@ -2890,7 +2903,7 @@ class Orchestrator:
                 continue
 
             counter += 1
-            lateral_shipments.append(Shipment(
+            s = Shipment(
                 id=f"LAT-{day}-{src_rdc}-{tgt_rdc}-{counter}",
                 source_id=src_rdc,
                 target_id=tgt_rdc,
@@ -2902,7 +2915,10 @@ class Orchestrator:
                 total_cases=total_cs,
                 source_idx=self.state.node_id_to_idx.get(src_rdc, -1),
                 target_idx=self.state.node_id_to_idx.get(tgt_rdc, -1),
-            ))
+            )
+            # PERF v0.87.0: Build parallel arrays
+            LogisticsEngine._populate_shipment_arrays(s)
+            lateral_shipments.append(s)
 
         return lateral_shipments
 

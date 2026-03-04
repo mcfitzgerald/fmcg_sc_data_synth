@@ -384,21 +384,34 @@ class PhysicsAuditor:
             )
             if node_idx is None:
                 continue
-            for line in s.lines:
-                prod_idx = (
-                    line.product_idx if line.product_idx >= 0
-                    else _pid_to_idx.get(line.product_id)
-                )
-                if prod_idx is not None and prod_idx >= 0:
-                    if n >= n_est:
-                        n_est *= 2
-                        node_arr = np.resize(node_arr, n_est)
-                        prod_arr = np.resize(prod_arr, n_est)
-                        qty_arr = np.resize(qty_arr, n_est)
-                    node_arr[n] = node_idx
-                    prod_arr[n] = prod_idx
-                    qty_arr[n] = line.quantity
-                    n += 1
+            # PERF v0.87.0: Use parallel arrays when available
+            if s._line_product_idx is not None:
+                k = len(s._line_product_idx)
+                while n + k > n_est:
+                    n_est *= 2
+                    node_arr = np.resize(node_arr, n_est)
+                    prod_arr = np.resize(prod_arr, n_est)
+                    qty_arr = np.resize(qty_arr, n_est)
+                node_arr[n : n + k] = node_idx
+                prod_arr[n : n + k] = s._line_product_idx
+                qty_arr[n : n + k] = s._line_quantity
+                n += k
+            else:
+                for line in s.lines:
+                    prod_idx = (
+                        line.product_idx if line.product_idx >= 0
+                        else _pid_to_idx.get(line.product_id)
+                    )
+                    if prod_idx is not None and prod_idx >= 0:
+                        if n >= n_est:
+                            n_est *= 2
+                            node_arr = np.resize(node_arr, n_est)
+                            prod_arr = np.resize(prod_arr, n_est)
+                            qty_arr = np.resize(qty_arr, n_est)
+                        node_arr[n] = node_idx
+                        prod_arr[n] = prod_idx
+                        qty_arr[n] = line.quantity
+                        n += 1
 
         if n > 0:
             np.add.at(

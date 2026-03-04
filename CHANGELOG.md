@@ -5,6 +5,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.87.0] - 2026-03-03
+
+### Performance: Phase 2 — Vectorized Order Batch + Shipment Arrays (24% speedup)
+
+Targets the next layer of bottlenecks identified by scalene profiling. Combined with v0.86.0,
+total daily-loop speedup is ~33% (50-day: 51.4s → 39.1s).
+
+#### Chunk 1: Vectorize per-target loop (`replenishment.py`)
+- **Pre-computed source/lead-time/channel arrays** at `__init__` — eliminates per-target `dict.get()` (1.3s)
+- **`np.minimum.reduceat`** for rush detection — replaces per-target `np.min(dos[mask])` (2.4s)
+- **Vectorized promo detection** — loop over promos (small, ~0-5), not targets (~6000)
+- **Vectorized order type + priority assignment** — boolean masking, no Python loop
+
+#### Chunk 2: Shipment parallel arrays (`core.py`, `logistics.py`, `state.py`, `monitor.py`, `orchestrator.py`)
+- **`Shipment._line_product_idx` / `_line_quantity`** — numpy arrays built from OrderLine list
+- **`add_shipments_batch` / `pop_arrived_shipments`** use `np.add.at` on arrays vs per-line loops
+- **`record_receipts`** bulk-copies array slices instead of per-line dict lookup
+- Arrays populated for all shipment types (logistics, plant, push, lateral)
+
+#### Chunk 3: Eliminate flat `active_shipments` list (`state.py`)
+- **`active_shipments`** is now a computed property from `_shipments_by_arrival` bucket dict
+- Eliminates O(N) `list.append` + O(N) set-based filtering on every add/remove cycle
+- `remove_shipment` / `remove_arrived_shipments` work directly on bucket dict
+
+#### Savings
+| Optimization | 20-day Δ |
+|---|---|
+| Chunk 1: Per-target vectorization | 24.57s → 20.00s (−18.6%) |
+| Chunk 2: Shipment parallel arrays | 20.00s → 19.22s (−3.9%) |
+| Chunk 3: active_shipments elimination | 19.22s → 19.03s (−1.0%) |
+| **Cumulative (20-day)** | **24.57s → 19.03s (−22.5%)** |
+| **Cumulative (50-day)** | **51.4s → 39.1s (−23.9%)** |
+
 ## [0.86.0] - 2026-03-03
 
 ### Performance: OrderBatch Vectorization + Hot-Path Optimizations

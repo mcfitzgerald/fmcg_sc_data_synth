@@ -438,7 +438,31 @@ class LogisticsEngine:
                     new_shipments.append(stale_shipment)
                     self.ltl_shipment_count += 1  # Track as LTL (forced)
 
+        # PERF v0.87.0: Build parallel arrays for all shipments
+        _populate = self._populate_shipment_arrays
+        for s in new_shipments:
+            _populate(s)
+
         return new_shipments
+
+    @staticmethod
+    def _populate_shipment_arrays(shipment: Shipment) -> None:
+        """PERF v0.87.0: Build parallel arrays from shipment lines.
+
+        Allows state.py / monitor.py to use np.add.at on arrays
+        instead of iterating OrderLine objects.
+        """
+        lines = shipment.lines
+        if not lines:
+            return
+        n = len(lines)
+        pidx = np.empty(n, dtype=np.int32)
+        qty = np.empty(n, dtype=np.float64)
+        for i, line in enumerate(lines):
+            pidx[i] = line.product_idx
+            qty[i] = line.quantity
+        shipment._line_product_idx = pidx
+        shipment._line_quantity = qty
 
     def _calculate_emissions(self, shipment: Shipment, distance_km: float) -> float:
         """
