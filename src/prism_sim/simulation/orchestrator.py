@@ -1099,33 +1099,31 @@ class Orchestrator:
             2: abc_velocity_cfg.get("C", 0.8),
         }
 
-        abc_target_dos = {
-            abc_class: store_days_supply * factor
-            for abc_class, factor in abc_velocity_factors.items()
-        }
-
-        # v0.89.1: RDC priming uses deployment target DOS (not rdc_days_supply)
-        # to match the level the deployment system expects.  If RDCs start at
-        # 7.5 DOS but deployment targets 15 DOS, the gap never closes because
-        # plants can't ramp up fast enough, leading to perpetual deficit.
+        # v0.90.0: Lean Priming Synchronization
+        # Tighten priming targets to match operational steady-state (Turns=14x).
+        # This eliminates the 150-day "inventory drain" transient.
         replen_params = sim_params.get("agents", {}).get("replenishment", {})
-        rdc_target_dos = float(replen_params.get("rdc_target_dos", 15.0))
+        
+        # RDC target: 9.0 (matches simulation_config.json)
+        rdc_target_dos = float(replen_params.get("rdc_target_dos", 9.0))
         rdc_abc_target_dos = {
-            abc_class: rdc_target_dos  # uniform target (no ABC on RDC priming)
+            abc_class: rdc_target_dos  # uniform target
             for abc_class in abc_velocity_factors
         }
 
-        # v0.60.0: DC-specific priming targets matching deployment
-        # (dc_buffer_days x ABC multipliers), NOT RDC targets
-        dc_buffer_days = float(
-            sim_params.get("agents", {})
-            .get("replenishment", {})
-            .get("dc_buffer_days", 7.0)
-        )
+        # DC target: buffer_days x mult (matches operational deployment)
+        dc_buffer_days = float(replen_params.get("dc_buffer_days", 7.0))
         dc_abc_target_dos = {
             0: dc_buffer_days * 1.5,  # A: 10.5
             1: dc_buffer_days * 2.0,  # B: 14.0
             2: dc_buffer_days * 2.5,  # C: 17.5
+        }
+        
+        # Store target: tighten from 6.0 to 4.5 based on high turnover results
+        store_days_supply_val = float(init_config.get("store_days_supply", 4.5))
+        abc_target_dos = {
+            abc_class: store_days_supply_val * factor
+            for abc_class, factor in abc_velocity_factors.items()
         }
 
         # v0.28.0: Calculate seasonal factor for Day 1 (cold start adjustment)
@@ -1158,7 +1156,7 @@ class Orchestrator:
                     # Vectorized: days supply vector based on ABC class
                     store_days_vec = np.array([
                         abc_target_dos.get(
-                            self.mrp_engine.abc_class[p_idx], store_days_supply
+                            self.mrp_engine.abc_class[p_idx], store_days_supply_val
                         )
                         for p_idx in range(self.state.n_products)
                     ])
@@ -2421,14 +2419,49 @@ class Orchestrator:
             )
 
         # 4. Compute deploy qty per target: need * fill_ratio,
-        #    capped by deployment share ceiling
+        #    capped by dynamic deployment share ceiling (v0.90.0)
+        # ------------------------------------------------------------------
+        # INDUSTRY REALITY: Static shares block recovery during promos.
+        # FIX: Use dynamic shares based on True Demand pull.
+        total_true_demand = np.zeros(n_p, dtype=np.float64)
+        target_true_demands: dict[str, np.ndarray] = {}
+        
+        # Calculate dynamic shares based on what targets actually need today
+        smoothed = self.replenisher.smoothed_demand
+        seasonal_factor = self.mrp_engine._get_seasonal_factor(current_day)
+        
+        for target_id in needs:
+            target_idx = self.state.node_id_to_idx.get(target_id)
+            if target_idx is None:
+                continue
+            
+            # Base expected demand (static + seasonal)
+            expected = (
+                self._target_expected_demand.get(target_id, np.zeros(n_p))
+                * seasonal_factor
+            )
+            
+            # True Demand signal pull
+            if smoothed is not None:
+                td = np.maximum(smoothed[target_idx, :], expected)
+            else:
+                td = expected
+                
+            target_true_demands[target_id] = td
+            total_true_demand += td
+
         deploy_qty: dict[str, np.ndarray] = {}
         for target_id, need in needs.items():
             qty = need * fill_ratio
 
-            # Apply deployment share ceiling per target
-            share = self.deployment_shares.get(target_id, 0.0)
-            max_allowed = available * share * self._share_ceiling_headroom
+            # v0.90.0: Dynamic share ceiling based on True Demand pull
+            # This allows a DC to surge if its retail pull is higher than others.
+            td = target_true_demands.get(target_id, np.zeros(n_p))
+            with np.errstate(divide="ignore", invalid="ignore"):
+                dynamic_share = np.where(total_true_demand > 0, td / total_true_demand, 0.0)
+            
+            # Allow surge up to headroom multiplier of current dynamic share
+            max_allowed = available * dynamic_share * self._share_ceiling_headroom
             qty = np.minimum(qty, max_allowed)
 
             # Floor small quantities

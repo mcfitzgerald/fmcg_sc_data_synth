@@ -327,8 +327,8 @@
     },
     "inventory": {
       "initialization": {
-        "_comment": "v0.60.0: Store priming matches channel profiles (target_days=6.0 for MASS_RETAIL/CLUB/ECOM/default). ABC factors give A=7.2, B=6.0, C=4.8",
-        "store_days_supply": 6.0,
+        "_comment": "v0.90.0: Lean Priming. Store base lowered 6.0->4.5 to match steady-state velocity (Turns=14x). Eliminates 150-day drain transient.",
+        "store_days_supply": 4.5,
         "rdc_days_supply": 9.0,
         "plant_ingredient_buffer": 200000.0,
         "abc_velocity_factors": {

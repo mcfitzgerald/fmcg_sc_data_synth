@@ -247,19 +247,36 @@ class DRPDistributionEngine:
                 continue
 
             # --- RDC available = on_hand - safety reserve ---
+            # v0.90.0: Use dynamic True Demand (dc_outflow) for safety reserve
+            # if available, otherwise fall back to static expected demand.
             rdc_demand = np.zeros(n_p, dtype=np.float64)
             for dc_id in primary_dcs:
-                d = self._dc_expected_demand.get(dc_id, np.zeros(n_p))
+                # Get demand for this DC
+                dc_idx = state.node_id_to_idx.get(dc_id)
+                if dc_idx is not None and dc_outflow is not None:
+                    # True Demand = max(outflow, baseline)
+                    base = self._dc_expected_demand.get(dc_id, np.zeros(n_p))
+                    d = np.maximum(dc_outflow[dc_idx, :], base)
+                else:
+                    d = self._dc_expected_demand.get(dc_id, np.zeros(n_p))
+
+                # Apply secondary fraction deduction
                 if sec_frac > 0 and dc_id in self._dc_secondary_rdc:
                     rdc_demand += d * (1.0 - sec_frac)
                 else:
                     rdc_demand += d
-            for sec_dc_id in self._rdc_secondary_dcs.get(rdc_id, []):
-                rdc_demand += self._dc_expected_demand.get(
-                    sec_dc_id, np.zeros(n_p)
-                ) * sec_frac
-            rdc_demand *= seasonal
 
+            for sec_dc_id in self._rdc_secondary_dcs.get(rdc_id, []):
+                sec_dc_idx = state.node_id_to_idx.get(sec_dc_id)
+                if sec_dc_idx is not None and dc_outflow is not None:
+                    base = self._dc_expected_demand.get(sec_dc_id, np.zeros(n_p))
+                    d = np.maximum(dc_outflow[sec_dc_idx, :], base)
+                else:
+                    d = self._dc_expected_demand.get(sec_dc_id, np.zeros(n_p))
+                
+                rdc_demand += d * sec_frac
+
+            rdc_demand *= seasonal
             rdc_safety = self._rdc_safety_dos * rdc_demand
             available = np.maximum(0.0, rdc_on_hand - rdc_safety)
 
