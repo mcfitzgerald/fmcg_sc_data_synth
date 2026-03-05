@@ -67,6 +67,11 @@ DEFAULT_CHANNEL_POLICIES: dict[str, dict[str, float]] = {
 }
 
 
+# Internal order type integer mapping (sync with AllocationAgent)
+_OT_RUSH = 1
+_OT_PROMO = 2
+_OT_STANDARD = 3
+
 class MinMaxReplenisher:
     """
     A simple replenishment agent that implements a (s, S) policy.
@@ -1318,10 +1323,14 @@ class MinMaxReplenisher:
             expected_matrix[i, :] = self._expected_throughput.get(int(dc_idx), 0.1)
 
         # True Demand = max(What stores requested, steady-state baseline)
-        dc_true_demand = np.maximum(
-            self.smoothed_demand[dc_actual_indices, :],
-            expected_matrix
-        )
+        smoothed = self.smoothed_demand
+        if smoothed is not None:
+            dc_true_demand = np.maximum(
+                smoothed[dc_actual_indices, :],
+                expected_matrix
+            )
+        else:
+            dc_true_demand = expected_matrix
 
         # 1. Get outflow-based demand signal (rolling 5-day shipment average)
         dc_actual_outflow = self.get_outflow_demand()[dc_actual_indices, :].copy()
@@ -1334,7 +1343,8 @@ class MinMaxReplenisher:
         dc_local_inv = self.state.actual_inventory[dc_actual_indices, :]
 
         # Gating: floor_weight = clip((target_dos - local_dos) / target_dos, 0, 1)
-        # Use dc_true_demand for DOS calculation to avoid perceived inflation during stockouts.
+        # Use dc_true_demand for DOS calculation to avoid perceived inflation
+        # during stockouts.
         local_dos = dc_local_inv / np.maximum(dc_true_demand, 0.1)
         floor_weight = np.clip(
             (dc_buffer_days - local_dos) / np.maximum(dc_buffer_days, 1.0),
@@ -1343,7 +1353,8 @@ class MinMaxReplenisher:
         )
 
         # DC outflow signal is floored at a fraction of true demand during stockouts
-        dc_outflow = np.maximum(dc_actual_outflow, dc_true_demand * throughput_floor_pct * floor_weight)
+        floor_val = dc_true_demand * throughput_floor_pct * floor_weight
+        dc_outflow = np.maximum(dc_actual_outflow, floor_val)
 
         # 2. Local buffer target based on TRUE demand (not attenuated outflow)
         # This keeps the target stable even if shipments drop due to stockouts.
@@ -1605,9 +1616,9 @@ class MinMaxReplenisher:
             & (min_dos_per_target < self.rush_threshold_days)
         )
 
-        tgt_order_type = np.full(n_targets, 3, dtype=np.int8)   # STANDARD
-        tgt_order_type[is_promo] = 2   # PROMOTIONAL
-        tgt_order_type[is_rush] = 1    # RUSH
+        tgt_order_type = np.full(n_targets, _OT_STANDARD, dtype=np.int8)
+        tgt_order_type[is_promo] = _OT_PROMO
+        tgt_order_type[is_rush] = _OT_RUSH
 
         tgt_priority = np.full(
             n_targets, int(OrderPriority.STANDARD), dtype=np.int8

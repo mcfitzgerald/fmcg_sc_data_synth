@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.92.0] - 2026-03-04
+
+### Hygiene: Config Layer Migration — Eliminating Hardcodes
+
+Migrated behavior-critical parameters from literal hardcodes in Python files to the config layer (`simulation_config.json` 
+and `world_definition.json`). Verified via catch-all Semgrep analysis.
+
+#### Logistics Changes (`simulation/logistics.py`)
+- **Configurable Returns** — Moved RMA generation logic (`return_prob`, `min_return_qty`, `restock_probability`) 
+  to the config layer. Allows for easy tuning of reverse-logistics friction.
+
+#### Replenishment Changes (`agents/replenishment.py`)
+- **Symbolic Order Types** — Centralized magic integers (1=RUSH, 2=PROMO, 3=STANDARD) into symbolic internal 
+  constants to match `AllocationAgent` interpretation.
+
+#### Product Logic Changes (`generators/hierarchy.py`)
+- **Dynamic BOM Splits** — Migrated multi-intermediate 0.7/0.3 blend ratios to `world_definition.json` 
+  (`multi_level_bom.multi_intermediate_split`).
+
 ## [0.91.0] - 2026-03-04
 
 ### Feat: "Integral Priming" — Eliminating the 150-day Inventory Drain

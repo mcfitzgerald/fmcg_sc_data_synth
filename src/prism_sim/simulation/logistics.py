@@ -63,6 +63,13 @@ class LogisticsEngine:
         self.held_orders: list[Order] = []
 
         # Track FTL vs LTL shipments for metrics
+        # v0.92.0: Configurable return logic
+        returns_cfg = log_config.get("returns", {})
+        self.returns_enabled = bool(returns_cfg.get("enabled", True))
+        self.return_prob = float(returns_cfg.get("probability", 0.05))
+        self.min_return_qty = float(returns_cfg.get("min_qty", 1.0))
+        self.restock_probability = float(returns_cfg.get("restock_probability", 0.8))
+
         self.ftl_shipment_count = 0
         self.ltl_shipment_count = 0
 
@@ -567,9 +574,9 @@ class LogisticsEngine:
         """
         returns: list[Return] = []
 
-        # TODO(config): move return_prob, restock_probability, min_return_qty
-        # to simulation_config.json returns section
-        return_prob = 0.05
+        # v0.92.0: Use config-driven parameters
+        if not self.returns_enabled:
+            return returns
 
         for shipment in arrived_shipments:
             # Only consider deliveries to Stores (Customer Returns)
@@ -577,7 +584,7 @@ class LogisticsEngine:
             if not target_node or target_node.type != NodeType.STORE:
                 continue
 
-            if np.random.random() < return_prob:
+            if np.random.random() < self.return_prob:
                 # Generate a return
                 # Pick 1 random line to return
                 if not shipment.lines:
@@ -587,14 +594,12 @@ class LogisticsEngine:
 
                 # Return 10-50% of the quantity (damaged/expired)
                 return_qty = line.quantity * np.random.uniform(0.1, 0.5)
-                min_return_qty = 1.0
-                return_qty = max(return_qty, min_return_qty)
+                return_qty = max(return_qty, self.min_return_qty)
 
-                # Disposition logic: 80% Restock (good), 20% Scrap (damaged)
-                restock_probability = 0.8
+                # Disposition logic: config-driven Restock vs Scrap
                 disposition = (
                     "restock"
-                    if np.random.random() < restock_probability
+                    if np.random.random() < self.restock_probability
                     else "scrap"
                 )
 

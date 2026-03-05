@@ -901,10 +901,11 @@ class ProductGenerator:
 
         if bulk_id:
             if sec_bulk_id:
-                # Group C: co-blended (primary 0.7 + secondary 0.3)
-                # TODO(config): move blend ratios to world_definition.json multi_level_bom
-                bom[bulk_id] = 0.7
-                bom[sec_bulk_id] = 0.3
+                # Group C: co-blended (primary/secondary split from config)
+                mlb_cfg = self.config.get("multi_level_bom", {})
+                split = mlb_cfg.get("multi_intermediate_split", [0.7, 0.3])
+                bom[bulk_id] = float(split[0])
+                bom[sec_bulk_id] = float(split[1])
             else:
                 bom[bulk_id] = 1.0
 

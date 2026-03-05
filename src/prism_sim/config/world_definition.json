@@ -346,6 +346,7 @@
       "3_level": 0.20,
       "multi_intermediate": 0.10
     },
+    "multi_intermediate_split": [0.7, 0.3],
     "sub_intermediate_prefix": "PREMIX",
     "weight_per_unit_kg": 15.0,
     "cost_multiplier_range": [0.2, 0.4],

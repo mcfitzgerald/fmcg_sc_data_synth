@@ -273,7 +273,7 @@ class DRPDistributionEngine:
                     d = np.maximum(dc_outflow[sec_dc_idx, :], base)
                 else:
                     d = self._dc_expected_demand.get(sec_dc_id, np.zeros(n_p))
-                
+
                 rdc_demand += d * sec_frac
 
             rdc_demand *= seasonal

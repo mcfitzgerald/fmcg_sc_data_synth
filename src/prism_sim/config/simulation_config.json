@@ -339,6 +339,13 @@
       }
     },
     "logistics": {
+      "returns": {
+        "enabled": true,
+        "probability": 0.05,
+        "min_qty": 1.0,
+        "restock_probability": 0.8,
+        "_note": "v0.92.0: Migrated from hardcodes in logistics.py"
+      },
       "constraints": {
         "truck_max_weight_kg": 20000.0,
         "truck_max_volume_m3": 60.0,

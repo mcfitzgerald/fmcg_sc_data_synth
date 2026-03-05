@@ -17,7 +17,7 @@ import json
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import pyarrow.compute as pc
@@ -96,7 +96,7 @@ def _load_agent_state(
     source_dir: Path,
     checkpoint_day: int,
     state: StateManager,
-) -> dict:
+) -> dict[str, Any]:
     """Load agent history buffers from agent_state/ subdirectory.
 
     Returns dict with agent state fields, or empty dict if agent_state/ doesn't exist
@@ -109,7 +109,7 @@ def _load_agent_state(
         print("  Agent state: not found (legacy snapshot) — will use synthetic priming")
         return {}
 
-    result: dict = {}
+    result: dict[str, Any] = {}
 
     # Load metadata
     meta_path = agent_dir / "metadata.json"
@@ -403,7 +403,7 @@ def _load_active_shipments(
     pf = pq.ParquetFile(ship_path)
 
     # Collect shipment lines grouped by shipment_id
-    shipment_data: dict[str, dict] = {}  # sid -> {meta, lines}
+    shipment_data: dict[str, dict[str, Any]] = {}  # sid -> {meta, lines}
 
     for i in range(pf.metadata.num_row_groups):
         table = pf.read_row_group(i)

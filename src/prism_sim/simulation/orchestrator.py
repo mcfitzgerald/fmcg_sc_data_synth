@@ -705,7 +705,7 @@ class Orchestrator:
         Must run AFTER replenisher init and AFTER _initialize_inventory().
         """
         print("Priming synthetic steady-state (Phase 2: History/Age)...")
-        
+
         # v0.76.0: Check if warm-start has agent state
         has_agent_state = (
             self._warm_start_state is not None
@@ -1095,9 +1095,6 @@ class Orchestrator:
         init_config = inv_config.get("initialization", {})
 
         # CONFIG-DRIVEN priming (v0.26.0 fix - was previously hardcoded)
-        store_days_supply = init_config.get("store_days_supply", 6.0)
-        rdc_days_supply = init_config.get("rdc_days_supply", 7.5)
-
         # Get per-SKU demand matrix for demand-proportional priming
         base_demand_matrix = self.pos_engine.get_base_demand_matrix()
 
@@ -1119,7 +1116,7 @@ class Orchestrator:
         # Tighten priming targets to match operational steady-state (Turns=14x).
         # This eliminates the 150-day "inventory drain" transient.
         replen_params = sim_params.get("agents", {}).get("replenishment", {})
-        
+
         # RDC target: 9.0 (matches simulation_config.json)
         rdc_target_dos = float(replen_params.get("rdc_target_dos", 9.0))
         rdc_abc_target_dos = {
@@ -1134,7 +1131,7 @@ class Orchestrator:
             1: dc_buffer_days * 2.0,  # B: 14.0
             2: dc_buffer_days * 2.5,  # C: 17.5
         }
-        
+
         # Store target: tighten from 6.0 to 4.5 based on high turnover results
         store_days_supply_val = float(init_config.get("store_days_supply", 4.5))
         abc_target_dos = {
@@ -1166,9 +1163,11 @@ class Orchestrator:
 
         # v0.91.0: Integral Priming - get actual pipeline/WIP mass to net out
         in_transit = self.state.get_in_transit_by_target()
-        
+
         # Calculate WIP mass per node/product (manually from active POs)
-        wip_mass = np.zeros((self.state.n_nodes, self.state.n_products), dtype=np.float64)
+        wip_mass = np.zeros(
+            (self.state.n_nodes, self.state.n_products), dtype=np.float64
+        )
         for po in self.active_production_orders:
             n_idx = self.state.node_id_to_idx.get(po.plant_id)
             p_idx = self.state.product_id_to_idx.get(po.product_id)
@@ -1191,11 +1190,11 @@ class Orchestrator:
                         for p_idx in range(self.state.n_products)
                     ])
                     target_levels = node_demand * store_days_vec * day_1_seasonal
-                    
+
                     # Integral Netting: On_Hand = Target - In_Transit
                     node_in_transit = in_transit[node_idx, :]
                     sku_levels = np.maximum(target_levels - node_in_transit, 0.0)
-                    
+
                     self.state.perceived_inventory[node_idx, :] = sku_levels
                     self.state.actual_inventory[node_idx, :] = sku_levels
 
@@ -1224,11 +1223,13 @@ class Orchestrator:
                             * rdc_days_vec
                             * day_1_seasonal
                         )
-                        
+
                         # Integral Netting: On_Hand = Target - In_Transit
                         node_in_transit = in_transit[node_idx, :]
-                        rdc_sku_levels = np.maximum(target_levels - node_in_transit, 0.0)
-                        
+                        rdc_sku_levels = np.maximum(
+                            target_levels - node_in_transit, 0.0
+                        )
+
                         self.state.perceived_inventory[node_idx, :] = rdc_sku_levels
                         self.state.actual_inventory[node_idx, :] = rdc_sku_levels
                     else:
@@ -1265,11 +1266,11 @@ class Orchestrator:
                             * dc_days_vec
                             * day_1_seasonal
                         )
-                        
+
                         # Integral Netting: On_Hand = Target - In_Transit
                         node_in_transit = in_transit[node_idx, :]
                         dc_levels = np.maximum(target_levels - node_in_transit, 0.0)
-                        
+
                         self.state.perceived_inventory[node_idx, :] = dc_levels
                         self.state.actual_inventory[node_idx, :] = dc_levels
 
@@ -1280,19 +1281,22 @@ class Orchestrator:
                     # v0.91.0: Use pre-calculated deployment shares (demand-weighted)
                     plant_share = self.deployment_shares.get(node_id, 0.0)
                     expected_demand = plant_share * global_product_demand
-                    
+
                     # Plant target: plant_fg_prime_days + WIP
                     # v0.91.0: Net out the actual WIP primed in Phase 1
                     target_levels = expected_demand * plant_fg_prime_days
                     node_wip = wip_mass[node_idx, :]
-                    
+
                     # Integral Netting: On_Hand = Target - WIP - In_Transit
                     # (Plants don't have inbound transit normally, but for consistency)
                     node_in_transit = in_transit[node_idx, :]
-                    plant_levels = np.maximum(target_levels - node_wip - node_in_transit, 0.0)
-                    
+                    plant_levels = np.maximum(
+                        target_levels - node_wip - node_in_transit, 0.0
+                    )
+
                     self.state.perceived_inventory[node_idx, :] = plant_levels
                     self.state.actual_inventory[node_idx, :] = plant_levels
+
                     # With 3-level BOM: SKU → bulk + pkg, bulk → raw materials.
                     recipe_matrix = self.state.recipe_matrix
                     direct_demand = global_product_demand @ recipe_matrix
@@ -1508,12 +1512,14 @@ class Orchestrator:
         _pid_lookup = self.state.product_idx_to_id
         for shipment in self.state.active_shipments:
             if shipment.source_id in plant_id_set:
-                if shipment._line_product_idx is not None:
-                    for i in range(len(shipment._line_product_idx)):
-                        p_id = _pid_lookup[int(shipment._line_product_idx[i])]
+                lp_idx = shipment._line_product_idx
+                l_qty = shipment._line_quantity
+                if lp_idx is not None and l_qty is not None:
+                    for i in range(len(lp_idx)):
+                        p_id = _pid_lookup[int(lp_idx[i])]
                         plant_in_transit_qty[p_id] = (
                             plant_in_transit_qty.get(p_id, 0.0)
-                            + float(shipment._line_quantity[i])
+                            + float(l_qty[i])
                         )
                 else:
                     for line in shipment.lines:
@@ -1592,8 +1598,18 @@ class Orchestrator:
         if drp_shipments:
             drp_total = np.zeros(self.state.n_products, dtype=np.float64)
             for s in drp_shipments:
-                if s._line_product_idx is not None:
-                    np.add.at(drp_total, s._line_product_idx, s._line_quantity)
+                lp_idx = s._line_product_idx
+                l_qty = s._line_quantity
+                if lp_idx is not None and l_qty is not None:
+                    np.add.at(drp_total, lp_idx, l_qty)
+                else:
+                    for line in s.lines:
+                        p_idx = (
+                            line.product_idx if line.product_idx >= 0
+                            else self.state.product_id_to_idx.get(line.product_id)
+                        )
+                        if p_idx is not None:
+                            drp_total[p_idx] += line.quantity
             self.mrp_engine.record_drp_demand(drp_total)
         else:
             # No DRP shipments today -- still record baseline demand
@@ -2455,28 +2471,28 @@ class Orchestrator:
         # FIX: Use dynamic shares based on True Demand pull.
         total_true_demand = np.zeros(n_p, dtype=np.float64)
         target_true_demands: dict[str, np.ndarray] = {}
-        
+
         # Calculate dynamic shares based on what targets actually need today
         smoothed = self.replenisher.smoothed_demand
         seasonal_factor = self.mrp_engine._get_seasonal_factor(current_day)
-        
+
         for target_id in needs:
             target_idx = self.state.node_id_to_idx.get(target_id)
             if target_idx is None:
                 continue
-            
+
             # Base expected demand (static + seasonal)
             expected = (
                 self._target_expected_demand.get(target_id, np.zeros(n_p))
                 * seasonal_factor
             )
-            
+
             # True Demand signal pull
             if smoothed is not None:
                 td = np.maximum(smoothed[target_idx, :], expected)
             else:
                 td = expected
-                
+
             target_true_demands[target_id] = td
             total_true_demand += td
 
@@ -2488,8 +2504,10 @@ class Orchestrator:
             # This allows a DC to surge if its retail pull is higher than others.
             td = target_true_demands.get(target_id, np.zeros(n_p))
             with np.errstate(divide="ignore", invalid="ignore"):
-                dynamic_share = np.where(total_true_demand > 0, td / total_true_demand, 0.0)
-            
+                dynamic_share = np.where(
+                    total_true_demand > 0, td / total_true_demand, 0.0
+                )
+
             # Allow surge up to headroom multiplier of current dynamic share
             max_allowed = available * dynamic_share * self._share_ceiling_headroom
             qty = np.minimum(qty, max_allowed)

@@ -235,11 +235,13 @@ class StateManager:
         )
         if target_idx is not None:
             # PERF v0.87.0: Use parallel arrays when available
-            if shipment._line_product_idx is not None:
+            lp_idx = shipment._line_product_idx
+            l_qty = shipment._line_quantity
+            if lp_idx is not None and l_qty is not None:
                 np.add.at(
                     self._in_transit_tensor[target_idx],
-                    shipment._line_product_idx,
-                    shipment._line_quantity,
+                    lp_idx,
+                    l_qty,
                 )
             else:
                 for line in shipment.lines:
@@ -261,11 +263,13 @@ class StateManager:
             else self.node_id_to_idx.get(shipment.target_id)
         )
         if target_idx is not None:
-            if shipment._line_product_idx is not None:
+            lp_idx = shipment._line_product_idx
+            l_qty = shipment._line_quantity
+            if lp_idx is not None and l_qty is not None:
                 np.add.at(
                     self._in_transit_tensor[target_idx],
-                    shipment._line_product_idx,
-                    -shipment._line_quantity,
+                    lp_idx,
+                    -l_qty,
                 )
             else:
                 for line in shipment.lines:
