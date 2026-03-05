@@ -954,14 +954,12 @@ class Orchestrator:
             self.active_production_orders.append(po)
             po_count += 1
 
-        # Seed finished goods at plants
-        # Config: plant_fg_prime_days per plant. 4 plants x 3.5 = 14 DOS total.
-        # With ~2 DOS in-production WIP + ~1 DOS in-transit, total IP ~ 17 DOS
-        # matching MRP A-item MPS target (horizon 14 x a_buffer 1.22).
+        # Seed finished goods at plants (config: plant_fg_prime_days per plant)
+        # v0.91.0: Lean Priming — 1.5 DOS/plant. With Integral Netting, lower
+        # plant FG prevents Day 1 over-stuffing that triggers MRP overproduction.
         sim_params = self.config.get("simulation_parameters", {})
         cal_config = sim_params.get("calibration", {})
         init_config = cal_config.get("initialization", {})
-        # v0.90.0: Lower plant FG buffer 3.5->1.5 to prevent over-stuffing.
         plant_fg_prime_days = init_config.get("plant_fg_prime_days", 1.5)
 
         fg_count = 0
@@ -1139,7 +1137,7 @@ class Orchestrator:
             for abc_class, factor in abc_velocity_factors.items()
         }
 
-        # v0.90.0: Lean Plant FG priming (tightened 3.5 -> 1.5)
+        # v0.91.0: Lean Plant FG priming (config-driven, default 1.5)
         plant_fg_prime_days = float(init_config.get("plant_fg_prime_days", 1.5))
 
         # v0.28.0: Calculate seasonal factor for Day 1 (cold start adjustment)

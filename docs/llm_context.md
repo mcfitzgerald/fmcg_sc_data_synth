@@ -186,10 +186,11 @@ Shared modular backend used by diagnostics:
 | `analyze_bullwhip.py` | Order variance amplification | Echelon CV ratios, oscillation patterns |
 | `check_plant_balance.py` | OEE/production imbalance | Batches per plant, zero-production days |
 
-#### Tier 3: Utilities
+#### Tier 3: Utilities & Visualization
 | Script | Purpose |
 |--------|---------|
 | `slice_data.py` | Create small data subset (first N days) for fast diagnostic iteration |
+| `plot_sim_dynamics.py` | **Convergence visualization** — dual-axis chart: flow quantities (demand, orders, shipments, arrivals, production) on left axis, mean inventory (active node-SKUs only) on right axis. Outputs `sim_dynamics.png`. Use after any sim run to visually verify convergence, detect transients, and confirm Integral Priming effectiveness. `poetry run python scripts/analysis/plot_sim_dynamics.py --data-dir data/output` |
 
 **Shared infrastructure:** `diagnostics/loader.py` is the canonical source for `classify_node()`, `classify_abc()`, `DataBundle`, `load_all_data()`, `SeasonalityConfig`. Used by all diagnostic scripts. Standalone scripts (Tier 2) have local copies of classification functions — acceptable for isolation, but `loader.py` is the source of truth. `SeasonalityConfig.factor(day)` is used by stability and backpressure analyses for seasonal detrending.
 
@@ -284,7 +285,7 @@ Two initialization paths:
 ### Cold Start (default v0.91.0 Integral Priming)
 1. **Synthetic Phase 1 (`_prime_synthetic_steady_state_phase1()`):** Creates pipeline shipments and production WIP (Work-in-Process) first. This establishes the "in-transit mass" of the network.
 2. **Integral On-Hand Priming (`_initialize_inventory()`):** Seeds on-hand inventory using **Integral Netting**: `On_Hand = Target - Pipeline - WIP`. 
-   - **Targets:** Stores use `store_days_supply=4.5`; DCs use `dc_buffer_days × 1.5/2.0/2.5` (A/B/C); RDCs use `rdc_target_dos=9.0`.
+   - **Targets:** Stores use `store_days_supply=4.5`; DCs use `dc_buffer_days × 1.5/2.0/2.5` (A/B/C); RDCs use `rdc_target_dos=9.0`; Plants use `plant_fg_prime_days=1.5`.
    - **Effect:** Eliminates Day 1 double-counting. The network starts exactly at steady-state safety targets with no 150-day "inventory drain" transient.
 3. **Synthetic Phase 2 (`_prime_synthetic_steady_state_phase2()`):** Fills agent history buffers (28-day demand, lead-time samples) and seeds inventory ages (FIFO approximation).
 4. **Stabilization** (default 10 days): Normal simulation steps excluded from metrics.
@@ -467,17 +468,18 @@ Unmet demand from stockouts (`daily_demand - actual_sales`) is recorded and flow
 
 Finished goods flow from plants to downstream nodes via need-based deployment:
 
-### `_create_plant_shipments()` — Core Deployment
+### `_create_plant_shipments()` — Core Deployment (Plant→RDC/DC)
 ```python
 need = max(0, target_dos × expected_demand × seasonal_factor - current_position)
 # current_position = on_hand + in_transit_to_target
 # seasonal_factor = MRPEngine._get_seasonal_factor(day)
 ```
-1. `_compute_deployment_needs()` calculates per-target, per-product need vectors (seasonally adjusted). When `_drp_enabled`, uses DRP throughput demand for RDC targets instead of recursive store POS (v0.89.1).
+1. `_compute_deployment_needs()` calculates per-target, per-product need vectors (seasonally adjusted). When `_drp_enabled`, uses DRP throughput demand for RDC targets instead of recursive store POS (v0.89.1). Multi-source DCs have deployment shares split between primary and secondary RDCs (v0.85.0).
 2. Available FG per product summed across all plants
 3. Fair-share allocation when constrained: `fill_ratio = min(available / total_need, 1.0)`
 4. Share ceiling headroom: 1.5× prevents any single target from consuming all supply
 5. `_select_sourcing_plant_for_product()`: Dynamic — picks plant with most FG for each product
+6. **Push room check (v0.88.0):** Push quantity per DC capped at remaining room below ABC-differentiated deployment target DOS. Replaces the old artificial `push_receive_headroom` cap. Self-correcting: uses on-hand inventory (not IP) at daily granularity.
 
 ### ABC-Differentiated Target DOS
 | Echelon | A-Items | B-Items | C-Items | Config |
@@ -486,7 +488,10 @@ need = max(0, target_dos × expected_demand × seasonal_factor - current_positio
 | **RDCs** | 9.0d | 9.0d | 9.0d | Flat `_rdc_target_dos` (flow-through cross-dock, actual DOS ≈8.4) |
 
 ### `DRPDistributionEngine.compute_and_execute()` — RDC→DC Distribution (v0.89.0+)
-Proactive need-based distribution from RDCs to DCs. Per-DC need = `target_dos × demand - inventory_position`. Fair-share allocation against RDC available stock (on-hand minus safety reserve). v0.89.1: Default hybrid mode — DRP handles bulk positioning, DC (s,S) pull handles product-specific gaps. `_compute_dc_need()` uses replenisher's rolling-avg DC outflow when available (floors at base POS to prevent demand collapse during stockouts). Config: `dc_target_amplification` (bullwhip buffer, default 1.0), `suppress_dc_pull` (disable DC pull for pure DRP mode, default false). Pure DRP suffers product-mix mismatch with (s,S) store batching (72.6% fill); hybrid gives 92.9%.
+Proactive need-based distribution from RDCs to DCs. Per-DC need = `target_dos × demand - inventory_position`. Fair-share allocation against RDC available stock (on-hand minus safety reserve). v0.89.1: DRP shipping **disabled by default** (`_drp_ships=false`). DCs use (s,S) pull for replenishment — this gives 94.6% fill rate vs 72.6% with pure DRP (product-mix mismatch with store batching). DRP engine still initializes for demand signal computation (priming, deployment targets). v0.90.0: `_compute_dc_need()` uses replenisher's `smoothed_demand` (True Demand) as primary signal, floored at base POS to prevent demand collapse. Config: `dc_target_amplification` (bullwhip buffer, default 1.0), `suppress_dc_pull` (disable DC pull for pure DRP mode, default false).
+
+**Default flow (DRP disabled):** Plant→RDC via deployment, RDC→DC via DC (s,S) pull orders, DC→Store via Store (s,S) pull.
+**Hybrid flow (DRP enabled):** Plant→RDC via deployment, RDC→DC via DRP bulk positioning + DC pull for gaps, DC→Store via Store (s,S) pull.
 
 ### `_execute_lateral_transshipment()` — RDC↔RDC Balancing (v0.83.0)
 Emergency inventory transfer between adjacent RDCs. Triggered when target DOS < 3.0 (critical) AND source DOS > 15.0 (excess). Transfers up to 30% of source excess. Configured via `network_enrichment.lateral_transshipment` in `world_definition.json`. 12 directed links (6 bidirectional pairs) between geographically closest RDCs. Volume is ~1-3% of RDC throughput. Uses primary-only topology maps to avoid double-counting with multi-source links.
@@ -755,6 +760,12 @@ Every decision impacts the balance between:
 | `config/benchmark_manifest.json` | Risk scenarios, validation targets |
 | `config/cost_master.json` | Post-sim cost parameters: per-route logistics (FTL/LTL), echelon warehouse rates, manufacturing cost structure (labor/overhead % of material by category), channel DSO, penalty costs, product_costs (deprecated fallback). Not used by simulation engine. |
 
+### Config Layer Migration (v0.92.0)
+Hardcoded behavior-critical parameters migrated to config:
+- **Returns** (`simulation_config.json` → `logistics.returns`): `probability`, `min_qty`, `restock_probability` — previously hardcoded in `logistics.py`
+- **Order types** (`replenishment.py`): Magic integers centralized as symbolic constants (`_OT_RUSH=1`, `_OT_PROMO=2`, `_OT_STANDARD=3`)
+- **BOM splits** (`world_definition.json` → `multi_level_bom.multi_intermediate_split`): Multi-intermediate blend ratios `[0.7, 0.3]` — previously hardcoded in `hierarchy.py`
+
 ---
 
 ## 18. Key Commands
@@ -797,6 +808,9 @@ poetry run python scripts/analysis/diagnose_service_level.py
 poetry run python scripts/analysis/diagnose_slob.py
 poetry run python scripts/analysis/analyze_bullwhip.py
 poetry run python scripts/analysis/check_plant_balance.py
+
+# Visualization: Convergence dynamics chart (→ sim_dynamics.png)
+poetry run python scripts/analysis/plot_sim_dynamics.py --data-dir data/output
 ```
 
 All diagnostic scripts default to `data/output` and accept a positional path argument or `--data-dir`.
