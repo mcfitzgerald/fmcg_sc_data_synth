@@ -38,15 +38,10 @@ def plot_sim_dynamics(data_dir="data/output"):
     else:
         daily_prod = pd.Series()
 
-    # 4. Inventory Mean (InvMean) - v0.90.0: Robust SKU-level mean
+    # 4. Inventory Mean (InvMean) - v0.91.0: Robust SKU-level mean
     inv_path = data_path / "inventory.parquet"
     if inv_path.exists():
-        # Read day and inventory
         inv_df = pd.read_parquet(inv_path, columns=["day", "actual_inventory"])
-        
-        # v0.90.0 Fix: The log uses mean(inventory[demand > 0]).
-        # To match the log's 15-20 scale on the chart, we filter out zeros.
-        # This removes the sparsity bias (90% of node-SKU combos are zero).
         print("  Filtering out zero-inventory rows for accurate mean...")
         active_inv = inv_df[inv_df["actual_inventory"] > 0]
         daily_inv = active_inv.groupby("day")["actual_inventory"].mean()
@@ -54,28 +49,31 @@ def plot_sim_dynamics(data_dir="data/output"):
         daily_inv = pd.Series()
 
     # Combine into single DataFrame
+    # Note: Use fillna(0) for flows, but ffill() for state (inventory)
     df = pd.DataFrame({
         "Dmd": daily_dmd,
         "Ord": daily_ord,
         "Ship": daily_ship,
         "Arr": daily_arr,
         "Prod": daily_prod,
-        "InvMean": daily_inv
     }).fillna(0)
     
-    # Filter to 365 days
-    df = df[(df.index >= 1) & (df.index <= 365)]
+    # Merge inventory and forward fill snapshots
+    df = df.join(pd.DataFrame({"InvMean": daily_inv}), how='left')
+    df["InvMean"] = df["InvMean"].ffill().bfill()
+    
+    # Filter to actual data range (exclude day 0 if needed)
+    df = df[df.index >= 1]
     
     # Plotting
-    fig, ax1 = plt.subplots(figsize=(14, 8))
+    fig, ax1 = plt.subplots(figsize=(16, 9))
 
     ax1.set_xlabel("Day")
-    ax1.set_ylabel("Quantity (Cases)")
-    # Plot Dmd, Ord, Ship, Arr, Prod
+    ax1.set_ylabel("Flow Quantity (Cases)")
     ax1.plot(df.index, df["Dmd"], label="Consumer Demand (Proxy)", color="black", linestyle=":", alpha=0.5)
-    ax1.plot(df.index, df["Ord"], label="Replenishment Orders", color="blue", alpha=0.4)
-    ax1.plot(df.index, df["Ship"], label="Shipments Created", color="green", alpha=0.4)
-    ax1.plot(df.index, df["Arr"], label="Arrivals (Receipts)", color="orange", alpha=0.4)
+    ax1.plot(df.index, df["Ord"], label="Replenishment Orders", color="blue", alpha=0.3)
+    ax1.plot(df.index, df["Ship"], label="Shipments Created", color="green", alpha=0.3)
+    ax1.plot(df.index, df["Arr"], label="Arrivals (Receipts)", color="orange", alpha=0.3)
     ax1.plot(df.index, df["Prod"], label="Production Completed", color="red", alpha=0.8, linewidth=2)
     ax1.tick_params(axis='y')
     ax1.legend(loc='upper left')
@@ -84,20 +82,22 @@ def plot_sim_dynamics(data_dir="data/output"):
     ax2.set_ylabel("Mean Inventory (per active node SKU)")
     ax2.plot(df.index, df["InvMean"], label="Mean Inventory", color="purple", linestyle="--", linewidth=2)
     ax2.tick_params(axis='y', labelcolor="purple")
-    # Force axis to show lean range if possible, or let it auto-scale
-    ax2.set_ylim(0, df["InvMean"].max() * 1.2)
+    # Axis padding
+    if not df["InvMean"].empty:
+        ax2.set_ylim(0, df["InvMean"].max() * 1.5)
     ax2.legend(loc='upper right')
 
-    plt.title("Simulation Dynamics (365 Days) - Demand-Centric Model v0.90.0\nLean Priming + Pipeline Synchronization")
+    plt.title(f"Simulation Dynamics ({len(df)} Days) - Demand-Centric model v0.91.0\nIntegral Priming Convergence Check")
     plt.grid(True, alpha=0.3)
     
     output_file = data_path / "sim_dynamics.png"
     plt.savefig(output_file)
     print(f"Chart saved to {output_file}")
     
-    # Also print a summary table for the terminal
-    print("\nSimulation Metrics Summary:")
-    print(df.describe().T)
+    # Summary stats
+    print(f"\nSimulation Metrics Summary ({len(df)} days):")
+    stats = df.describe(percentiles=[0.1, 0.5, 0.9]).T
+    print(stats)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
