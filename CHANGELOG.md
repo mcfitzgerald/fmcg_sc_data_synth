@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.91.0] - 2026-03-04
+
+### Feat: "Integral Priming" — Eliminating the 150-day Inventory Drain
+
+Synchronizes the "birth mass" of the simulation by netting actual pipeline and WIP inventory from on-hand priming.
+Ensures the network starts exactly at steady-state safety targets from Hour 1.
+
+#### Orchestrator Changes (`simulation/orchestrator.py`)
+- **Phase-Separated Priming** — Split synthetic priming into two phases. Phase 1 (Pipeline/WIP) now runs 
+  BEFORE on-hand initialization so that in-transit mass is known.
+- **Integral Netting** — Updated `_initialize_inventory` to calculate `On_Hand = Target - Pipeline - WIP`. 
+  Eliminates the double-counting that caused the Day 1 inventory ballooning.
+- **Lean Defaults** — Tightened base Day 0 targets (Store: 4.5d, RDC: 9d, Plant FG: 1.5d) and removed hardcoded 
+  2.0-day priming floors to match high-velocity Demand-Centric flow.
+- **Robust InvMean Metric** — Updated log counter to average only node-SKUs with active demand, preventing 
+  sparsity dilution. Confirmed Day 1 InvMean reduction from 1530.8 -> 7.9.
+
+#### Tooling (`scripts/analysis/plot_sim_dynamics.py`)
+- **Sync Dynamics Chart** — Plotting script now uses the same non-zero mean calculation as the simulation 
+  engine, ensuring the chart axis correctly reflects cases-per-SKU and matches logs.
+
 ## [0.90.0] - 2026-03-04
 
 ### Feat: "Demand-Centric" Model — Fixing the DC Replenishment Death Spiral

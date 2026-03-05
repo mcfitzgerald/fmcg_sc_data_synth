@@ -252,6 +252,20 @@ class Orchestrator:
             route_map=_route_map,
         )
 
+        # v0.45.0: Calculate deployment shares for production routing
+        # v0.91.0: Initialize EARLY for Integral Priming support
+        self.deployment_shares = self._calculate_deployment_shares()
+        self._precompute_deployment_targets()
+
+        # 7. Manufacturing State (initialized early for synthetic priming)
+        self.active_production_orders: list[ProductionOrder] = []
+        self.completed_batches: list[Batch] = []
+
+        # v0.91.0: Integral Priming Phase 1 (Pipeline and WIP)
+        # Seeds the shipments and POs so _initialize_inventory can net them out.
+        if not self._warm_start_dir:
+            self._prime_synthetic_steady_state_phase1()
+
         # Initialize inventory: warm-start from parquet or cold-start from formulas
         if self._warm_start_dir:
             from prism_sim.simulation.warm_start import load_warm_start_state
@@ -270,6 +284,7 @@ class Orchestrator:
             )
         else:
             self._warm_start_state = None
+            # v0.91.0: NET-OF-PIPELINE priming logic
             self._initialize_inventory()
 
         self.replenisher = MinMaxReplenisher(
@@ -281,13 +296,9 @@ class Orchestrator:
             base_demand_matrix=base_demand_matrix,
         )
 
-        # 7. Manufacturing State (initialized early for synthetic priming)
-        self.active_production_orders: list[ProductionOrder] = []
-        self.completed_batches: list[Batch] = []
-
         # Synthetic steady-state priming (after replenisher init)
-        # Injects realistic initial conditions: pipeline, WIP, history, age
-        self._prime_synthetic_steady_state()
+        # Phase 2: history buffers and ages
+        self._prime_synthetic_steady_state_phase2()
 
         self.allocator = AllocationAgent(self.state, self.config)
 
@@ -376,13 +387,6 @@ class Orchestrator:
 
         # 8. Finished Goods Mask for Metrics (excludes ingredients from inventory turns)
         self._fg_product_mask = self._build_finished_goods_mask()
-
-        # v0.45.0: Calculate deployment shares for production routing
-        # Includes both RDCs and plant-direct DCs
-        self.deployment_shares = self._calculate_deployment_shares()
-
-        # v0.55.0: Need-based deployment precomputation
-        self._precompute_deployment_targets()
 
 
     def _calculate_deployment_shares(self) -> dict[str, float]:
@@ -670,27 +674,38 @@ class Orchestrator:
         if ws.inventory_age is not None:
             self.state.inventory_age[:] = ws.inventory_age
 
-    def _prime_synthetic_steady_state(self) -> None:
+    def _prime_synthetic_steady_state_phase1(self) -> None:
         """
-        Inject synthetic steady-state conditions at day 0.
-
-        Pre-fills pipeline shipments, production WIP, history buffers,
-        and inventory ages. Always runs as part of the single init path.
-
-        Must be called AFTER replenisher init (needs replenisher attributes)
-        and AFTER _initialize_inventory() (needs on-hand inventory).
+        Phase 1 of synthetic priming: Pipeline and WIP.
+        Must run BEFORE _initialize_inventory() to enable Integral Priming.
         """
-        print("Priming synthetic steady-state...")
+        if self._warm_start_dir:
+            # Warm-start logic handled separately in __init__
+            return
 
+        print("Priming synthetic steady-state (Phase 1: Pipeline/WIP)...")
         # Build network topology maps (reused by multiple sub-methods)
-        self._upstream_map: dict[str, str] = {}
-        self._downstream_map: dict[str, list[str]] = {}
+        self._upstream_map = {}
+        self._downstream_map = {}
         for link in self.world.links.values():
             self._upstream_map[link.target_id] = link.source_id
             self._downstream_map.setdefault(link.source_id, []).append(
                 link.target_id
             )
 
+        # 1. Pipeline shipments
+        self._prime_pipeline()
+
+        # 2. Production WIP
+        self._prime_production_wip()
+
+    def _prime_synthetic_steady_state_phase2(self) -> None:
+        """
+        Phase 2 of synthetic priming: History and Age.
+        Must run AFTER replenisher init and AFTER _initialize_inventory().
+        """
+        print("Priming synthetic steady-state (Phase 2: History/Age)...")
+        
         # v0.76.0: Check if warm-start has agent state
         has_agent_state = (
             self._warm_start_state is not None
@@ -713,10 +728,6 @@ class Orchestrator:
             if hasattr(self, "_warm_start_production_orders"):
                 del self._warm_start_production_orders
             print("  Pipeline + WIP: loaded from warm-start (skipping synthetic)")
-        else:
-            # Cold-start: full synthetic priming
-            self._prime_pipeline()
-            self._prime_production_wip()
 
         # Inventory age: restore from snapshot or synthetic prime
         if has_agent_state and self._warm_start_state.inventory_age is not None:
@@ -726,8 +737,12 @@ class Orchestrator:
             self._prime_inventory_age()
 
         # Clean up temporary maps
-        del self._upstream_map
-        del self._downstream_map
+        if hasattr(self, "_upstream_map"):
+            del self._upstream_map
+        if hasattr(self, "_downstream_map"):
+            del self._downstream_map
+
+        print("Synthetic steady-state priming complete.")
 
         print("Synthetic steady-state priming complete.")
 
@@ -946,7 +961,8 @@ class Orchestrator:
         sim_params = self.config.get("simulation_parameters", {})
         cal_config = sim_params.get("calibration", {})
         init_config = cal_config.get("initialization", {})
-        plant_fg_prime_days = init_config.get("plant_fg_prime_days", 3.5)
+        # v0.90.0: Lower plant FG buffer 3.5->1.5 to prevent over-stuffing.
+        plant_fg_prime_days = init_config.get("plant_fg_prime_days", 1.5)
 
         fg_count = 0
         for plant_id in self.mrp_engine._plant_ids:
@@ -1126,6 +1142,9 @@ class Orchestrator:
             for abc_class, factor in abc_velocity_factors.items()
         }
 
+        # v0.90.0: Lean Plant FG priming (tightened 3.5 -> 1.5)
+        plant_fg_prime_days = float(init_config.get("plant_fg_prime_days", 1.5))
+
         # v0.28.0: Calculate seasonal factor for Day 1 (cold start adjustment)
         # Problem: Day 1 may be in a seasonal trough/peak, but priming uses expected
         # demand (no seasonality). This causes systematic over/under-stocking.
@@ -1145,6 +1164,18 @@ class Orchestrator:
             f" Day 1 factor = {day_1_seasonal:.4f}"
         )
 
+        # v0.91.0: Integral Priming - get actual pipeline/WIP mass to net out
+        in_transit = self.state.get_in_transit_by_target()
+        
+        # Calculate WIP mass per node/product (manually from active POs)
+        wip_mass = np.zeros((self.state.n_nodes, self.state.n_products), dtype=np.float64)
+        for po in self.active_production_orders:
+            n_idx = self.state.node_id_to_idx.get(po.plant_id)
+            p_idx = self.state.product_id_to_idx.get(po.product_id)
+            if n_idx is not None and p_idx is not None:
+                # PO quantity represents the mass that will arrive as FG
+                wip_mass[n_idx, p_idx] += po.quantity_cases
+
         # Seed finished goods at RDCs and Stores
         for node_id, node in self.world.nodes.items():
             if node.type == NodeType.STORE:
@@ -1152,17 +1183,19 @@ class Orchestrator:
                 if node_idx is not None:
                     node_demand = base_demand_matrix[node_idx, :]
 
-                    # Apply ABC-based priming
-                    # Vectorized: days supply vector based on ABC class
+                    # Target inventory (total pipeline + on-hand)
                     store_days_vec = np.array([
                         abc_target_dos.get(
                             self.mrp_engine.abc_class[p_idx], store_days_supply_val
                         )
                         for p_idx in range(self.state.n_products)
                     ])
-
-                    # v0.28.0: Apply seasonal adjustment to match Day 1 actual demand
-                    sku_levels = node_demand * store_days_vec * day_1_seasonal
+                    target_levels = node_demand * store_days_vec * day_1_seasonal
+                    
+                    # Integral Netting: On_Hand = Target - In_Transit
+                    node_in_transit = in_transit[node_idx, :]
+                    sku_levels = np.maximum(target_levels - node_in_transit, 0.0)
+                    
                     self.state.perceived_inventory[node_idx, :] = sku_levels
                     self.state.actual_inventory[node_idx, :] = sku_levels
 
@@ -1170,46 +1203,36 @@ class Orchestrator:
                 node_idx = self.state.node_id_to_idx.get(node_id)
                 if node_idx is not None:
                     if node_id.startswith("RDC-"):
-                        # v0.89.1: Use DRP throughput demand (DC-level, not
-                        # recursive store POS) to match actual RDC outflow.
-                        # Old method aggregated all downstream store POS
-                        # (~600K/RDC/day) but DRP only pulls ~370K/RDC/day,
-                        # causing massive RDC overstock → DC starvation.
+                        # Aggregated demand signal
                         rdc_downstream_demand = (
                             self.drp_distribution.get_rdc_throughput_demand(
                                 node_id
                             )
                         )
-
-                        # Skip priming if no demand (Ghost RDC fix)
                         if rdc_downstream_demand.sum() == 0:
                             continue
 
-                        # v0.26.0: Apply ABC-based priming to RDCs (config-driven)
+                        # Target inventory (RDC target is uniform)
                         rdc_days_vec = np.array([
                             rdc_abc_target_dos.get(
                                 self.mrp_engine.abc_class[p_idx], rdc_target_dos
                             )
                             for p_idx in range(self.state.n_products)
                         ])
-                        # v0.53.0: Subtract expected pipeline fill from on-hand
-                        # to prevent double-stocking (on-hand + in-transit).
-                        avg_upstream_lt = self._get_avg_upstream_lead_time(
-                            node_id
-                        )
-                        pipeline_adjusted_days = np.maximum(
-                            rdc_days_vec - avg_upstream_lt, 2.0
-                        )
-                        # v0.28.0: Apply seasonal adjustment
-                        rdc_sku_levels = (
+                        target_levels = (
                             rdc_downstream_demand
-                            * pipeline_adjusted_days
+                            * rdc_days_vec
                             * day_1_seasonal
                         )
+                        
+                        # Integral Netting: On_Hand = Target - In_Transit
+                        node_in_transit = in_transit[node_idx, :]
+                        rdc_sku_levels = np.maximum(target_levels - node_in_transit, 0.0)
+                        
                         self.state.perceived_inventory[node_idx, :] = rdc_sku_levels
                         self.state.actual_inventory[node_idx, :] = rdc_sku_levels
                     else:
-                        # Customer DCs: aggregate downstream store demand per SKU
+                        # Customer DCs: aggregate demand
                         downstream_demand = np.zeros(self.state.n_products)
                         for link in self.world.links.values():
                             if link.source_id == node_id:
@@ -1226,12 +1249,10 @@ class Orchestrator:
                                             base_demand_matrix[t_idx, :]
                                         )
 
-                        # Skip priming if no demand
                         if downstream_demand.sum() == 0:
                             continue
 
-                        # v0.60.0: DC priming uses dc_buffer_days x ABC mult
-                        # (matches operational deployment targets)
+                        # Target inventory
                         dc_days_vec = np.array([
                             dc_abc_target_dos.get(
                                 self.mrp_engine.abc_class[p_idx],
@@ -1239,34 +1260,39 @@ class Orchestrator:
                             )
                             for p_idx in range(self.state.n_products)
                         ])
-                        # v0.60.0: Pipeline adjustment (same as RDCs)
-                        avg_upstream_lt = self._get_avg_upstream_lead_time(
-                            node_id
-                        )
-                        dc_days_vec = np.maximum(
-                            dc_days_vec - avg_upstream_lt, 2.0
-                        )
-                        # v0.28.0: Apply seasonal adjustment
-                        dc_levels = (
+                        target_levels = (
                             downstream_demand
                             * dc_days_vec
                             * day_1_seasonal
                         )
+                        
+                        # Integral Netting: On_Hand = Target - In_Transit
+                        node_in_transit = in_transit[node_idx, :]
+                        dc_levels = np.maximum(target_levels - node_in_transit, 0.0)
+                        
                         self.state.perceived_inventory[node_idx, :] = dc_levels
                         self.state.actual_inventory[node_idx, :] = dc_levels
 
-            # Seed raw materials at Plants
-            # v0.20.0: Sized for safety supply to ensure production stability.
-            # v0.36.0: Moved to config to allow scaling.
-            # v0.37.0: Demand-driven init (Velocity * Days)
-            # to fix flat buffer issues
             elif node.type == NodeType.PLANT:
                 node_idx = self.state.node_id_to_idx.get(node_id)
                 if node_idx is not None:
-                    # Calculate global demand per product
                     global_product_demand = np.sum(base_demand_matrix, axis=0)
-
-                    # Derived ingredient demand via two-step BOM explosion.
+                    # v0.91.0: Use pre-calculated deployment shares (demand-weighted)
+                    plant_share = self.deployment_shares.get(node_id, 0.0)
+                    expected_demand = plant_share * global_product_demand
+                    
+                    # Plant target: plant_fg_prime_days + WIP
+                    # v0.91.0: Net out the actual WIP primed in Phase 1
+                    target_levels = expected_demand * plant_fg_prime_days
+                    node_wip = wip_mass[node_idx, :]
+                    
+                    # Integral Netting: On_Hand = Target - WIP - In_Transit
+                    # (Plants don't have inbound transit normally, but for consistency)
+                    node_in_transit = in_transit[node_idx, :]
+                    plant_levels = np.maximum(target_levels - node_wip - node_in_transit, 0.0)
+                    
+                    self.state.perceived_inventory[node_idx, :] = plant_levels
+                    self.state.actual_inventory[node_idx, :] = plant_levels
                     # With 3-level BOM: SKU → bulk + pkg, bulk → raw materials.
                     recipe_matrix = self.state.recipe_matrix
                     direct_demand = global_product_demand @ recipe_matrix

@@ -281,10 +281,13 @@ poetry run python scripts/generate_static_world.py
 
 Two initialization paths:
 
-### Cold Start (default)
-1. **Demand-proportional priming** (`_initialize_inventory()`): Seeds on-hand inventory at every node proportional to expected demand and ABC class. Priming targets match operational targets: stores use `store_days_supply=6.0` × ABC factors; DCs use `dc_buffer_days × 1.5/2.0/2.5` (A/B/C); RDCs use `rdc_days_supply=9` × ABC factors with pipeline adjustment. Both RDCs and Customer DCs subtract upstream lead time to prevent double-stocking with pipeline inventory. When `_drp_enabled`, RDC priming uses DRP throughput demand instead of recursive store POS (v0.89.1).
-2. **Synthetic steady-state priming** (`_prime_synthetic_steady_state()`): Adds pipeline shipments, production WIP (plant FG at `plant_fg_prime_days`=3.5 per plant → 14 DOS total, matching MRP A-item target ~17 DOS with WIP+transit), history buffers, and inventory age
-3. **Stabilization** (default 10 days): Normal simulation steps excluded from metrics
+### Cold Start (default v0.91.0 Integral Priming)
+1. **Synthetic Phase 1 (`_prime_synthetic_steady_state_phase1()`):** Creates pipeline shipments and production WIP (Work-in-Process) first. This establishes the "in-transit mass" of the network.
+2. **Integral On-Hand Priming (`_initialize_inventory()`):** Seeds on-hand inventory using **Integral Netting**: `On_Hand = Target - Pipeline - WIP`. 
+   - **Targets:** Stores use `store_days_supply=4.5`; DCs use `dc_buffer_days × 1.5/2.0/2.5` (A/B/C); RDCs use `rdc_target_dos=9.0`.
+   - **Effect:** Eliminates Day 1 double-counting. The network starts exactly at steady-state safety targets with no 150-day "inventory drain" transient.
+3. **Synthetic Phase 2 (`_prime_synthetic_steady_state_phase2()`):** Fills agent history buffers (28-day demand, lead-time samples) and seeds inventory ages (FIFO approximation).
+4. **Stabilization** (default 10 days): Normal simulation steps excluded from metrics.
 
 ### Warm Start (`--warm-start <dir>`)
 Loads converged state from a prior run's parquet output, eliminating the synthetic→converged transient:
