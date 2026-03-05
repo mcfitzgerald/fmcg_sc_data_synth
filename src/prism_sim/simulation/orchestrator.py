@@ -1188,7 +1188,7 @@ class Orchestrator:
                         # v0.26.0: Apply ABC-based priming to RDCs (config-driven)
                         rdc_days_vec = np.array([
                             rdc_abc_target_dos.get(
-                                self.mrp_engine.abc_class[p_idx], rdc_days_supply
+                                self.mrp_engine.abc_class[p_idx], rdc_target_dos
                             )
                             for p_idx in range(self.state.n_products)
                         ])
@@ -2029,10 +2029,14 @@ class Orchestrator:
         total_arrived = summary["arrived"]
         total_produced = summary["produced"]
 
-        # Debug: Inventory Stats
-        # Only consider stores (first 4500 nodes approx, or just average all positive)
-        # We know actual_inventory can be negative.
-        mean_inv = np.mean(self.state.actual_inventory)
+        # v0.90.0: Improved inventory mean accuracy.
+        # Only consider node-SKU combinations with non-zero demand.
+        # This prevents the mean from being diluted by sparse zeros.
+        active_mask = self.pos_engine.get_base_demand_matrix() > 0
+        if np.any(active_mask):
+            mean_inv = np.mean(self.state.actual_inventory[active_mask])
+        else:
+            mean_inv = np.mean(self.state.actual_inventory)
 
         # Calculate theoretical reorder point avg
         # RP = Demand * 3.0
