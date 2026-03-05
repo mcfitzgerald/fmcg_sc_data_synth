@@ -1300,14 +1300,28 @@ class MinMaxReplenisher:
             .get("replenishment", {})
         )
 
-        # v0.52.0: Throughput-based DC ordering replaces echelon-demand ordering.
-        # Root cause of +467% DC drift: DCs ordered based on echelon demand
-        # (DC + 100 stores), but stores manage their own inventory independently.
-        # DC ends up holding whatever stores don't pull → persistent accumulation.
+        # v0.90.0: Robust DC demand signal tracks "True Demand" (smoothed inflow)
+        # instead of static expected demand. This fixes the "Death Spiral"
+        # during peaks or stockouts while still preventing drift when stores
+        # stop pulling inventory.
         #
-        # Fix: DC orders = outflow (what it ships to stores) + local buffer correction.
-        # Matches real FMCG practice (Walmart DC orders ≈ throughput ± buffer).
+        # Fix: DC orders = outflow (what it ships) + local buffer correction.
+        # Target and floor gating now use smoothed_demand (True Demand) to
+        # ensure they track actual retail pull even when shipments are attenuated.
         dc_actual_indices = target_idx_arr[dc_indices]
+
+        # 0. Build True Demand reference (smoothed inflow, floored at expected)
+        # self.smoothed_demand captures promotions and seasonality (dynamic).
+        # np.maximum with expected provides cold-start and baseline protection.
+        expected_matrix = np.zeros((len(dc_actual_indices), self.state.n_products))
+        for i, dc_idx in enumerate(dc_actual_indices):
+            expected_matrix[i, :] = self._expected_throughput.get(int(dc_idx), 0.1)
+
+        # True Demand = max(What stores requested, steady-state baseline)
+        dc_true_demand = np.maximum(
+            self.smoothed_demand[dc_actual_indices, :],
+            expected_matrix
+        )
 
         # 1. Get outflow-based demand signal (rolling 5-day shipment average)
         dc_actual_outflow = self.get_outflow_demand()[dc_actual_indices, :].copy()
@@ -1315,49 +1329,26 @@ class MinMaxReplenisher:
         # Apply inventory-gated throughput floor (anti-windup pattern).
         # Floor engages when DC inventory is LOW (cold start / death spiral).
         # Floor disengages when inventory >= target (allows drawdown).
-        # Without gating, the floor causes persistent over-ordering during
-        # seasonal troughs when actual outflow < expected.
         throughput_floor_pct = float(params.get("throughput_floor_pct", 0.7))
         dc_buffer_days = float(params.get("dc_buffer_days", 7.0))
         dc_local_inv = self.state.actual_inventory[dc_actual_indices, :]
 
-        dc_outflow = dc_actual_outflow.copy()
-        for i, dc_idx in enumerate(dc_actual_indices):
-            expected = self._expected_throughput.get(int(dc_idx))
-            if expected is not None:
-                # Gating: floor_weight = clip(
-                #   (target_dos - local_dos) / target_dos, 0, 1)
-                # DOS=0 → weight=1.0; DOS=target → weight=0.0
-                local_demand = np.maximum(expected, 0.1)
-                local_dos = dc_local_inv[i, :] / local_demand
-                floor_weight = np.clip(
-                    (dc_buffer_days - local_dos) / np.maximum(dc_buffer_days, 1.0),
-                    0.0,
-                    1.0,
-                )
-                floor = expected * throughput_floor_pct * floor_weight
-                dc_outflow[i, :] = np.maximum(dc_actual_outflow[i, :], floor)
+        # Gating: floor_weight = clip((target_dos - local_dos) / target_dos, 0, 1)
+        # Use dc_true_demand for DOS calculation to avoid perceived inflation during stockouts.
+        local_dos = dc_local_inv / np.maximum(dc_true_demand, 0.1)
+        floor_weight = np.clip(
+            (dc_buffer_days - local_dos) / np.maximum(dc_buffer_days, 1.0),
+            0.0,
+            1.0,
+        )
 
-        # 2. Local buffer target based on ACTUAL outflow
-        dc_local_target = dc_actual_outflow * dc_buffer_days
+        # DC outflow signal is floored at a fraction of true demand during stockouts
+        dc_outflow = np.maximum(dc_actual_outflow, dc_true_demand * throughput_floor_pct * floor_weight)
 
-        # Floor target at gated throughput level for cold-start protection
-        for i, dc_idx in enumerate(dc_actual_indices):
-            expected = self._expected_throughput.get(int(dc_idx))
-            if expected is not None:
-                local_demand = np.maximum(expected, 0.1)
-                local_dos = dc_local_inv[i, :] / local_demand
-                floor_weight = np.clip(
-                    (dc_buffer_days - local_dos) / np.maximum(dc_buffer_days, 1.0),
-                    0.0,
-                    1.0,
-                )
-                min_target = (
-                    expected * throughput_floor_pct * floor_weight * dc_buffer_days
-                )
-                dc_local_target[i, :] = np.maximum(
-                    dc_local_target[i, :], min_target
-                )
+        # 2. Local buffer target based on TRUE demand (not attenuated outflow)
+        # This keeps the target stable even if shipments drop due to stockouts.
+        # Floor target at gated throughput level for cold-start protection.
+        dc_local_target = dc_true_demand * dc_buffer_days
 
         # 3. Local inventory position (DC only, NOT echelon)
         dc_in_transit = self.state.get_in_transit_by_target()[dc_actual_indices, :]
@@ -1373,8 +1364,9 @@ class MinMaxReplenisher:
         # 5. DC order rate = outflow + correction
         dc_order_rate = np.maximum(dc_outflow + local_correction, 0.0)
 
-        # Order when the rate-based qty is meaningful (>5% of outflow)
-        rate_threshold = dc_outflow * 0.05
+        # Order when the rate-based qty is meaningful (>1% of outflow by default)
+        dc_rate_threshold_pct = float(params.get("dc_order_rate_threshold_pct", 0.05))
+        rate_threshold = dc_outflow * dc_rate_threshold_pct
         needs_echelon_order = dc_order_rate > rate_threshold
 
         # Use rate-based qty instead of gap-to-target
@@ -1395,11 +1387,9 @@ class MinMaxReplenisher:
             (self.z_scores_vec >= self.z_score_B) & (self.z_scores_vec < self.z_score_A)
         ] = dc_dos_cap_b
 
-        # Calculate LOCAL DC DOS using ACTUAL outflow (NOT floored).
-        # Using floored outflow deflates DOS, preventing the cap from firing
-        # when actual outflow << expected throughput.
-        dc_local_demand = np.maximum(dc_actual_outflow, 0.1)
-        dc_local_dos = dc_local_inv / dc_local_demand
+        # Calculate LOCAL DC DOS using TRUE demand (not attenuated outflow).
+        # This prevents the cap from firing prematurely when shipments drop.
+        dc_local_dos = dc_local_inv / np.maximum(dc_true_demand, 0.1)
 
         # Suppress order for products where local DC DOS > cap
         dc_over_cap = dc_local_dos > dc_dos_cap_vec[np.newaxis, :]
@@ -1435,17 +1425,23 @@ class MinMaxReplenisher:
             .get("replenishment", {})
         )
         target_days = self.target_days_vec[target_idx_arr]
-        if self._base_demand_matrix is not None:
-            base_ref = self._base_demand_matrix[target_idx_arr, :].copy()
-            # For customer DCs: use expected throughput (aggregate downstream)
+        if self.smoothed_demand is not None:
+            # v0.90.0: Anchor order cap to DYNAMIC True Demand (smoothed_demand)
+            # instead of static expected throughput. This allows caps to scale
+            # with promotions and seasonality.
+            base_ref = self.smoothed_demand[target_idx_arr, :].copy()
+            # Ensure a physics-based floor for all nodes
+            base_ref = np.maximum(base_ref, self.min_demand_floor)
+
+            # Special handling for customer DCs to ensure aggregate signal is used
             for i, t_idx in enumerate(target_indices):
                 if t_idx in self._customer_dc_indices:
                     expected = self._expected_throughput.get(t_idx)
                     if expected is not None:
-                        base_ref[i, :] = expected
-            base_ref = np.maximum(base_ref, self.min_demand_floor)
+                        # Floor at expected, but allow smoothed_demand to scale UP
+                        base_ref[i, :] = np.maximum(base_ref[i, :], expected)
         else:
-            # Fallback if no base demand matrix available
+            # Fallback if no smoothed demand matrix available
             base_ref = np.maximum(
                 self.get_inflow_demand()[target_idx_arr, :], self.min_demand_floor
             )

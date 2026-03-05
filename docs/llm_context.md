@@ -550,27 +550,30 @@ Products are dynamically classified every 7 days based on cumulative sales volum
 - **B-Items (Next 15%):** Medium service level target ($z=1.65$)
 - **C-Items (Bottom 5%):** Medium service level target ($z=1.65$)
 
-### Throughput-Based DC Ordering
-Customer DCs use throughput-based ordering instead of echelon-demand:
+### Throughput-Based DC Ordering (Demand-Centric v0.90.0)
+Customer DCs use throughput-based ordering anchored to **True Demand** (smoothed retail pull) instead of echelon-demand or attenuated outflow:
 ```python
-dc_order_rate = outflow + correction
-# outflow = rolling 5-day average of shipments to stores
-# correction = (local_target - local_ip) / dc_correction_days
+# v0.90.0: Signal decoupling to prevent death spirals
+true_demand = max(smoothed_demand, expected_throughput)
+dc_order_rate = outflow + (true_demand * buffer - local_ip) / correction_days
+
 # correction capped at ±(outflow × dc_correction_cap_pct)
+# floor gating and DOS caps use true_demand denominator
 ```
-- **Config:** `dc_buffer_days=7.0`, `dc_correction_days=7.0`, `dc_correction_cap_pct=0.5`, `throughput_floor_pct=0.7`
-- **Physics-derived DC DOS caps:** `dc_buffer_days × mult` → A≈10.5, B=14, C=17.5
-- **Effect:** DC ordering tracks actual outflow rather than upstream demand signal, reducing bullwhip
+- **Config:** `dc_buffer_days=7.0`, `dc_correction_days=7.0`, `dc_correction_cap_pct=0.5`, `throughput_floor_pct=0.7`, `dc_order_rate_threshold_pct=0.01`
+- **Physics-derived DC DOS caps:** `dc_buffer_days × mult` → A≈10.5, B=14, C=17.5. **Calculated using True Demand** to prevent premature suppression during stockouts.
+- **Effect:** DC ordering base tracks actual outflow (drift protection) but targets and recovery floors track actual retail pull (death spiral protection).
 
 ### Anti-Windup Floor Gating
 All demand floors are conditional on inventory state to prevent accumulation:
 ```python
-floor_weight = clip((target_dos - local_dos) / target_dos, 0, 1)
+# v0.90.0: DOS uses true_demand to ensure floor engages during stockouts
+floor_weight = clip((target_dos - (on_hand / true_demand)) / target_dos, 0, 1)
 # At DOS=0: floor_weight=1.0 (full floor — protect against death spiral)
 # At DOS=target: floor_weight=0.0 (floor disengages — prevent accumulation)
 ```
 - **Config:** `floor_gating_enabled=true`
-- **Effect:** Floors only activate when inventory is below target, preventing the over-ordering that floors would otherwise cause at steady state
+- **Effect:** Floors only activate when inventory is below target relative to retail pull.
 
 ---
 

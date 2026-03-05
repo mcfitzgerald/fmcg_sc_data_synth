@@ -159,6 +159,8 @@
         "_dc_correction_note": "v0.52.0: Days over which to smooth inventory correction toward local target",
         "dc_correction_cap_pct": 0.5,
         "_dc_correction_cap_note": "v0.54.1: Reverted from 0.75→0.5 — physics-derived caps bound DC inventory, 50% correction sufficient",
+        "dc_order_rate_threshold_pct": 0.01,
+        "_dc_order_rate_threshold_note": "v0.90.0: Minimum rate threshold for DC orders (fraction of outflow). Lowered from 0.05 to 0.01 to fix death spiral recovery.",
         "throughput_floor_pct": 0.7,
         "_throughput_floor_note": "v0.52.0: Floor outflow at 70% of expected throughput for demand ramp protection",
         "floor_gating_enabled": true,

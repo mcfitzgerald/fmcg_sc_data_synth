@@ -1551,12 +1551,12 @@ class Orchestrator:
         # PERF: Use batch method to update in-transit tensor incrementally
         self.state.add_shipments_batch(plant_shipments)
 
-        # 10a. v0.89.0: DRP distribution (RDC->DC need-based allocation)
-        # v0.89.1: Pass replenisher's outflow demand so DRP tracks actual
-        # DC→Store product mix instead of static base POS.
-        dc_outflow = self.replenisher.get_outflow_demand()
+        # 10a. v0.90.0: DRP distribution (RDC->DC need-based allocation)
+        # v0.90.0: Pass True Demand signal (smoothed_demand) instead of
+        # attenuated dc_outflow so DRP tracks actual retail pull.
+        true_demand = self.replenisher.smoothed_demand
         drp_shipments = (
-            self.drp_distribution.compute_and_execute(day, dc_outflow=dc_outflow)
+            self.drp_distribution.compute_and_execute(day, dc_outflow=true_demand)
             if self._drp_ships else []
         )
         if drp_shipments:
@@ -2572,22 +2572,39 @@ class Orchestrator:
         # v0.61.0: Seasonal scaling — reuse MRP's seasonal factor
         seasonal_factor = self.mrp_engine._get_seasonal_factor(current_day)
 
+        # v0.90.0: Robust deployment demand signal (True Demand).
+        # Use smoothed_demand (retail pull) to set targets. For RDCs, this
+        # represents aggregated downstream store demand.
+        smoothed = self.replenisher.smoothed_demand
+
         for target_id in self.deployment_shares:
             target_idx = self.state.node_id_to_idx.get(target_id)
             if target_idx is None:
                 continue
 
-            # Expected demand for this target (seasonally adjusted)
-            expected_demand = (
+            # Base expected demand (static + seasonal)
+            expected = (
                 self._target_expected_demand.get(target_id, np.zeros(n_p))
                 * seasonal_factor
             )
 
+            # True Demand = max(What was requested, seasonal baseline)
+            # smoothed_demand already includes seasonality/promos
+            if smoothed is not None:
+                # DC target: use its smoothed demand row
+                # RDC target: smoothed_demand already accounts for retail pull
+                # if replenisher recorded inflow correctly.
+                # NOTE: For RDCs, self.replenisher.smoothed_demand[target_idx]
+                # is the smoothed inflow (what DCs requested from this RDC).
+                true_demand = np.maximum(smoothed[target_idx, :], expected)
+            else:
+                true_demand = expected
+
             # ABC-differentiated target position
             if target_id.startswith("RDC-"):
-                target_position = self._rdc_target_dos * expected_demand
+                target_position = self._rdc_target_dos * true_demand
             else:
-                target_position = dc_target_dos_vec * expected_demand
+                target_position = dc_target_dos_vec * true_demand
 
             # Current position = on_hand + in_transit_to_target
             on_hand = np.maximum(

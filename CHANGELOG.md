@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.90.0] - 2026-03-04
+
+### Feat: "Demand-Centric" Model — Fixing the DC Replenishment Death Spiral
+
+Synchronizes every echelon to the "True Demand" (retail pull) signal to prevent attenuated shipments from
+triggering inventory starvation. Decouples inventory targets and floor gating from historical outflow.
+
+#### Replenishment Changes (`agents/replenishment.py`)
+- **Robust DC "True Demand" Signal** — Uses `smoothed_demand` (smoothed retail requests) instead of `outflow`
+  (shipments) for targets, DOS calculation, and floor gating. Fixes the "Death Spiral" where low inventory
+  causes low shipments, which then causes lower replenishment orders.
+- **Dynamic Order Caps** — Anchor order caps to dynamic `smoothed_demand` (floored at expected) instead of
+  static startup values. Allows ordering to scale correctly during promotions and seasonality.
+- **Naturalized Rate Threshold** — Replaced hardcoded 5% DC order rate threshold with config-driven
+  `dc_order_rate_threshold_pct` (default 0.01). Prevents recovery orders from being suppressed.
+
+#### Distribution Changes (`simulation/drp_distribution.py`)
+- **Proactive DRP Needs** — Updated `_compute_dc_need` to use `smoothed_demand` (via orchestrator) as the
+  primary signal. DRP now positions inventory based on what stores *want*, not just what DCs *shipped*.
+
+#### Config (`simulation_config.json` → `agents.replenishment`)
+- `dc_order_rate_threshold_pct: 0.01` — Lowered threshold for order firing to enable recovery.
+
 ## [0.89.1] - 2026-03-04
 
 ### Fix: DRP Shipping Disabled by Default — DC Pull Wins on Product-Mix Accuracy
