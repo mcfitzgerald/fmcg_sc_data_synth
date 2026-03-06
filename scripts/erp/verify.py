@@ -30,6 +30,31 @@ def run_verification(output_dir: Path) -> None:
     passed = 0
     failed = 0
 
+    # ── 0. Schema Validation ──────────────────────────────────
+    from .schema import validate_csv_headers
+
+    logger.info("\n--- Schema Validation (CSV headers vs schema.py) ---")
+    schema_errors = 0
+    for subdir in ("master", "transactional"):
+        d = output_dir / subdir
+        if not d.exists():
+            continue
+        for csv_file in sorted(d.glob("*.csv")):
+            table_name = csv_file.stem
+            with open(csv_file) as f:
+                reader = csv.reader(f)
+                headers = next(reader, [])
+            errors = validate_csv_headers(table_name, headers)
+            if errors:
+                for err in errors:
+                    logger.warning("  FAIL: %s — %s", table_name, err)
+                schema_errors += 1
+                failed += 1
+            else:
+                passed += 1
+    if schema_errors == 0:
+        logger.info("  PASS: All CSV headers match schema definitions")
+
     # ── 1. Row Count Audit ────────────────────────────────────
     logger.info("\n--- Row Counts ---")
     total_rows = 0

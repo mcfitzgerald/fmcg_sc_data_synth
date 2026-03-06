@@ -147,8 +147,15 @@ def main() -> None:
     mapper.save(output_dir / "reference" / "id_mapping.json")
 
     from .neo4j_headers import generate_neo4j_headers
+    from .schema import generate_ddl
 
     generate_neo4j_headers(output_dir)
+
+    # Generate PostgreSQL DDL from schema definitions
+    schema_path = Path("scripts/erp_schema.sql")
+    schema_path.write_text(generate_ddl())
+    logger.info("Schema DDL written to %s", schema_path)
+
     t4 = time.perf_counter()
     logger.info("Phase 4 done in %.1fs", t4 - t3)
 
