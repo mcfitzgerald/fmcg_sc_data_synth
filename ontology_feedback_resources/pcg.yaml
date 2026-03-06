@@ -371,7 +371,7 @@ classes:
       vg:primary_key: '["formula_id", "ingredient_id", "sequence"]'
       vg:context: >-
         {
-          "business_logic": "BOM line items with composite PK (formula_id, ingredient_id, sequence). quantity_kg is the per-batch requirement. IMPORTANT: ingredient_id is polymorphic — it can point to ingredients table (78 raw materials), bulk_intermediates table (49 primary bulks at bom_level=1), or bulk_intermediates table (13 premix sub-intermediates at bom_level=2). No discriminator column exists; must LEFT JOIN both tables to resolve. In a bom_level=0 formula, sequence=1 is typically the bulk intermediate; remaining sequences are packaging from the ingredients table.",
+          "business_logic": "BOM line items with composite PK (formula_id, ingredient_id, sequence). quantity_kg is the per-unit (per-case) requirement — multiply by batch quantity (cases) to get total planned consumption. IMPORTANT: ingredient_id is polymorphic — it can point to ingredients table (78 raw materials), bulk_intermediates table (49 primary bulks at bom_level=1), or bulk_intermediates table (13 premix sub-intermediates at bom_level=2). No discriminator column exists; must LEFT JOIN both tables to resolve. In a bom_level=0 formula, sequence=1 is typically the bulk intermediate; remaining sequences are packaging from the ingredients table.",
           "llm_prompt_hint": "For BOM explosion: resolve each ingredient_id by LEFT JOIN to both ingredients and bulk_intermediates tables. If match is a bulk_intermediate (bom_level=1 or 2), find its formula and recurse. For bom_level=1 bulks, ingredients may include PREMIX products (bom_level=2) — recurse. For bom_level=2 premixes, ingredients are always raw materials. quantity_kg for cost rollup."
         }
     attributes:
@@ -423,7 +423,7 @@ classes:
       vg:identifier: batch_number
       vg:context: >-
         {
-          "business_logic": "Production execution record. product_type discriminates output: 'finished_good' → SKU table (~75%), 'bulk_intermediate' → BulkIntermediate table (~23%), 'premix' → BulkIntermediate table (bom_level=2 sub-intermediates, ~1.4%). bom_level mirrors formula hierarchy (0=finished, 1=intermediate, 2=premix). Mass balance: sum of input ingredient quantities (batch_ingredients) should approximate batch output quantity_kg / yield_percent. Actual consumed quantities include +/-3% recording variance vs formula specification.",
+          "business_logic": "Production execution record. product_type discriminates output: 'finished_good' → SKU table (~75%), 'bulk_intermediate' → BulkIntermediate table (~23%), 'premix' → BulkIntermediate table (bom_level=2 sub-intermediates, ~1.4%). bom_level mirrors formula hierarchy (0=finished, 1=intermediate, 2=premix). Mass balance: sum of input ingredient quantities (batch_ingredients) should approximate batch output quantity_kg / yield_percent. Actual consumed quantities may include small recording variance vs formula specification (configurable, typically <=5%).",
           "llm_prompt_hint": "Use product_type to determine which product table to join: finished_good→skus, bulk_intermediate→bulk_intermediates, premix→bulk_intermediates (filter bom_level=2). For BOM tracing: follow formula_id → formula_ingredients. For actual consumption: join batch_ingredients by batch_id. wo_id links to work_order for scheduling context."
         }
       vg:state_machine: >-
@@ -491,8 +491,8 @@ classes:
       vg:primary_key: id
       vg:context: >-
         {
-          "business_logic": "Actual consumption records for production batches. quantity_kg records what was actually used, which includes +/-3% recording variance vs formula specification. Useful for planned-vs-actual variance analysis and mass balance verification.",
-          "llm_prompt_hint": "Join batch_id → batches for production context. Join ingredient_id → ingredients for material details. Compare quantity_kg against formula_ingredients.quantity_kg for the same formula to detect production variances."
+          "business_logic": "Actual consumption records for production batches. quantity_kg records what was actually used. Variance vs formula is typically small (configurable production noise). Expected quantity = formula_ingredients.quantity_kg × batches.quantity_kg (formula qty is per-case, batch qty is cases produced). Useful for planned-vs-actual variance analysis and mass balance verification.",
+          "llm_prompt_hint": "Join batch_id → batches for production context. Join ingredient_id → ingredients for material details. To compare planned vs actual: expected_kg = formula_ingredients.quantity_kg * batches.quantity_kg (fi is per-case, b is total cases). Compare against batch_ingredients.quantity_kg."
         }
     attributes:
       quantity_kg:
@@ -1498,7 +1498,7 @@ classes:
       vg:edge_attributes: >-
         [
           {"name": "sequence", "type": "integer", "description": "Ingredient addition sequence"},
-          {"name": "quantity_kg", "type": "decimal", "description": "Quantity per batch in kg"}
+          {"name": "quantity_kg", "type": "decimal", "description": "Quantity per production unit (case) in kg"}
         ]
       vg:axioms: >-
         [
@@ -1655,7 +1655,7 @@ classes:
       vg:operation_types: '["direct_join"]'
       vg:context: >-
         {
-          "business_logic": "Actual ingredient consumption during production. Mass balance: sum of input ingredient quantities should approximate batch output quantity_kg / yield_percent. Use for planned-vs-actual analysis (compare against formula_ingredients) and full traceability.",
+          "business_logic": "Actual ingredient consumption during production. quantity_kg = total kg consumed. Expected = formula_ingredients.quantity_kg × batches.quantity_kg (per-case × cases). Mass balance: sum of inputs should approximate batch output / yield_percent. Use for planned-vs-actual analysis and full traceability.",
           "traversal_semantics": {
             "inbound": "what batches consumed this ingredient (traceability)",
             "outbound": "what ingredients went into this batch (bill of materials actuals)"
