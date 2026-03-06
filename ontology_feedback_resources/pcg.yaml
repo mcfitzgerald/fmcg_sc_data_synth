@@ -2,7 +2,7 @@
 # Prism Consumer Goods (PCG) - ERP Supply Chain Ontology
 # ============================================================================
 #
-# Virtual twin declaration for the PCG schema (38 tables, ~395M rows, 365-day sim).
+# Virtual twin declaration for the PCG schema (38 tables, ~395M rows).
 # Uses class hierarchy via scm_base.yaml imports (is_a, mixins, abstract classes).
 #
 # v3.2 — PREMIX & Status Lifecycle Update:
@@ -101,7 +101,7 @@ classes:
       vg:identifier: supplier_code
       vg:context: >-
         {
-          "business_logic": "50 base suppliers with real company names (e.g., Meridian Chemical Corp, Pacific Packaging Solutions). 6 duplicate entries with -ALT suffix on supplier_code — intentional data quality friction for entity resolution testing. All tier=1 in current data. country drives lead time and risk modeling.",
+          "business_logic": "50 base suppliers with real company names (e.g., Meridian Chemical Corp, Pacific Packaging Solutions). 6 duplicate entries with -ALT suffix on supplier_code exist — likely data entry errors or legacy system imports requiring entity resolution. All tier=1 in current data. country drives lead time and risk modeling.",
           "llm_prompt_hint": "Watch for -ALT suffix duplicates when counting unique suppliers — use REPLACE(supplier_code, '-ALT', '') to normalize. Join supplier_ingredients for sourcing matrix. supplier_id FK appears on purchase_orders and ap_invoices."
         }
       vg:scenario_params: >-
@@ -112,7 +112,7 @@ classes:
         [
           {
             "name": "no_duplicate_suppliers",
-            "description": "Base supplier codes should be unique (ALT duplicates are friction)",
+            "description": "Base supplier codes should be unique (ALT duplicates are data quality issues)",
             "axiom_type": "referential",
             "sql_expression": "SELECT REPLACE(supplier_code, '-ALT', '') as base, COUNT(*) FROM suppliers GROUP BY base HAVING COUNT(*) > 1",
             "severity": "warning"
@@ -391,7 +391,7 @@ classes:
       vg:identifier: wo_number
       vg:context: >-
         {
-          "business_logic": "Production scheduling document linking a formula to a plant. planned_quantity_kg is the target output. All 9 transaction document entities now have diverse status values via lifecycle simulation.",
+          "business_logic": "Production scheduling document linking a formula to a plant. planned_quantity_kg is the target output. All 9 transaction document entities have diverse status distributions reflecting real operational lifecycles.",
           "llm_prompt_hint": "Join plant_id → plants, formula_id → formulas. Batches link back via batches.wo_id. planned_start_date and due_date are day-integers for scheduling analysis. Note: actual status value is 'complete' (lowercase, no 'd')."
         }
       vg:state_machine: >-
@@ -423,7 +423,7 @@ classes:
       vg:identifier: batch_number
       vg:context: >-
         {
-          "business_logic": "Production execution record. product_type discriminates output: 'finished_good' → SKU table (~75%), 'bulk_intermediate' → BulkIntermediate table (~23%), 'premix' → BulkIntermediate table (bom_level=2 sub-intermediates, ~1.4%). bom_level mirrors formula hierarchy (0=finished, 1=intermediate, 2=premix). Mass balance: sum of input ingredient quantities (batch_ingredients) should approximate batch output quantity_kg / yield_percent. Actual consumed quantities may include small recording variance vs formula specification (configurable, typically <=5%).",
+          "business_logic": "Production execution record. product_type discriminates output: 'finished_good' → SKU table (~75%), 'bulk_intermediate' → BulkIntermediate table (~23%), 'premix' → BulkIntermediate table (bom_level=2 sub-intermediates, ~1.4%). bom_level mirrors formula hierarchy (0=finished, 1=intermediate, 2=premix). Mass balance: sum of input ingredient quantities (batch_ingredients) should approximate batch output quantity_kg / yield_percent. Actual consumed quantities may include small recording variance vs formula specification due to measurement tolerances.",
           "llm_prompt_hint": "Use product_type to determine which product table to join: finished_good→skus, bulk_intermediate→bulk_intermediates, premix→bulk_intermediates (filter bom_level=2). For BOM tracing: follow formula_id → formula_ingredients. For actual consumption: join batch_ingredients by batch_id. wo_id links to work_order for scheduling context."
         }
       vg:state_machine: >-
@@ -491,7 +491,7 @@ classes:
       vg:primary_key: id
       vg:context: >-
         {
-          "business_logic": "Actual consumption records for production batches. quantity_kg records what was actually used. Variance vs formula is typically small (configurable production noise). Expected quantity = formula_ingredients.quantity_kg × batches.quantity_kg (formula qty is per-case, batch qty is cases produced). Useful for planned-vs-actual variance analysis and mass balance verification.",
+          "business_logic": "Actual consumption records for production batches. quantity_kg records what was actually used. Variance vs formula is typically small (measurement tolerances). Expected quantity = formula_ingredients.quantity_kg × batches.quantity_kg (formula qty is per-case, batch qty is cases produced). Useful for planned-vs-actual variance analysis and mass balance verification.",
           "llm_prompt_hint": "Join batch_id → batches for production context. Join ingredient_id → ingredients for material details. To compare planned vs actual: expected_kg = formula_ingredients.quantity_kg * batches.quantity_kg (fi is per-case, b is total cases). Compare against batch_ingredients.quantity_kg."
         }
     attributes:
@@ -537,7 +537,7 @@ classes:
       vg:identifier: sku_code
       vg:context: >-
         {
-          "business_logic": "500 finished goods across categories: ORAL_CARE, PERSONAL_WASH, HOME_CARE. 21 SKUs have -OLD suffix renamed codes (4.2% friction rate) with supersedes_sku_id forming an alias chain. value_segment (premium/mid/value) drives margin analysis. price_per_case is list price; actual revenue is in AR invoices.",
+          "business_logic": "500 finished goods across categories: ORAL_CARE, PERSONAL_WASH, HOME_CARE. 21 SKUs have -OLD suffix renamed codes (~4%) with supersedes_sku_id linking to the replacement SKU. value_segment (premium/mid/value) drives margin analysis. price_per_case is list price; actual revenue is in AR invoices.",
           "llm_prompt_hint": "For alias chain resolution: follow supersedes_sku_id recursively (use traverse handler). sku_id FK appears on order_lines, shipment_lines, ar_invoice_lines, inventory. category for product mix analysis. value_segment for margin segmentation. WARNING: order_lines.unit_price is ALWAYS ZERO — use ar_invoice_lines for actual revenue."
         }
     attributes:
@@ -996,7 +996,7 @@ classes:
       vg:context: >-
         {
           "business_logic": "Financial backbone — ~48M rows recording every financial event. Balanced to the penny daily (debits = credits per day, tolerance ~$1.10). reference_type + reference_id provide full traceability to source documents (purchase_order, goods_receipt, batch, order, shipment, etc.). node_id identifies the facility. is_reversal marks correction entries. account_code joins to chart_of_accounts. ~0.5% of GL postings are deliberate duplicates (reference_id suffix '-DUP'). ~4 days have small rounding imbalances ($0.01-$1.00).",
-          "llm_prompt_hint": "Use reference_type and reference_id to trace GL entries back to source documents. Filter is_reversal = false for net balances. Watch for '-DUP' suffix on reference_id — these are friction duplicates (~290K entries). account_code joins to chart_of_accounts.account_code (NOT id). node_id for facility-level P&L. product_id for product-level cost attribution. GROUP BY entry_date for daily balances."
+          "llm_prompt_hint": "Use reference_type and reference_id to trace GL entries back to source documents. Filter is_reversal = false for net balances. Watch for '-DUP' suffix on reference_id — these are duplicate postings (~290K entries) that should be excluded from clean analysis. account_code joins to chart_of_accounts.account_code (NOT id). node_id for facility-level P&L. product_id for product-level cost attribution. GROUP BY entry_date for daily balances."
         }
       vg:axioms: >-
         [
@@ -1029,7 +1029,7 @@ classes:
       vg:identifier: invoice_number
       vg:context: >-
         {
-          "business_logic": "Source-side payables from suppliers. Links supplier_id + gr_id for three-way match (PO ↔ GR ↔ AP). total_amount for spend analysis. Key friction: ~8% price variance and ~5% qty variance (recorded in invoice_variances table), plus ~0.5% duplicate invoices with -DUP suffix on invoice_number.",
+          "business_logic": "Source-side payables from suppliers. Links supplier_id + gr_id for three-way match (PO ↔ GR ↔ AP). total_amount for spend analysis. Data quality notes: ~8% of lines have price variances and ~5% have quantity variances vs PO terms (recorded in invoice_variances table), plus ~0.5% duplicate invoices with -DUP suffix on invoice_number.",
           "llm_prompt_hint": "Join supplier_id → suppliers for vendor context. Join gr_id → goods_receipts for receipt matching. AP lines in ap_invoice_lines (invoice_id FK). Check invoice_variances for mismatches. Watch for -DUP suffix duplicates on invoice_number. Status: 100% open in current data (payments tracked separately in ap_payments table)."
         }
       vg:state_machine: >-
@@ -1047,7 +1047,7 @@ classes:
         [
           {
             "name": "no_duplicate_invoices",
-            "description": "Invoice numbers should be unique (DUP suffix is friction)",
+            "description": "Invoice numbers should be unique (DUP suffix indicates duplicate postings)",
             "axiom_type": "referential",
             "sql_expression": "SELECT invoice_number, COUNT(*) FROM ap_invoices GROUP BY invoice_number HAVING COUNT(*) > 1",
             "severity": "warning"
@@ -1091,7 +1091,7 @@ classes:
       vg:identifier: invoice_number
       vg:context: >-
         {
-          "business_logic": "SOURCE OF TRUTH FOR REVENUE ($38.3B total across simulation). This is where actual revenue lives — NOT in order_lines (which have zero unit_price). channel column enables direct revenue-by-channel analysis without joining orders. customer_location_id → retail_locations. shipment_id links to fulfillment. Friction: ~0.5% bad debt (status=disputed or uncollectable).",
+          "business_logic": "Source of truth for recognized revenue. channel column enables direct revenue-by-channel analysis without joining orders. customer_location_id → retail_locations. shipment_id links to fulfillment. ~0.5% bad debt rate (status=disputed or uncollectable).",
           "llm_prompt_hint": "For revenue analysis: SUM(total_amount) or join ar_invoice_lines for SKU-level detail. Use channel column for revenue-by-channel (do NOT try to derive from orders). customer_location_id → retail_locations for geographic revenue. shipment_id → shipments for fulfillment linkage. Status values in data: disputed, open, partial."
         }
       vg:state_machine: >-
@@ -1138,7 +1138,7 @@ classes:
         range: decimal
 
   # ===========================================================================
-  # DOMAIN H2: FRICTION (Data Quality)
+  # DOMAIN H2: DATA QUALITY & VARIANCES
   # ===========================================================================
 
   InvoiceVariance:
@@ -1150,7 +1150,7 @@ classes:
       vg:primary_key: id
       vg:context: >-
         {
-          "business_logic": "Friction table recording mismatches between AP invoice lines and PO terms. variance_type is 'price' (unit cost mismatch) or 'qty' (quantity mismatch). expected_value vs actual_value with variance_amount = actual - expected. resolution_status tracks audit progress.",
+          "business_logic": "Records mismatches between AP invoice lines and PO terms. variance_type is 'price' (unit cost mismatch) or 'qty' (quantity mismatch). expected_value vs actual_value with variance_amount = actual - expected. resolution_status tracks audit progress.",
           "llm_prompt_hint": "Join invoice_id → ap_invoices for supplier/GR context. Filter by variance_type for price vs quantity analysis. SUM(ABS(variance_amount)) for total variance exposure. resolution_status for audit pipeline status."
         }
     attributes:
@@ -2412,7 +2412,7 @@ classes:
       vg:operation_types: '["direct_join"]'
       vg:context: >-
         {
-          "business_logic": "Links variance records to the AP invoice with discrepancies. ~8% of invoices have price variances, ~5% have quantity variances. This is the data quality friction detection table.",
+          "business_logic": "Links variance records to the AP invoice with discrepancies. ~8% of invoices have price variances, ~5% have quantity variances.",
           "traversal_semantics": {
             "inbound": "what variances were recorded on this AP invoice",
             "outbound": "which AP invoice has this variance"
