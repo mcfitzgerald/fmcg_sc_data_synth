@@ -5,6 +5,17 @@
 # Virtual twin declaration for the PCG schema (38 tables, ~395M rows, 365-day sim).
 # Uses class hierarchy via scm_base.yaml imports (is_a, mixins, abstract classes).
 #
+# v3.2 — PREMIX & Status Lifecycle Update:
+#   - BulkIntermediate now includes PREMIX sub-intermediates (bom_level=2)
+#   - batches.product_type has 3 values: finished_good, bulk_intermediate, premix
+#   - Formula hierarchy extended to 3 levels (bom_level 0/1/2)
+#   - All 9 transaction document entities have diverse status distributions
+#   - Real supplier/ingredient names, lead time ranges, batch variance
+#   - GL anomaly context (-DUP duplicates, rounding imbalances)
+#   - Network topology: lateral RDC-to-RDC links, multi-source DCs
+#   - SKU alias chains clarified as depth-1 only
+#   - order_lines.unit_price now populated (was previously zero)
+#
 # v3.1 — Context Enrichment:
 #   - All 38 classes now carry vg:context with business_logic + llm_prompt_hint
 #   - All 50 relationships now carry vg:context with traversal_semantics
@@ -43,7 +54,7 @@
 
 id: https://virt-graph.dev/schemas/pcg
 name: pcg
-version: "3.1.0"
+version: "3.2.0"
 description: >-
   Prism Consumer Goods ERP ontology for Virtual Graph.
   Models a full FMCG supply chain across 8 domains: Source, Transform,
@@ -90,8 +101,8 @@ classes:
       vg:identifier: supplier_code
       vg:context: >-
         {
-          "business_logic": "50 suppliers segmented by Kraljic matrix: 8 strategic (sole/critical source, tier=1), 12 leverage (volume commodities, tier=2), 30 non-critical (tier=3). 12% of suppliers are duplicates with -ALT suffix on supplier_code — this is intentional data quality friction. country drives lead time and risk modeling.",
-          "llm_prompt_hint": "Use tier for strategic segmentation. Watch for -ALT suffix duplicates when counting unique suppliers — use REPLACE(supplier_code, '-ALT', '') to normalize. Join supplier_ingredients for sourcing matrix. supplier_id FK appears on purchase_orders and ap_invoices."
+          "business_logic": "50 base suppliers with real company names (e.g., Meridian Chemical Corp, Pacific Packaging Solutions). 6 duplicate entries with -ALT suffix on supplier_code — intentional data quality friction for entity resolution testing. All tier=1 in current data. country drives lead time and risk modeling.",
+          "llm_prompt_hint": "Watch for -ALT suffix duplicates when counting unique suppliers — use REPLACE(supplier_code, '-ALT', '') to normalize. Join supplier_ingredients for sourcing matrix. supplier_id FK appears on purchase_orders and ap_invoices."
         }
       vg:scenario_params: >-
         [
@@ -128,7 +139,7 @@ classes:
       vg:identifier: ingredient_code
       vg:context: >-
         {
-          "business_logic": "78 raw materials organized by category/subcategory (base_material, active_ingredient, packaging). bom_level=2 indicates raw material position in BOM hierarchy. cost_per_kg is the standard cost basis for cost rollup calculations through formulas.",
+          "business_logic": "78 raw materials with real chemical/packaging names (e.g., Sodium Fluoride, Glycerin USP, Sodium Lauryl Sulfate, PET Clear Bottle). Organized by subcategory: active_ingredient (20), base_material (18), packaging (40). bom_level=2 indicates raw material position in BOM hierarchy. cost_per_kg is the standard cost basis for cost rollup calculations through formulas.",
           "llm_prompt_hint": "Join formula_ingredients for BOM membership. Join supplier_ingredients for sourcing options with cost/lead time. ingredient_id FK appears in purchase_order_lines, goods_receipt_lines, ap_invoice_lines, batch_ingredients. Use category/subcategory for material type analysis."
         }
       vg:scenario_params: >-
@@ -152,7 +163,7 @@ classes:
       vg:primary_key: id
       vg:context: >-
         {
-          "business_logic": "Sourcing matrix — junction table linking suppliers to ingredients with commercial terms. Multiple suppliers may offer the same ingredient at different cost/lead time/MOQ combinations. This is the basis for procurement optimization and supplier comparison.",
+          "business_logic": "176 sourcing links connecting suppliers to ingredients with commercial terms. lead_time_days ranges 5-72 days, driven by sourcing origin (LOCAL 5-15d, REGIONAL 15-30d, GLOBAL 30-75d). Multiple suppliers may offer the same ingredient at different cost/lead time/MOQ combinations. This is the basis for procurement optimization and supplier comparison.",
           "llm_prompt_hint": "This is a junction table with edge attributes (unit_cost, lead_time_days, min_order_qty). For cheapest-supplier analysis, compare unit_cost across suppliers for same ingredient_id. lead_time_days for supply risk assessment. min_order_qty for order planning constraints."
         }
     attributes:
@@ -175,7 +186,7 @@ classes:
       vg:context: >-
         {
           "business_logic": "Entry point of the procure-to-pay cycle. Each PO links a supplier to a receiving plant. order_date is day-integer (1-365). transaction_sequence_id provides causal ordering across all transaction documents. Lifecycle: PO → GoodsReceipt → APInvoice → APPayment.",
-          "llm_prompt_hint": "Join supplier_id → suppliers, plant_id → plants. PO lines in purchase_order_lines (po_id FK). For three-way match: PO lines ↔ GR lines ↔ AP invoice lines by ingredient_id and quantity_kg. All status values are CLOSED in current data."
+          "llm_prompt_hint": "Join supplier_id → suppliers, plant_id → plants. PO lines in purchase_order_lines (po_id FK). For three-way match: PO lines ↔ GR lines ↔ AP invoice lines by ingredient_id and quantity_kg. Status values: closed (~91%), open (~4%), received (~4%)."
         }
       vg:state_machine: >-
         {
@@ -187,7 +198,7 @@ classes:
           ],
           "initial_state": "open",
           "terminal_states": ["closed"],
-          "data_note": "Current data: all POs have status=CLOSED (uppercase). Full lifecycle retained as business process model."
+          "data_note": "Current data: ~91% closed, ~4% open, ~4% received. Status values are lowercase."
         }
     attributes:
       po_number:
@@ -238,7 +249,7 @@ classes:
           ],
           "initial_state": "received",
           "terminal_states": ["posted"],
-          "data_note": "Current data: all GRs have status=received. Full lifecycle retained as business process model."
+          "data_note": "Current data: ~97% posted, ~2% inspected, ~1% received."
         }
     attributes:
       gr_number:
@@ -338,8 +349,8 @@ classes:
       vg:identifier: formula_code
       vg:context: >-
         {
-          "business_logic": "545 formulas total: 500 SKU-level (bom_level=0) and 45 bulk-level (bom_level=1). product_id is polymorphic — for bom_level=0 it points to skus table, for bom_level=1 it points to bulk_intermediates table. batch_size_kg defines the standard batch quantity for production planning.",
-          "llm_prompt_hint": "Use bom_level to determine product_id target table (0→skus, 1→bulk_intermediates). Join formula_ingredients for BOM contents. For full BOM explosion: start at bom_level=0 formula, find bulk intermediate ingredients, look up their bom_level=1 formula, recurse. yield_percent and run_rate_cases_per_hour for production efficiency analysis."
+          "business_logic": "562 formulas total: 500 SKU-level (bom_level=0), 49 bulk-level (bom_level=1), 13 premix-level (bom_level=2). product_id is polymorphic — bom_level=0 → skus table, bom_level=1 → bulk_intermediates table, bom_level=2 → bulk_intermediates table (premix sub-intermediates). Variable BOM depth (2-4 levels). Diamond dependencies exist (same raw material in both premix and parent bulk formula).",
+          "llm_prompt_hint": "Use bom_level to determine product_id target table (0→skus, 1→bulk_intermediates, 2→bulk_intermediates). Join formula_ingredients for BOM contents. For full BOM explosion: N-level recursion — start at bom_level=0, find intermediates (bulk or premix), look up their formulas at bom_level=1 or 2, recurse until only raw materials remain. yield_percent and run_rate_cases_per_hour for production efficiency analysis."
         }
     attributes:
       formula_code:
@@ -360,8 +371,8 @@ classes:
       vg:primary_key: '["formula_id", "ingredient_id", "sequence"]'
       vg:context: >-
         {
-          "business_logic": "BOM line items with composite PK (formula_id, ingredient_id, sequence). quantity_kg is the per-batch requirement. IMPORTANT: ingredient_id is polymorphic — it points to EITHER the ingredients table (3,048 rows of raw materials) OR the bulk_intermediates table (500 rows). No discriminator column exists; must check both tables to resolve. In a bom_level=0 formula, sequence=1 is typically the bulk intermediate; remaining sequences are packaging from the ingredients table.",
-          "llm_prompt_hint": "For BOM explosion: resolve each ingredient_id by joining both ingredients and bulk_intermediates tables (LEFT JOIN each, check which matches). If it is a bulk_intermediate, find its bom_level=1 formula and recurse for full material breakdown. quantity_kg for cost rollup."
+          "business_logic": "BOM line items with composite PK (formula_id, ingredient_id, sequence). quantity_kg is the per-batch requirement. IMPORTANT: ingredient_id is polymorphic — it can point to ingredients table (78 raw materials), bulk_intermediates table (49 primary bulks at bom_level=1), or bulk_intermediates table (13 premix sub-intermediates at bom_level=2). No discriminator column exists; must LEFT JOIN both tables to resolve. In a bom_level=0 formula, sequence=1 is typically the bulk intermediate; remaining sequences are packaging from the ingredients table.",
+          "llm_prompt_hint": "For BOM explosion: resolve each ingredient_id by LEFT JOIN to both ingredients and bulk_intermediates tables. If match is a bulk_intermediate (bom_level=1 or 2), find its formula and recurse. For bom_level=1 bulks, ingredients may include PREMIX products (bom_level=2) — recurse. For bom_level=2 premixes, ingredients are always raw materials. quantity_kg for cost rollup."
         }
     attributes:
       quantity_kg:
@@ -380,7 +391,7 @@ classes:
       vg:identifier: wo_number
       vg:context: >-
         {
-          "business_logic": "Production scheduling document linking a formula to a plant. planned_quantity_kg is the target output. The ONLY entity with diverse status values in current data (planned, in_progress, complete), making it the best candidate for state transition analysis.",
+          "business_logic": "Production scheduling document linking a formula to a plant. planned_quantity_kg is the target output. All 9 transaction document entities now have diverse status values via lifecycle simulation.",
           "llm_prompt_hint": "Join plant_id → plants, formula_id → formulas. Batches link back via batches.wo_id. planned_start_date and due_date are day-integers for scheduling analysis. Note: actual status value is 'complete' (lowercase, no 'd')."
         }
       vg:state_machine: >-
@@ -393,7 +404,7 @@ classes:
           ],
           "initial_state": "planned",
           "terminal_states": ["complete"],
-          "data_note": "Current data: statuses are planned, in_progress, complete (note: 'complete' not 'completed'). This is the only entity with diverse status values."
+          "data_note": "Current data: ~94% complete, ~4% in_progress, ~1% planned. Note: status value is 'complete' (not 'completed')."
         }
     attributes:
       wo_number:
@@ -412,8 +423,8 @@ classes:
       vg:identifier: batch_number
       vg:context: >-
         {
-          "business_logic": "Production execution record. product_type discriminates output: 'finished_good' → SKU table, 'bulk_intermediate' → BulkIntermediate table. bom_level mirrors formula hierarchy (0=finished, 1=intermediate). Mass balance: sum of input ingredient quantities (batch_ingredients) should approximate batch output quantity_kg / yield_percent.",
-          "llm_prompt_hint": "Use product_type to determine which product table to join (finished_good→skus, bulk_intermediate→bulk_intermediates). For BOM tracing: follow formula_id → formula_ingredients. For actual consumption: join batch_ingredients by batch_id. wo_id links to work_order for scheduling context. All status=complete in current data."
+          "business_logic": "Production execution record. product_type discriminates output: 'finished_good' → SKU table (~75%), 'bulk_intermediate' → BulkIntermediate table (~23%), 'premix' → BulkIntermediate table (bom_level=2 sub-intermediates, ~1.4%). bom_level mirrors formula hierarchy (0=finished, 1=intermediate, 2=premix). Mass balance: sum of input ingredient quantities (batch_ingredients) should approximate batch output quantity_kg / yield_percent. Actual consumed quantities include +/-3% recording variance vs formula specification.",
+          "llm_prompt_hint": "Use product_type to determine which product table to join: finished_good→skus, bulk_intermediate→bulk_intermediates, premix→bulk_intermediates (filter bom_level=2). For BOM tracing: follow formula_id → formula_ingredients. For actual consumption: join batch_ingredients by batch_id. wo_id links to work_order for scheduling context."
         }
       vg:state_machine: >-
         {
@@ -425,7 +436,7 @@ classes:
           ],
           "initial_state": "pending",
           "terminal_states": ["completed"],
-          "data_note": "Current data: all batches have status=complete. Full lifecycle retained as business process model."
+          "data_note": "Current data: ~97% completed, ~2% in_progress, ~1% pending."
         }
       vg:axioms: >-
         [
@@ -480,7 +491,7 @@ classes:
       vg:primary_key: id
       vg:context: >-
         {
-          "business_logic": "Actual consumption records for production batches. quantity_kg records what was actually used, which may differ from the formula_ingredients planned quantity. Useful for planned-vs-actual variance analysis and mass balance verification.",
+          "business_logic": "Actual consumption records for production batches. quantity_kg records what was actually used, which includes +/-3% recording variance vs formula specification. Useful for planned-vs-actual variance analysis and mass balance verification.",
           "llm_prompt_hint": "Join batch_id → batches for production context. Join ingredient_id → ingredients for material details. Compare quantity_kg against formula_ingredients.quantity_kg for the same formula to detect production variances."
         }
     attributes:
@@ -504,8 +515,8 @@ classes:
       vg:identifier: bulk_code
       vg:context: >-
         {
-          "business_logic": "45 intermediate products representing the compounding stage (pastes, bases, compounds). Bridges raw materials to finished goods in the 2-level BOM. bulk_code pattern: BULK-{category}-{variant}. bom_level=1 indicates intermediate position. These are the output of bom_level=1 formulas and input to bom_level=0 formulas.",
-          "llm_prompt_hint": "To find what raw materials make a bulk intermediate: join formulas (bom_level=1, product_id=bulk_intermediate.id) → formula_ingredients → ingredients. To find what SKUs use it: look for it as an ingredient in bom_level=0 formula_ingredients. bulk_intermediates.id appears as formula_ingredients.ingredient_id (polymorphic, no discriminator)."
+          "business_logic": "62 intermediate products: 49 primary bulks (bom_level=1, code pattern BULK-{category}-{variant}) and 13 premix sub-intermediates (bom_level=2, code pattern PREMIX-{category}-{variant}). Bridges raw materials to finished goods in a variable-depth BOM (2-4 levels). Primary bulks are the output of bom_level=1 formulas; premixes are the output of bom_level=2 formulas. Some bom_level=1 formulas consume premixes as ingredients, creating 3-level BOMs.",
+          "llm_prompt_hint": "Join formulas matching the intermediate's bom_level (1 or 2). For bom_level=1 bulks, ingredients may include PREMIX products (bom_level=2) — recurse. For bom_level=2 premixes, ingredients are always raw materials. To find what SKUs use it: look for it as an ingredient in bom_level=0 formula_ingredients. bulk_intermediates.id appears as formula_ingredients.ingredient_id (polymorphic, no discriminator)."
         }
     attributes:
       bulk_code:
@@ -579,7 +590,7 @@ classes:
       vg:context: >-
         {
           "business_logic": "Demand signal document. source_id is POLYMORPHIC: values 1-7 point to channels table, values 67+ point to retail_locations table. No discriminator column — resolved by ID range (channels max id=7, retail_locations min id=67). retail_location_id is the non-polymorphic delivery destination. day column is the order date (integer 1-365).",
-          "llm_prompt_hint": "For channel-level analysis: filter source_id <= 7 and join channels, OR use retail_location_id for store-level analysis (non-polymorphic). IMPORTANT: all order status=CLOSED in current data. IMPORTANT: order_lines.unit_price is ALWAYS ZERO — revenue lives exclusively in ar_invoices/ar_invoice_lines."
+          "llm_prompt_hint": "For channel-level analysis: filter source_id <= 7 and join channels, OR use retail_location_id for store-level analysis (non-polymorphic). Status values: ~88% delivered, ~6% shipped, ~3% allocated, ~3% pending. order_lines.unit_price is populated from product price_per_case — revenue analysis can use either order_lines or ar_invoice_lines."
         }
       vg:state_machine: >-
         {
@@ -592,7 +603,7 @@ classes:
           ],
           "initial_state": "pending",
           "terminal_states": ["delivered"],
-          "data_note": "Current data: all orders have status=CLOSED (uppercase). Full lifecycle retained as business process model."
+          "data_note": "Current data: ~88% delivered, ~6% shipped, ~3% allocated, ~3% pending. Status values are lowercase."
         }
       vg:actions: >-
         [
@@ -637,8 +648,8 @@ classes:
       vg:primary_key: '["order_id", "line_number"]'
       vg:context: >-
         {
-          "business_logic": "Composite PK (order_id, line_number). Links orders to SKUs with quantity. CRITICAL: unit_price is ALWAYS ZERO across all 61.9M rows — this is a known data pattern. Revenue lives exclusively in ar_invoices / ar_invoice_lines. Do NOT use order_lines for revenue calculations.",
-          "llm_prompt_hint": "Join order_id → orders for header. Join sku_id → skus for product details. For revenue analysis: trace order → shipment → ar_invoice → ar_invoice_lines instead. quantity_cases is valid for volume/fulfillment analysis."
+          "business_logic": "Composite PK (order_id, line_number). Links orders to SKUs with quantity and unit_price. unit_price populated from product price_per_case (FG) or supplier unit_cost (PO). Revenue analysis can use either order_lines or ar_invoice_lines.",
+          "llm_prompt_hint": "Join order_id → orders for header. Join sku_id → skus for product details. unit_price and quantity_cases are both valid for revenue/volume analysis. For financial reconciliation, cross-check against ar_invoice_lines."
         }
     attributes:
       quantity_cases:
@@ -661,7 +672,7 @@ classes:
       vg:identifier: dc_code
       vg:context: >-
         {
-          "business_logic": "62 distribution centers in two subtypes distinguished by type column: 6 RDCs (type='rdc', regional consolidation hubs owned by PCG) and 56 customer DCs (type='customer_dc', retailer/channel warehouses). This distinction is critical for network analysis — RDCs are PCG-controlled nodes, customer DCs are delivery endpoints.",
+          "business_logic": "62 distribution centers in two subtypes distinguished by type column: 6 RDCs (type='rdc', regional consolidation hubs: RDC-MW Chicago, RDC-NE Allentown, RDC-SE Jacksonville, RDC-SO Memphis, RDC-SW Phoenix, RDC-WE Reno) and 56 customer DCs (type='customer_dc', retailer/channel warehouses, code pattern {CHANNEL}-DC-{nnn} or {CHANNEL}-FC-{nnn}). ~29% of customer DCs are multi-source (served by 2 upstream RDCs).",
           "llm_prompt_hint": "ALWAYS filter by type column when analyzing DCs: type='rdc' for PCG network nodes, type='customer_dc' for customer endpoints. dc_id FK appears on returns. distribution_centers appear as origin/destination in route_segments (origin_type/destination_type values: 'rdc' or 'customer_dc', NOT 'dc')."
         }
     attributes:
@@ -702,7 +713,7 @@ classes:
       vg:context: >-
         {
           "business_logic": "Fulfillment execution document. origin_id and destination_id are polymorphic WITHOUT explicit type columns. route_type encodes the compound pattern: plant_to_rdc, rdc_to_customer_dc, customer_dc_to_store, plant_to_customer_dc, etc. Use route_type to infer origin/destination types. freight_cost for logistics cost analysis.",
-          "llm_prompt_hint": "Parse route_type to determine origin/destination tables (e.g., plant_to_rdc → origin is plants, destination is distribution_centers). For precise resolution, cross-reference with route_segments which have explicit type columns. Shipment lines in shipment_lines (shipment_id FK). Links to ar_invoices via ar_invoices.shipment_id. All status=in_transit in current data."
+          "llm_prompt_hint": "Parse route_type to determine origin/destination tables (e.g., plant_to_rdc → origin is plants, destination is distribution_centers). For precise resolution, cross-reference with route_segments which have explicit type columns. Shipment lines in shipment_lines (shipment_id FK). Links to ar_invoices via ar_invoices.shipment_id. Status values: ~96% delivered, ~3% in_transit, ~1% planned."
         }
       vg:state_machine: >-
         {
@@ -714,7 +725,7 @@ classes:
           ],
           "initial_state": "planned",
           "terminal_states": ["delivered"],
-          "data_note": "Current data: all shipments have status=in_transit. Full lifecycle retained as business process model."
+          "data_note": "Current data: ~96% delivered, ~3% in_transit, ~1% planned."
         }
       vg:axioms: >-
         [
@@ -824,7 +835,7 @@ classes:
       vg:identifier: segment_code
       vg:context: >-
         {
-          "business_logic": "This IS the transport network graph. Each row is a directed edge between two polymorphic locations. Origin types: supplier, plant, rdc, customer_dc. Destination types: plant, rdc, customer_dc, store. distance_km and transit_time_hours are dual edge weights for pathfinding. transport_mode (truck, rail, etc.) for modal analysis.",
+          "business_logic": "This IS the transport network graph (4,025 edges). Each row is a directed edge between two polymorphic locations. Origin types: supplier, plant, rdc, customer_dc. Destination types: plant, rdc, customer_dc, store. Network includes 12 lateral RDC-to-RDC links (6 pairs of directed edges) for transshipment. ~29% of DCs are multi-source (served by 2 upstream RDCs). Graph is not a strict tree — shortest-path and centrality analyses are non-trivial. distance_km and transit_time_hours are dual edge weights for pathfinding. transport_mode (truck, rail, etc.) for modal analysis.",
           "llm_prompt_hint": "Use RouteSegmentOrigin/RouteSegmentDestination relationships and their type_discriminators for graph traversal. Weight by distance_km for shortest distance, transit_time_hours for fastest route. Origin/destination type values in data are: supplier, plant, rdc, customer_dc, store — NOT 'dc' or 'retail'."
         }
       vg:scenario_params: >-
@@ -890,19 +901,20 @@ classes:
       vg:context: >-
         {
           "business_logic": "Reverse logistics entry point. source_id points to the retail_location where the return originated. dc_id points to the distribution_center where the return is processed (for inspection and disposition). return_date is day-integer.",
-          "llm_prompt_hint": "Join source_id → retail_locations for originating store. Join dc_id → distribution_centers for processing DC. Return lines in return_lines (return_id FK). Disposition outcomes in disposition_logs (return_id FK). All status=received in current data."
+          "llm_prompt_hint": "Join source_id → retail_locations for originating store. Join dc_id → distribution_centers for processing DC. Return lines in return_lines (return_id FK). Disposition outcomes in disposition_logs (return_id FK). Status values: ~91% processed, ~4% received, ~2% approved, ~2% requested."
         }
       vg:state_machine: >-
         {
           "state_column": "status",
-          "states": ["received", "inspected", "disposed"],
+          "states": ["requested", "approved", "received", "processed"],
           "transitions": [
-            {"from_state": "received", "to_state": "inspected", "description": "Return inspected for condition"},
-            {"from_state": "inspected", "to_state": "disposed", "description": "Disposition decision applied"}
+            {"from_state": "requested", "to_state": "approved", "description": "Return request approved"},
+            {"from_state": "approved", "to_state": "received", "description": "Goods physically received"},
+            {"from_state": "received", "to_state": "processed", "description": "Disposition decision applied"}
           ],
-          "initial_state": "received",
-          "terminal_states": ["disposed"],
-          "data_note": "Current data: all returns have status=received. Full lifecycle retained as business process model."
+          "initial_state": "requested",
+          "terminal_states": ["processed"],
+          "data_note": "Current data: ~91% processed, ~4% received, ~2% approved, ~2% requested."
         }
     attributes:
       return_number:
@@ -983,8 +995,8 @@ classes:
       vg:primary_key: id
       vg:context: >-
         {
-          "business_logic": "Financial backbone — 58.9M rows recording every financial event. Balanced to the penny daily (debits = credits per day). reference_type + reference_id provide full traceability to source documents (purchase_order, goods_receipt, batch, order, shipment, etc.). node_id identifies the facility. is_reversal marks correction entries. account_code joins to chart_of_accounts.",
-          "llm_prompt_hint": "Use reference_type and reference_id to trace GL entries back to source documents. Filter is_reversal = false for net balances. account_code joins to chart_of_accounts.account_code (NOT id). node_id for facility-level P&L. product_id for product-level cost attribution. GROUP BY entry_date for daily balances."
+          "business_logic": "Financial backbone — ~48M rows recording every financial event. Balanced to the penny daily (debits = credits per day, tolerance ~$1.10). reference_type + reference_id provide full traceability to source documents (purchase_order, goods_receipt, batch, order, shipment, etc.). node_id identifies the facility. is_reversal marks correction entries. account_code joins to chart_of_accounts. ~0.5% of GL postings are deliberate duplicates (reference_id suffix '-DUP'). ~4 days have small rounding imbalances ($0.01-$1.00).",
+          "llm_prompt_hint": "Use reference_type and reference_id to trace GL entries back to source documents. Filter is_reversal = false for net balances. Watch for '-DUP' suffix on reference_id — these are friction duplicates (~290K entries). account_code joins to chart_of_accounts.account_code (NOT id). node_id for facility-level P&L. product_id for product-level cost attribution. GROUP BY entry_date for daily balances."
         }
       vg:axioms: >-
         [
@@ -1018,7 +1030,7 @@ classes:
       vg:context: >-
         {
           "business_logic": "Source-side payables from suppliers. Links supplier_id + gr_id for three-way match (PO ↔ GR ↔ AP). total_amount for spend analysis. Key friction: ~8% price variance and ~5% qty variance (recorded in invoice_variances table), plus ~0.5% duplicate invoices with -DUP suffix on invoice_number.",
-          "llm_prompt_hint": "Join supplier_id → suppliers for vendor context. Join gr_id → goods_receipts for receipt matching. AP lines in ap_invoice_lines (invoice_id FK). Check invoice_variances for mismatches. Watch for -DUP suffix duplicates on invoice_number. All status=open in current data."
+          "llm_prompt_hint": "Join supplier_id → suppliers for vendor context. Join gr_id → goods_receipts for receipt matching. AP lines in ap_invoice_lines (invoice_id FK). Check invoice_variances for mismatches. Watch for -DUP suffix duplicates on invoice_number. Status: 100% open in current data (payments tracked separately in ap_payments table)."
         }
       vg:state_machine: >-
         {
@@ -1029,7 +1041,7 @@ classes:
           ],
           "initial_state": "open",
           "terminal_states": ["paid"],
-          "data_note": "Current data: all AP invoices have status=open. Full lifecycle retained as business process model."
+          "data_note": "Current data: 100% open. Payment status tracked in ap_payments table (separate from invoice status)."
         }
       vg:axioms: >-
         [
@@ -1096,7 +1108,7 @@ classes:
           ],
           "initial_state": "open",
           "terminal_states": ["paid", "bad_debt"],
-          "data_note": "Current data: AR invoice statuses are disputed, open, partial. No invoices have reached paid or bad_debt terminal states."
+          "data_note": "Current data: ~97% open, ~2% disputed, ~1% partial. Payment/collection status tracked in ar_receipts table. Bad debt write-offs (~0.5%) recorded as GL entries with reference_type='bad_debt'."
         }
     attributes:
       invoice_number:
@@ -1452,15 +1464,15 @@ classes:
       vg:operation_types: '["direct_join"]'
       vg:functional: true
       vg:type_discriminator: >-
-        {"column": "bom_level", "mapping": {"0": "SKU", "1": "BulkIntermediate"}}
+        {"column": "bom_level", "mapping": {"0": "SKU", "1": "BulkIntermediate", "2": "BulkIntermediate"}}
       vg:context: >-
         {
-          "business_logic": "Polymorphic: formula produces either a SKU (bom_level=0) or a BulkIntermediate (bom_level=1). The bom_level column is the type discriminator. 500 formulas produce SKUs, 45 produce bulk intermediates.",
+          "business_logic": "Polymorphic: formula produces either a SKU (bom_level=0) or a BulkIntermediate (bom_level=1 or 2). The bom_level column is the type discriminator. 500 formulas produce SKUs, 49 produce primary bulk intermediates, 13 produce premix sub-intermediates.",
           "traversal_semantics": {
             "inbound": "what formula produces this product",
             "outbound": "what product does this formula make"
           },
-          "llm_prompt_hint": "Use bom_level to determine join target: formulas.product_id → skus.id (when bom_level=0) or formulas.product_id → bulk_intermediates.id (when bom_level=1)."
+          "llm_prompt_hint": "Use bom_level to determine join target: formulas.product_id → skus.id (when bom_level=0) or formulas.product_id → bulk_intermediates.id (when bom_level=1 or 2)."
         }
 
   FormulaHasIngredients:
@@ -1476,7 +1488,7 @@ classes:
       vg:operation_types: '["direct_join", "hierarchical_aggregation", "path_aggregation"]'
       vg:context: >-
         {
-          "business_logic": "BOM explosion semantics — quantity_kg is per-batch requirement. For total requirements, multiply through the hierarchy (formula → sub-formula → ingredients). IMPORTANT: ingredient_id is polymorphic — points to EITHER ingredients table (raw materials) OR bulk_intermediates table (intermediates). No discriminator column exists; must LEFT JOIN both tables to resolve. In bom_level=0 formulas, sequence=1 is typically the bulk intermediate.",
+          "business_logic": "BOM explosion semantics — quantity_kg is per-batch requirement. For total requirements, multiply through the hierarchy via N-level traversal (formula → sub-formula → ingredients). IMPORTANT: ingredient_id is polymorphic — points to ingredients table (raw materials), bulk_intermediates table (bom_level=1 primary bulks or bom_level=2 premixes). No discriminator column; must LEFT JOIN both tables. Diamond dependencies exist — a raw material may appear in both a premix formula AND directly in its parent bulk formula.",
           "traversal_semantics": {
             "inbound": "what ingredients go into this formula (BOM contents)",
             "outbound": "what formulas use this ingredient (where-used)"
@@ -1619,15 +1631,15 @@ classes:
       vg:operation_types: '["direct_join"]'
       vg:functional: true
       vg:type_discriminator: >-
-        {"column": "product_type", "mapping": {"finished_good": "SKU", "bulk_intermediate": "BulkIntermediate"}}
+        {"column": "product_type", "mapping": {"finished_good": "SKU", "bulk_intermediate": "BulkIntermediate", "premix": "BulkIntermediate"}}
       vg:context: >-
         {
-          "business_logic": "Polymorphic: batch produces either a SKU (product_type='finished_good') or a BulkIntermediate (product_type='bulk_intermediate'). The product_type column is the type discriminator.",
+          "business_logic": "Polymorphic: batch produces either a SKU (product_type='finished_good') or a BulkIntermediate (product_type='bulk_intermediate' or 'premix'). The product_type column is the type discriminator.",
           "traversal_semantics": {
             "inbound": "what batches produced this product",
             "outbound": "what product did this batch make"
           },
-          "llm_prompt_hint": "Use product_type to determine join target: batches.product_id → skus.id (finished_good) or batches.product_id → bulk_intermediates.id (bulk_intermediate)."
+          "llm_prompt_hint": "Use product_type to determine join target: batches.product_id → skus.id (finished_good) or batches.product_id → bulk_intermediates.id (bulk_intermediate or premix)."
         }
 
   BatchConsumesIngredient:
@@ -1681,12 +1693,12 @@ classes:
       vg:acyclic: true
       vg:context: >-
         {
-          "business_logic": "Self-referential alias chain for SKU replacements. 21 SKUs with -OLD suffix have supersedes_sku_id pointing to their replacement. Chain is acyclic and asymmetric. Used to resolve current SKU code from legacy codes.",
+          "business_logic": "Self-referential alias chain for SKU replacements. 21 SKUs (~4.2%) with -OLD suffix have supersedes_sku_id pointing to their replacement. Chains are depth-1 (one rename generation — no multi-generation recursive chains). Chain is acyclic and asymmetric. Used to resolve current SKU code from legacy codes.",
           "traversal_semantics": {
             "inbound": "what SKU replaced this one (newer version)",
             "outbound": "what SKU this one replaces (older version)"
           },
-          "llm_prompt_hint": "Use recursive_traversal handler to follow the full chain. Direction: outbound follows supersedes_sku_id to find the old SKU; inbound finds the new replacement. Typically short chains (depth 1-2). 4.2% of SKUs have -OLD suffix."
+          "llm_prompt_hint": "Direction: outbound follows supersedes_sku_id to find the old SKU; inbound finds the new replacement. All chains are depth-1 (single rename). 4.2% of SKUs have -OLD suffix. No recursion needed — simple single-hop join."
         }
 
   # --- ORDER domain ---

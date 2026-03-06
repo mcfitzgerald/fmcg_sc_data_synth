@@ -200,18 +200,19 @@ def _generate_products(
         pk = mapper.get("products", pid)
         cat_clean = str(cat).replace("ProductCategory.", "")
 
-        if bom_level == 2:
-            # Raw material / ingredient
+        if cat_clean == "BULK_INTERMEDIATE":
+            # All BULK_INTERMEDIATE -> bulk_intermediates
+            # (bom_level=1 primary bulks + bom_level=2 premix sub-intermediates)
+            bulks.append(
+                (pk, pid, name, cat_clean, bom_level,
+                 weight or 25.0, cost or 0.0, "kg", True)
+            )
+        elif bom_level >= 2:
+            # Raw material / ingredient (INGREDIENT category, bom_level=2)
             subcat = _classify_ingredient_subcategory(pid)
             ingredients.append(
                 (pk, pid, name, cat_clean, subcat, bom_level,
                  weight or 1.0, cost or 0.0, "kg", True)
-            )
-        elif bom_level == 1:
-            # Bulk intermediate
-            bulks.append(
-                (pk, pid, name, cat_clean, bom_level,
-                 weight or 25.0, cost or 0.0, "kg", True)
             )
         else:
             # SKU (bom_level == 0)

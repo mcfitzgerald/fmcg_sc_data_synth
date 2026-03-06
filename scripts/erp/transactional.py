@@ -579,7 +579,10 @@ def _generate_batches(
         formula_pk = mapper.lookup("formulas", f"FORM-{prod_id}") or 0
         product_pk = mapper.lookup("products", prod_id) or 0
         cat, bl = product_info.get(prod_id, ("", 0))
-        product_type = "bulk_intermediate" if cat == "BULK_INTERMEDIATE" else "finished_good"
+        if cat == "BULK_INTERMEDIATE":
+            product_type = "premix" if bl >= 2 else "bulk_intermediate"
+        else:
+            product_type = "finished_good"
         bom_level = bl
         seq_id = day_produced * DAY_MULTIPLIER + 1 * CAT_MULTIPLIER + batch_pk
         status = _lifecycle_status("batches", day_produced, reporting_date)

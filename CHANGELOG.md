@@ -5,6 +5,50 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.93.0] - 2026-03-05
+
+### Feat: ERP PREMIX Classification Fix, Ontology v3.2.0, Benchmark Questions Refresh
+
+#### ERP Extractor Fixes (`scripts/erp/`)
+- **PREMIX classification fix** — `master_tables.py` now classifies by category first (`BULK_INTERMEDIATE`), not
+  `bom_level`. PREMIXes (bom_level=2, category=BULK_INTERMEDIATE) correctly land in `bulk_intermediates.csv`
+  instead of `ingredients.csv`. Result: 62 intermediates (49 primary + 13 premix), 78 raw materials.
+- **Batch product_type** — `transactional.py` now emits `product_type="premix"` for bom_level>=2 BULK_INTERMEDIATE
+  batches (1,691 premix batches, 1.4% of total).
+- **Schema comments** — `erp_schema.sql` updated: `formulas.bom_level` comment covers 3 levels,
+  `batches.product_type` lists 3 values, `bulk_intermediates.bom_level` comment clarifies premix.
+
+#### Ontology Updates (`pcg.yaml` v3.1.0 → v3.2.0)
+- **Status lifecycle data_notes** — All 9 transaction document entities updated with actual status distributions
+  (was "all status=X", now real percentages from ERP data).
+- **BOM/Formula context** — Formula, FormulaIngredient, BulkIntermediate context blocks updated for 3-level BOM,
+  PREMIX sub-intermediates, diamond dependencies, N-level recursion.
+- **Batch product_type** — Added "premix" as third discriminator value in BatchProducesProduct and Batch context.
+- **FormulaForProduct discriminator** — Added bom_level=2 → BulkIntermediate mapping.
+- **Order line prices** — Removed "unit_price is ALWAYS ZERO" claims (now populated).
+- **Network topology** — Added lateral RDC-to-RDC links, multi-source DC context.
+- **Ingredient/supplier names** — Added real chemical/company name examples.
+- **Lead times** — Added 5-72 day range by sourcing tier.
+- **Batch variance** — Added +/-3% recording variance context.
+- **GL anomalies** — Added -DUP duplicate and rounding imbalance context.
+- **SKU aliases** — Clarified depth-1 only (no multi-generation chains).
+
+#### Benchmark Questions (`questions.md`)
+- **~70 entity code substitutions** — Replaced fictional codes (SUP-0012, SKU-OC-TPST-*, FRM-OC-MINT-001,
+  B-2024-*, ORD-2024-*, etc.) with real codes from ERP data (SUP-012, SKU-ORAL-*, FORM-BULK-OC-*, B-001-*,
+  ORD-1-*, STORE-*, RDC-*, PLANT-*).
+- **Section 2 revised** — Renamed "SKU Alias Chains" → "SKU Aliases & BOM Depth". Replaced 4 multi-generation
+  chain questions (Q12, Q13, Q16, Q17) with BOM-depth questions leveraging v0.84 features (variable BOM depth,
+  premix sub-intermediates, diamond dependencies, premix impact analysis).
+- **Status-dependent questions fixed** — Q03 (open POs), Q08 (status pipeline), Q44 (pending orders), Q48
+  (in_progress work orders), Q59 (pending/allocated orders), Q64 (status distribution), Q69/Q75 (pending order).
+- **Ingredient names updated** — Q21 (Sodium Fluoride), Q23 (Limonene D-Isomer), Q45 (Coconut Oil RBD),
+  Q48/Q71 (Glycerin USP) matched to actual DB names.
+
+#### Entity Code Reference
+- **New file** — `ontology_feedback_resources/entity_codes_reference.md` with all real entity codes, status
+  distributions, product counts, and network topology from ERP CSVs via DuckDB.
+
 ## [0.92.0] - 2026-03-04
 
 ### Hygiene: Config Layer Migration — Eliminating Hardcodes
