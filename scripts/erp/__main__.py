@@ -152,7 +152,7 @@ def main() -> None:
     generate_neo4j_headers(output_dir)
 
     # Generate PostgreSQL DDL from schema definitions
-    schema_path = Path("scripts/erp_schema.sql")
+    schema_path = output_dir / "erp_schema.sql"
     schema_path.write_text(generate_ddl())
     logger.info("Schema DDL written to %s", schema_path)
 

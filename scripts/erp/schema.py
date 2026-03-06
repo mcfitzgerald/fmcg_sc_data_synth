@@ -731,29 +731,29 @@ def generate_ddl() -> str:
                 parts.append("PRIMARY KEY")
             elif col.constraints:
                 parts.append(col.constraints)
-            line = " ".join(parts)
-            if col.comment:
-                line += f"  -- {col.comment}"
-            col_lines.append(line)
+            col_lines.append((" ".join(parts), col.comment))
 
         # Foreign keys
         for fk in table.foreign_keys:
-            col_lines.append(
-                f"    FOREIGN KEY ({fk.column}) REFERENCES {fk.ref_table}({fk.ref_column})"
-            )
+            col_lines.append((
+                f"    FOREIGN KEY ({fk.column}) REFERENCES {fk.ref_table}({fk.ref_column})",
+                "",
+            ))
 
         # Composite primary key
         if table.primary_key:
-            col_lines.append(
-                f"    PRIMARY KEY ({', '.join(table.primary_key)})"
-            )
+            col_lines.append((
+                f"    PRIMARY KEY ({', '.join(table.primary_key)})",
+                "",
+            ))
 
-        # Join with commas
-        for i, cl in enumerate(col_lines):
-            if i < len(col_lines) - 1:
-                lines.append(cl + ",")
+        # Join with commas — comma goes BEFORE comment, not after
+        for i, (sql, comment) in enumerate(col_lines):
+            trailing = "," if i < len(col_lines) - 1 else ""
+            if comment:
+                lines.append(f"{sql}{trailing}  -- {comment}")
             else:
-                lines.append(cl)
+                lines.append(f"{sql}{trailing}")
 
         lines.append(");")
         lines.append("")
