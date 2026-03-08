@@ -46,8 +46,11 @@ poetry run python run_simulation.py --days 365 --no-logging --snapshot
 poetry run python scripts/analysis/diagnose_supply_chain.py    # Unified 35-question diagnostic
 poetry run python scripts/analysis/diagnose_supply_chain.py --full  # + inventory deep-dive
 
-# ERP export (run on parquet output → 36 normalized CSV tables)
+# ERP export (run on parquet output → erp.duckdb with all 38 tables, default)
 poetry run python -m scripts.erp --input-dir data/output --output-dir data/output/erp
+poetry run python -m scripts.erp --input-dir data/output --output-dir data/output/erp --format duckdb
+poetry run python -m scripts.erp --input-dir data/output --output-dir data/output/erp --format parquet
+poetry run python -m scripts.erp --input-dir data/output --output-dir data/output/erp --format csv
 
 # Linting and type checking
 poetry run ruff check .

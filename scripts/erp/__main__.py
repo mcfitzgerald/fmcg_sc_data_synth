@@ -2,7 +2,9 @@
 
 Usage:
     poetry run python -m scripts.erp --input-dir data/output --output-dir data/output/erp
+    poetry run python -m scripts.erp --input-dir data/output --output-dir data/output/erp --format duckdb
     poetry run python -m scripts.erp --input-dir data/output --output-dir data/output/erp --format parquet
+    poetry run python -m scripts.erp --input-dir data/output --output-dir data/output/erp --format csv
 """
 
 from __future__ import annotations
@@ -17,7 +19,7 @@ import pyarrow.parquet as pq
 
 from .config import load_erp_config
 from .id_mapper import IdMapper
-from .schema import TABLE_MAP, get_column_names
+from .schema import INDEXES, TABLE_MAP, get_column_names
 
 logging.basicConfig(
     level=logging.INFO,
@@ -28,8 +30,8 @@ logger = logging.getLogger("erp")
 
 
 # ── Export Map: DuckDB table → (subdir, schema_name) ──────────
-# Tables that live in DuckDB and need to be exported.
-# Master tables are written by Python (csv.writer) and are NOT in this map.
+# All 38 tables: transactional (Phases 2-3.5) + all 14 master tables.
+# Master tables are written as CSV by master_tables.py, then registered in DuckDB.
 DUCKDB_EXPORT_MAP: dict[str, tuple[str, str]] = {
     # Transactional (Phase 2)
     "erp_orders": ("transactional", "orders"),
@@ -58,6 +60,21 @@ DUCKDB_EXPORT_MAP: dict[str, tuple[str, str]] = {
     "erp_invoice_variances": ("transactional", "invoice_variances"),
     "erp_ap_payments": ("transactional", "ap_payments"),
     "erp_ar_receipts": ("transactional", "ar_receipts"),
+    # Master tables (all 14 registered in DuckDB by master_tables.py)
+    "erp_suppliers": ("master", "suppliers"),
+    "erp_skus": ("master", "skus"),
+    "erp_ingredients": ("master", "ingredients"),
+    "erp_bulk_intermediates": ("master", "bulk_intermediates"),
+    "erp_plants": ("master", "plants"),
+    "erp_distribution_centers": ("master", "distribution_centers"),
+    "erp_retail_locations": ("master", "retail_locations"),
+    "erp_channels": ("master", "channels"),
+    "erp_chart_of_accounts": ("master", "chart_of_accounts"),
+    "erp_formulas": ("master", "formulas"),
+    "erp_formula_ingredients": ("master", "formula_ingredients"),
+    "erp_production_lines": ("master", "production_lines"),
+    "erp_route_segments": ("master", "route_segments"),
+    "erp_supplier_ingredients": ("master", "supplier_ingredients"),
 }
 
 # Tables friction expects with short names (rename erp_ → short before friction)
@@ -105,9 +122,9 @@ def main() -> None:
     )
     parser.add_argument(
         "--format",
-        choices=["csv", "parquet"],
-        default="parquet",
-        help="Output format (default: parquet). CSV kept for backwards compat.",
+        choices=["csv", "parquet", "duckdb"],
+        default="duckdb",
+        help="Output format (default: duckdb). Produces erp.duckdb file with all tables.",
     )
     args = parser.parse_args()
 
@@ -255,13 +272,17 @@ def main() -> None:
 
     # Generate Neo4j headers + PostgreSQL DDL
     from .neo4j_headers import generate_neo4j_headers
-    from .schema import generate_ddl
+    from .schema import generate_ddl, generate_duckdb_ddl
 
     generate_neo4j_headers(output_dir)
 
     schema_path = output_dir / "erp_schema.sql"
     schema_path.write_text(generate_ddl())
-    logger.info("Schema DDL written to %s", schema_path)
+    logger.info("PostgreSQL DDL written to %s", schema_path)
+
+    duckdb_schema_path = output_dir / "erp_schema_duckdb.sql"
+    duckdb_schema_path.write_text(generate_duckdb_ddl())
+    logger.info("DuckDB DDL written to %s", duckdb_schema_path)
 
     # ── Export all DuckDB tables ──────────────────────────────
     t_export = time.perf_counter()
@@ -285,6 +306,10 @@ def _export_all(
     Uses schema.py column definitions to select only schema-defined columns,
     stripping internal columns like source_sim_id.
     """
+    if fmt == "duckdb":
+        _export_duckdb(db, output_dir)
+        return
+
     ext = "parquet" if fmt == "parquet" else "csv"
     exported = 0
 
@@ -296,20 +321,7 @@ def _export_all(
             continue
 
         # Get schema columns for column selection
-        if schema_name in TABLE_MAP:
-            cols = get_column_names(schema_name)
-            # Verify all schema columns exist in the DuckDB table
-            ddb_cols = {
-                r[0] for r in db.execute(
-                    f"SELECT column_name FROM information_schema.columns "
-                    f"WHERE table_name = '{ddb_name}'"
-                ).fetchall()
-            }
-            # Only select columns that exist in both schema and DuckDB
-            select_cols = [c for c in cols if c in ddb_cols]
-            col_list = ", ".join(select_cols)
-        else:
-            col_list = "*"
+        col_list = _get_select_cols(db, ddb_name, schema_name)
 
         out_path = output_dir / subdir / f"{schema_name}.{ext}"
 
@@ -333,26 +345,81 @@ def _export_all(
                      schema_name, str(out_path.name), f"{count:,}")
         exported += 1
 
-    # Master tables: already written as CSV by master_tables.py
-    # If format is parquet, convert master CSVs to parquet
-    if fmt == "parquet":
-        master_dir = output_dir / "master"
-        for csv_file in sorted(master_dir.glob("*.csv")):
-            schema_name = csv_file.stem
-            if schema_name not in TABLE_MAP:
-                continue
-            pq_path = master_dir / f"{schema_name}.parquet"
-            try:
-                db.execute(f"""
-                    COPY (SELECT * FROM read_csv_auto('{csv_file}'))
-                    TO '{pq_path}' (FORMAT PARQUET, COMPRESSION ZSTD)
-                """)
-                exported += 1
-            except Exception as e:
-                logger.warning("  Could not convert %s to parquet: %s",
-                               csv_file.name, e)
-
     logger.info("Exported %d tables as %s", exported, fmt)
+
+
+def _export_duckdb(
+    db: duckdb.DuckDBPyConnection,
+    output_dir: Path,
+) -> None:
+    """Export all tables to a standalone erp.duckdb file.
+
+    Uses ATTACH + CTAS to write clean tables (schema-defined columns only,
+    no erp_ prefix) into the file database, then adds indexes.
+    """
+    duckdb_path = output_dir / "erp.duckdb"
+    # Remove existing file for a clean export
+    if duckdb_path.exists():
+        duckdb_path.unlink()
+
+    db.execute(f"ATTACH '{duckdb_path}' AS export_db")
+
+    exported = 0
+    for ddb_name, (_subdir, schema_name) in DUCKDB_EXPORT_MAP.items():
+        try:
+            db.execute(f"SELECT 1 FROM {ddb_name} LIMIT 1")
+        except duckdb.CatalogException:
+            continue
+
+        col_list = _get_select_cols(db, ddb_name, schema_name)
+
+        db.execute(
+            f"CREATE TABLE export_db.{schema_name} AS "
+            f"SELECT {col_list} FROM {ddb_name}"
+        )
+
+        count = db.execute(f"SELECT COUNT(*) FROM export_db.{schema_name}").fetchone()[0]
+        logger.info("  %-30s %10s rows", schema_name, f"{count:,}")
+        exported += 1
+
+    # Add indexes
+    for idx_name, tbl_name, cols in INDEXES:
+        # Only index tables that were exported
+        try:
+            db.execute(f"SELECT 1 FROM export_db.{tbl_name} LIMIT 1")
+        except duckdb.CatalogException:
+            continue
+        col_str = ", ".join(cols)
+        db.execute(f"CREATE INDEX {idx_name} ON export_db.{tbl_name}({col_str})")
+
+    db.execute("DETACH export_db")
+
+    file_size_mb = duckdb_path.stat().st_size / (1024 * 1024)
+    logger.info("Exported %d tables to %s (%.1f MB)", exported, duckdb_path, file_size_mb)
+
+
+def _get_select_cols(
+    db: duckdb.DuckDBPyConnection,
+    ddb_name: str,
+    schema_name: str,
+) -> str:
+    """Build a column-selection list for a DuckDB table based on schema.py.
+
+    Returns a comma-separated string of columns that exist in both the schema
+    definition and the actual DuckDB table, or '*' if the table has no schema.
+    """
+    if schema_name not in TABLE_MAP:
+        return "*"
+
+    cols = get_column_names(schema_name)
+    ddb_cols = {
+        r[0] for r in db.execute(
+            f"SELECT column_name FROM information_schema.columns "
+            f"WHERE table_name = '{ddb_name}'"
+        ).fetchall()
+    }
+    select_cols = [c for c in cols if c in ddb_cols]
+    return ", ".join(select_cols)
 
 
 if __name__ == "__main__":

@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 
 # DuckDB table name → schema table name
 _TABLE_ALIASES = {
+    # Transactional
     "erp_orders": "orders",
     "erp_order_lines": "order_lines",
     "erp_shipments": "shipments",
@@ -48,6 +49,21 @@ _TABLE_ALIASES = {
     "erp_invoice_variances": "invoice_variances",
     "erp_ap_payments": "ap_payments",
     "erp_ar_receipts": "ar_receipts",
+    # Master tables (all 14 now registered in DuckDB)
+    "erp_suppliers": "suppliers",
+    "erp_skus": "skus",
+    "erp_ingredients": "ingredients",
+    "erp_bulk_intermediates": "bulk_intermediates",
+    "erp_plants": "plants",
+    "erp_distribution_centers": "distribution_centers",
+    "erp_retail_locations": "retail_locations",
+    "erp_channels": "channels",
+    "erp_chart_of_accounts": "chart_of_accounts",
+    "erp_formulas": "formulas",
+    "erp_formula_ingredients": "formula_ingredients",
+    "erp_production_lines": "production_lines",
+    "erp_route_segments": "route_segments",
+    "erp_supplier_ingredients": "supplier_ingredients",
 }
 
 
@@ -97,15 +113,7 @@ def _verify_duckdb(
     logger.info("\n--- Row Counts (DuckDB) ---")
     total_rows = 0
 
-    # Master tables from CSV (not in DuckDB)
-    master_dir = output_dir / "master"
-    if master_dir.exists():
-        for csv_file in sorted(master_dir.glob("*.csv")):
-            count = _count_rows(csv_file)
-            total_rows += count
-            logger.info("  %-40s %10s rows", csv_file.name, f"{count:,}")
-
-    # Transactional tables from DuckDB
+    # All tables from DuckDB (master + transactional)
     for ddb_name, schema_name in sorted(_TABLE_ALIASES.items(), key=lambda x: x[1]):
         try:
             count = db.execute(f"SELECT COUNT(*) FROM {ddb_name}").fetchone()[0]

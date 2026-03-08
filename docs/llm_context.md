@@ -128,8 +128,8 @@ After allocation, `AllocationAgent._materialize_orders()` converts surviving lin
 | `scripts/generate_static_world.py` | Generate static world data (products, recipes, nodes, links, supplier catalog) |
 | `scripts/calibrate_config.py` | Physics-based config calibration (capacity, safety stock, DOS targets) |
 | `scripts/run_standard_sim.py` | Standard workflow runner (priming + stabilization + data run) |
-| `scripts/erp/` | **Enterprise Data Generator:** DuckDB-based ETL, sim parquet → 38 normalized tables (335M rows), CSV or Parquet output |
-| `scripts/erp_schema.sql` | ERP relational schema (PostgreSQL DDL, 36 tables + 14 indexes) |
+| `scripts/erp/` | **Enterprise Data Generator:** DuckDB-based ETL, sim parquet → 38 normalized tables (335M rows). Default output: `erp.duckdb` file. Also supports `--format parquet` or `--format csv`. |
+| `scripts/erp_schema.sql` | ERP relational schema (PostgreSQL DDL, 38 tables + 24 indexes) |
 
 ### Validation & Planning Documents
 | Document | Purpose |
@@ -204,14 +204,14 @@ Shared modular backend used by diagnostics:
 
 DuckDB-based ETL that transforms sim parquet output into 38 normalized ERP tables (CSV or Parquet). Loadable into PostgreSQL and Neo4j.
 
-**Entry point:** `poetry run python -m scripts.erp --input-dir data/output --output-dir data/output/erp --format parquet`
+**Entry point:** `poetry run python -m scripts.erp --input-dir data/output --output-dir data/output/erp` (default: `--format duckdb`)
 
 | Module | Purpose |
 |--------|---------|
 | `config.py` | ErpConfig + FrictionConfig + GlAnomalyConfig: loads cost_master.json (incl. friction + gl_anomalies), world_def, sim_config; 14-account Chart of Accounts. `reporting_date: int | None` for status lifecycle snapshot (default: max_day - 25). |
 | `id_mapper.py` | Bidirectional sim string ID ↔ integer PK mapping (JSON serializable) |
 | `sequence.py` | Deterministic `transaction_sequence_id`: `day × 10M + category × 1M + counter`. Categories 0-7 (core), 8 (friction), 9 (payment) |
-| `master_tables.py` | DuckDB SQL: 14 master CSVs from static world files + config. v0.93.0: classifies by category first (BULK_INTERMEDIATE → bulk_intermediates.csv for both bom_level=1 bulks and bom_level=2 premixes). v0.94.0: `_register_in_duckdb()` creates `erp_suppliers`, `erp_skus`, cost/price lookup tables in Phase 1 (single source of truth for cost tables). |
+| `master_tables.py` | DuckDB SQL: 14 master CSVs from static world files + config. v0.93.0: classifies by category first (BULK_INTERMEDIATE → bulk_intermediates.csv for both bom_level=1 bulks and bom_level=2 premixes). v0.95.0: `_register_in_duckdb()` registers all 14 master tables as `erp_*` DuckDB tables (was only suppliers + skus). Cost/price lookup tables created in Phase 1. |
 | `transactional.py` | DuckDB-native large tables (orders, shipments, inventory) stay as erp_* TABLEs in DuckDB; Python-iterated small tables registered via `_register_csv_table()`. pq_* parquet inputs registered as VIEWs (not materialized). v0.82.0: `STATUS_LIFECYCLES` dict (7 tables), `_lifecycle_case_sql()` for DuckDB CASE. v0.94.0: no inline CSV export — all tables persist in DuckDB for downstream phases. |
 | `gl_journal.py` | Pure DuckDB SQL: 7 reference_types × DR/CR pairs → ~34M GL entries with `reference_id`. v0.93.1: P1 `costed_shipments` TABLE pre-computes unit_cost/unit_price. v0.94.0: cost tables reused from Phase 1 (no duplicate bulk intermediate INSERT), export deferred. |
 | `invoices.py` | DuckDB-native AP invoices (4.8M) and AR invoices (1.3M headers, 52.7M lines). v0.94.0: `_register_cost_table()` skips if table exists (reuses Phase 1 tables), export deferred. |
@@ -226,7 +226,7 @@ DuckDB-based ETL that transforms sim parquet output into 38 normalized ERP table
 
 **Status lifecycle (v0.82.0):** `reporting_date` param (CLI `--reporting-date`, default: `max_day - 25`) creates a point-in-time snapshot. Documents before reporting_date get lifecycle statuses based on age; documents after are excluded. 7 table-specific state machines (orders: pending→allocated→shipped→delivered, POs: open→received→closed, etc.). Lines inherit status from parent header. `--reporting-date 999999` = pre-v0.82.0 behavior (all terminal).
 
-**Architecture (v0.94.0):** Single DuckDB session for entire pipeline. All erp_* tables persist in DuckDB memory through Phases 1-3.5. pq_* parquet inputs are VIEWs (not materialized — saves ~4.5GB). Export deferred to centralized `_export_all()` step. `--format parquet` (default, ZSTD) or `--format csv`. Memory limit: 10GB. Intermediate tables (VIEWs, cost lookups) dropped between Phase 3 and friction to free memory.
+**Architecture (v0.95.0):** Single DuckDB session for entire pipeline. All 38 erp_* tables (14 master + 24 transactional/financial) persist in DuckDB memory through Phases 1-3.5. pq_* parquet inputs are VIEWs (not materialized — saves ~4.5GB). Export deferred to centralized `_export_all()` step. Default format: `--format duckdb` (ATTACH + CTAS to `erp.duckdb` file with indexes). Also supports `--format parquet` (ZSTD) and `--format csv`. Memory limit: 10GB. Intermediate tables dropped between Phase 3 and friction to free memory.
 
 **Performance (v0.94.0):** ~395s end-to-end for 335M rows with friction enabled (Phase 1: 0.2s, Phase 2: 34s, Phase 3: 150s, Phase 3.5: 109s, Export: 82s). Key optimizations: P1 costed_shipments pre-computation, deferred export (single COPY pass per table), friction direct DB operation (no Arrow transfer overhead).
 

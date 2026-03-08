@@ -510,13 +510,19 @@ def _register_in_duckdb(
     db: duckdb.DuckDBPyConnection,
     master_dir: Path,
 ) -> None:
-    """Register master CSVs in DuckDB + build cost/price lookup tables.
+    """Register all master CSVs in DuckDB + build cost/price lookup tables.
 
     Tables registered:
-      erp_suppliers, erp_skus — needed by friction layer
+      erp_{name} for all 14 master tables — needed by DuckDB export
       sku_cost_tbl, sku_price_tbl, ing_cost_tbl — needed by GL journal + invoices
     """
-    for name in ("suppliers", "skus"):
+    master_table_names = (
+        "suppliers", "skus", "ingredients", "bulk_intermediates",
+        "plants", "distribution_centers", "retail_locations", "channels",
+        "chart_of_accounts", "formulas", "formula_ingredients",
+        "production_lines", "route_segments", "supplier_ingredients",
+    )
+    for name in master_table_names:
         csv_path = master_dir / f"{name}.csv"
         if csv_path.exists():
             db.execute(

@@ -5,6 +5,35 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.95.0] - 2026-03-08
+
+### Feat: DuckDB Native File Output for ERP Generator
+
+ERP generator now outputs a single `erp.duckdb` file containing all 38 tables as the default format. Eliminates the PostgreSQL load step — users just open the file directly.
+
+#### DuckDB Export (`__main__.py`)
+- **New `--format duckdb`** (now default) — uses `ATTACH` + `CREATE TABLE AS` to write all tables into a standalone
+  `erp.duckdb` file with clean names (no `erp_` prefix), schema-filtered columns, and indexes.
+- **Expanded `DUCKDB_EXPORT_MAP`** — all 14 master tables added (was only suppliers + skus). Total: 38 tables.
+- **Refactored `_export_all()`** — extracted `_get_select_cols()` helper; removed master CSV→Parquet conversion
+  block (no longer needed since all masters are in DuckDB).
+- **DuckDB DDL generation** — `erp_schema_duckdb.sql` written alongside `erp_schema.sql`.
+- CSV and Parquet formats preserved via `--format csv` / `--format parquet`.
+
+#### Master Table Registration (`master_tables.py`)
+- **All 14 master tables registered in DuckDB** — `_register_in_duckdb()` expanded from 2 tables (suppliers, skus)
+  to all 14 (ingredients, bulk_intermediates, plants, distribution_centers, retail_locations, channels,
+  chart_of_accounts, formulas, formula_ingredients, production_lines, route_segments, supplier_ingredients).
+
+#### DuckDB DDL (`schema.py`)
+- **New `generate_duckdb_ddl()`** — translates PostgreSQL types to DuckDB-compatible types:
+  `SERIAL` → `INTEGER`, `TEXT` → `VARCHAR`, `VARCHAR(N)` → `VARCHAR`. Keeps `DECIMAL`, `BIGINT`, `BOOLEAN`,
+  foreign keys, and indexes.
+
+#### Unified Verification (`verify.py`)
+- **All 14 master tables added to `_TABLE_ALIASES`** — row counts now come uniformly from DuckDB instead of
+  mixed CSV + DuckDB counting.
+
 ## [0.94.0] - 2026-03-08
 
 ### Feat: ERP Deferred Export Architecture + Dual Format Support
