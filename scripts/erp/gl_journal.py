@@ -47,6 +47,20 @@ def generate_gl_journal(
     # Build all GL entries as a UNION ALL of 7 event type queries
     logger.info("  GL: Building journal entries via DuckDB...")
 
+    # P1: Pre-compute costed shipments — one cost-join pass instead of 10
+    logger.info("  GL: Pre-computing costed shipments...")
+    db.execute("""
+        CREATE OR REPLACE TABLE costed_shipments AS
+        SELECT
+            s.*,
+            COALESCE(sc.cost, ic.cost, 10.0) as unit_cost,
+            COALESCE(sp.cost, 15.0) as unit_price
+        FROM pq_shipments s
+        LEFT JOIN sku_cost_tbl sc ON sc.sim_id = s.product_id
+        LEFT JOIN ing_cost_tbl ic ON ic.sim_id = s.product_id
+        LEFT JOIN sku_price_tbl sp ON sp.sim_id = s.product_id
+    """)
+
     db.execute(f"""
         CREATE OR REPLACE TABLE erp_gl_journal AS
         WITH
@@ -114,22 +128,18 @@ def generate_gl_journal(
         -- 3. Ship Dispatch: DR 1140 In-Transit / CR 1130 FG (per shipment)
         dispatch_entries AS (
             SELECT s.creation_day as entry_date, '1140' as account_code,
-                SUM(s.quantity * COALESCE(sc.cost, ic.cost, 10.0)) as debit_amount,
+                SUM(s.quantity * s.unit_cost) as debit_amount,
                 0.0 as credit_amount,
                 'shipment' as reference_type, s.source_id as node_id,
                 s.shipment_id as reference_id, 'In-transit dispatch'
-            FROM pq_shipments s
-            LEFT JOIN sku_cost_tbl sc ON sc.sim_id = s.product_id
-            LEFT JOIN ing_cost_tbl ic ON ic.sim_id = s.product_id
+            FROM costed_shipments s
             WHERE s.source_id NOT LIKE 'SUP-%'
             GROUP BY s.shipment_id, s.creation_day, s.source_id
             UNION ALL
             SELECT s.creation_day, '1130', 0.0,
-                SUM(s.quantity * COALESCE(sc.cost, ic.cost, 10.0)),
+                SUM(s.quantity * s.unit_cost),
                 'shipment', s.source_id, s.shipment_id, 'FG shipped out'
-            FROM pq_shipments s
-            LEFT JOIN sku_cost_tbl sc ON sc.sim_id = s.product_id
-            LEFT JOIN ing_cost_tbl ic ON ic.sim_id = s.product_id
+            FROM costed_shipments s
             WHERE s.source_id NOT LIKE 'SUP-%'
             GROUP BY s.shipment_id, s.creation_day, s.source_id
         ),
@@ -160,64 +170,56 @@ def generate_gl_journal(
         -- 5. Ship Arrival: DR 1130 FG / CR 1140 In-Transit (per shipment)
         arrival_entries AS (
             SELECT s.arrival_day as entry_date, '1130' as account_code,
-                SUM(s.quantity * COALESCE(sc.cost, ic.cost, 10.0)) as debit_amount,
+                SUM(s.quantity * s.unit_cost) as debit_amount,
                 0.0 as credit_amount,
                 'shipment' as reference_type, s.target_id as node_id,
                 s.shipment_id as reference_id, 'Received into inventory'
-            FROM pq_shipments s
-            LEFT JOIN sku_cost_tbl sc ON sc.sim_id = s.product_id
-            LEFT JOIN ing_cost_tbl ic ON ic.sim_id = s.product_id
+            FROM costed_shipments s
             WHERE s.source_id NOT LIKE 'SUP-%'
             GROUP BY s.shipment_id, s.arrival_day, s.target_id
             UNION ALL
             SELECT s.arrival_day, '1140', 0.0,
-                SUM(s.quantity * COALESCE(sc.cost, ic.cost, 10.0)),
+                SUM(s.quantity * s.unit_cost),
                 'shipment', s.target_id, s.shipment_id, 'In-transit cleared'
-            FROM pq_shipments s
-            LEFT JOIN sku_cost_tbl sc ON sc.sim_id = s.product_id
-            LEFT JOIN ing_cost_tbl ic ON ic.sim_id = s.product_id
+            FROM costed_shipments s
             WHERE s.source_id NOT LIKE 'SUP-%'
             GROUP BY s.shipment_id, s.arrival_day, s.target_id
         ),
         -- 6. Sales: DR 5100 COGS / CR 1130 FG; DR 1200 AR / CR 4100 Revenue (per shipment)
         sale_entries AS (
             SELECT s.arrival_day as entry_date, '5100' as account_code,
-                SUM(s.quantity * COALESCE(sc.cost, 10.0)) as debit_amount,
+                SUM(s.quantity * s.unit_cost) as debit_amount,
                 0.0 as credit_amount,
                 'sale' as reference_type, s.target_id as node_id,
                 s.shipment_id as reference_id, 'COGS'
-            FROM pq_shipments s
-            LEFT JOIN sku_cost_tbl sc ON sc.sim_id = s.product_id
+            FROM costed_shipments s
             WHERE s.target_id LIKE 'STORE-%'
                OR s.target_id LIKE 'ECOM-FC-%'
                OR s.target_id LIKE 'DTC-FC-%'
             GROUP BY s.shipment_id, s.arrival_day, s.target_id
             UNION ALL
             SELECT s.arrival_day, '1130', 0.0,
-                SUM(s.quantity * COALESCE(sc.cost, 10.0)),
+                SUM(s.quantity * s.unit_cost),
                 'sale', s.target_id, s.shipment_id, 'FG consumed by sale'
-            FROM pq_shipments s
-            LEFT JOIN sku_cost_tbl sc ON sc.sim_id = s.product_id
+            FROM costed_shipments s
             WHERE s.target_id LIKE 'STORE-%'
                OR s.target_id LIKE 'ECOM-FC-%'
                OR s.target_id LIKE 'DTC-FC-%'
             GROUP BY s.shipment_id, s.arrival_day, s.target_id
             UNION ALL
             SELECT s.arrival_day, '1200',
-                SUM(s.quantity * COALESCE(sp.cost, 15.0)),
+                SUM(s.quantity * s.unit_price),
                 0.0, 'sale', s.target_id, s.shipment_id, 'AR for sale'
-            FROM pq_shipments s
-            LEFT JOIN sku_price_tbl sp ON sp.sim_id = s.product_id
+            FROM costed_shipments s
             WHERE s.target_id LIKE 'STORE-%'
                OR s.target_id LIKE 'ECOM-FC-%'
                OR s.target_id LIKE 'DTC-FC-%'
             GROUP BY s.shipment_id, s.arrival_day, s.target_id
             UNION ALL
             SELECT s.arrival_day, '4100', 0.0,
-                SUM(s.quantity * COALESCE(sp.cost, 15.0)),
+                SUM(s.quantity * s.unit_price),
                 'sale', s.target_id, s.shipment_id, 'Revenue recognized'
-            FROM pq_shipments s
-            LEFT JOIN sku_price_tbl sp ON sp.sim_id = s.product_id
+            FROM costed_shipments s
             WHERE s.target_id LIKE 'STORE-%'
                OR s.target_id LIKE 'ECOM-FC-%'
                OR s.target_id LIKE 'DTC-FC-%'
@@ -315,15 +317,11 @@ def _register_cost_tables(
     # Also add bulk costs to ing_cost_tbl
     bulk_csv = output_dir / "master" / "bulk_intermediates.csv"
     if bulk_csv.exists():
-        with open(bulk_csv) as f:
-            for row in csv.DictReader(f):
-                try:
-                    db.execute(
-                        "INSERT INTO ing_cost_tbl VALUES (?, ?)",
-                        [row["bulk_code"], float(row["cost_per_kg"])],
-                    )
-                except Exception:
-                    pass
+        db.execute(f"""
+            INSERT INTO ing_cost_tbl
+            SELECT "bulk_code" as sim_id, CAST("cost_per_kg" AS DOUBLE) as cost
+            FROM read_csv_auto('{bulk_csv}')
+        """)
 
 
 def _maybe_register(
@@ -340,11 +338,11 @@ def _maybe_register(
     except Exception:
         pass
 
-    db.execute(f"CREATE TABLE {table_name} (sim_id VARCHAR, cost DOUBLE)")
     if csv_path.exists():
-        with open(csv_path) as f:
-            for row in csv.DictReader(f):
-                db.execute(
-                    f"INSERT INTO {table_name} VALUES (?, ?)",
-                    [row[key_col], float(row[val_col])],
-                )
+        db.execute(f"""
+            CREATE TABLE {table_name} AS
+            SELECT "{key_col}" as sim_id, CAST("{val_col}" AS DOUBLE) as cost
+            FROM read_csv_auto('{csv_path}')
+        """)
+    else:
+        db.execute(f"CREATE TABLE {table_name} (sim_id VARCHAR, cost DOUBLE)")

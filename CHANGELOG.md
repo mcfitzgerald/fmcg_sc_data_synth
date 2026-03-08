@@ -5,6 +5,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.93.1] - 2026-03-07
+
+### Perf: ERP Generator Performance Optimizations (418s, -33%)
+
+Four targeted optimizations to the ERP generator pipeline, reducing end-to-end time from ~621s to ~418s (33% faster).
+
+#### P1: Costed Shipments Pre-computation (`gl_journal.py`)
+- **Pre-compute `costed_shipments` TABLE** — single cost-join pass (sku_cost + ing_cost + sku_price) materialized
+  once, replacing 10 redundant LEFT JOINs across dispatch/arrival/sale CTEs.
+- Dispatch, arrival, and sale CTEs now read `s.unit_cost` / `s.unit_price` directly from the materialized table.
+
+#### P6: Hash-Join UPDATE FROM (`invoices.py`, `friction.py`)
+- **Replace correlated UPDATE subqueries** with `UPDATE ... SET ... FROM (subquery)` pattern.
+- Affects AP/AR invoice total_amount backfill (invoices.py) and friction tier 2 backfills (friction.py).
+- DuckDB executes these as hash-joins instead of nested-loop correlated scans.
+
+#### P7: Arrow Table Transfer (`friction.py`, `__main__.py`)
+- **Pass `main_db` to `generate_friction()`** — friction's isolated DuckDB session receives 6 tables
+  (ap_invoices, ap_invoice_lines, ar_invoices, gl_journal, goods_receipts, shipments) via Arrow table
+  transfer instead of CSV re-parse.
+- Falls back to CSV import when `main_db` is not provided (backwards compatible).
+
+#### P8: Bulk CSV Load (`gl_journal.py`)
+- **Replace row-by-row `_maybe_register()`** with `read_csv_auto()` bulk load for cost/price lookup tables.
+- **Replace row-by-row bulk cost INSERT** with single `INSERT ... SELECT FROM read_csv_auto()`.
+
+#### Results
+- **Phase 2:** 48s (was ~52s)
+- **Phase 3:** 67s (was ~130s, -48%)
+- **Phase 3.5:** 104s (was ~150s, -30%)
+- **Total:** 418s (was ~621s, -33%)
+- **340M rows**, 63/63 verification pass, GL balanced
+
 ## [0.93.0] - 2026-03-05
 
 ### Feat: ERP PREMIX Classification Fix, Ontology v3.2.0, Benchmark Questions Refresh

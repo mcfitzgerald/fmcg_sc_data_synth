@@ -137,7 +137,7 @@ def main() -> None:
         from .friction import generate_friction
 
         logger.info("Phase 3.5: Friction layer")
-        friction_stats = generate_friction(output_dir, cfg)
+        friction_stats = generate_friction(output_dir, cfg, main_db=db)
         t35 = time.perf_counter()
         logger.info("Phase 3.5 done in %.1fs — %s", t35 - t3, friction_stats)
     else:

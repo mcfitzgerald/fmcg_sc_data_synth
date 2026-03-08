@@ -27,11 +27,14 @@ logger = logging.getLogger(__name__)
 def generate_friction(
     output_dir: Path,
     cfg: ErpConfig,
+    *,
+    main_db: duckdb.DuckDBPyConnection | None = None,
 ) -> dict[str, int]:
     """Apply friction mutations to clean ERP CSVs.
 
-    Opens a fresh DuckDB connection, imports the CSVs produced by Phases 1-3,
-    applies tiers 1-4, and re-exports modified tables.
+    Opens a fresh DuckDB connection, imports tables from the main DB via Arrow
+    transfer (P7) or falls back to CSV import, applies tiers 1-5, and
+    re-exports modified tables.
 
     Returns a stats dict with counts of affected rows per tier.
     """
@@ -44,15 +47,32 @@ def generate_friction(
     trans_dir = output_dir / "transactional"
     master_dir = output_dir / "master"
 
-    # Import tables we'll read/mutate
-    _import_csv(db, "suppliers", master_dir / "suppliers.csv")
-    _import_csv(db, "skus", master_dir / "skus.csv")
-    _import_csv(db, "ap_invoices", trans_dir / "ap_invoices.csv")
-    _import_csv(db, "ap_invoice_lines", trans_dir / "ap_invoice_lines.csv")
-    _import_csv(db, "ar_invoices", trans_dir / "ar_invoices.csv")
-    _import_csv(db, "gl_journal", trans_dir / "gl_journal.csv")
-    _import_csv(db, "goods_receipts", trans_dir / "goods_receipts.csv")
-    _import_csv(db, "shipments", trans_dir / "shipments.csv")
+    # P7: Transfer tables from main DuckDB via Arrow (avoids CSV re-parse)
+    _tables_to_transfer = {
+        "ap_invoices": "erp_ap_invoices",
+        "ap_invoice_lines": "erp_ap_invoice_lines",
+        "ar_invoices": "erp_ar_invoices",
+        "gl_journal": "erp_gl_journal",
+        "goods_receipts": "erp_goods_receipts",
+        "shipments": "erp_shipments",
+    }
+    if main_db is not None:
+        for local_name, main_name in _tables_to_transfer.items():
+            arrow_tbl = main_db.execute(f"SELECT * FROM {main_name}").fetch_arrow_table()
+            db.execute(f"CREATE TABLE {local_name} AS SELECT * FROM arrow_tbl")
+        # Master tables are CSV-only (not in main_db)
+        _import_csv(db, "suppliers", master_dir / "suppliers.csv")
+        _import_csv(db, "skus", master_dir / "skus.csv")
+    else:
+        # Fallback: import from CSV
+        _import_csv(db, "suppliers", master_dir / "suppliers.csv")
+        _import_csv(db, "skus", master_dir / "skus.csv")
+        _import_csv(db, "ap_invoices", trans_dir / "ap_invoices.csv")
+        _import_csv(db, "ap_invoice_lines", trans_dir / "ap_invoice_lines.csv")
+        _import_csv(db, "ar_invoices", trans_dir / "ar_invoices.csv")
+        _import_csv(db, "gl_journal", trans_dir / "gl_journal.csv")
+        _import_csv(db, "goods_receipts", trans_dir / "goods_receipts.csv")
+        _import_csv(db, "shipments", trans_dir / "shipments.csv")
 
     # Build AP invoice → receiving plant node_id lookup
     # Chain: ap_invoices → goods_receipts → shipments → gl_journal goods_receipt entries
@@ -336,13 +356,15 @@ def _apply_three_way_match(
               AND ap_invoice_lines.line_number = pfl.line_number
         """)
 
-        # Backfill AP invoice totals
+        # Backfill AP invoice totals (P6: hash-join)
         db.execute("""
-            UPDATE ap_invoices SET total_amount = (
-                SELECT COALESCE(SUM(line_amount), 0)
-                FROM ap_invoice_lines WHERE invoice_id = ap_invoices.id
-            )
-            WHERE id IN (SELECT DISTINCT invoice_id FROM price_friction_lines)
+            UPDATE ap_invoices SET total_amount = t.total
+            FROM (
+                SELECT invoice_id, COALESCE(SUM(line_amount), 0) as total
+                FROM ap_invoice_lines GROUP BY invoice_id
+            ) t
+            WHERE ap_invoices.id = t.invoice_id
+              AND ap_invoices.id IN (SELECT DISTINCT invoice_id FROM price_friction_lines)
         """)
 
         # Add balancing GL entries: DR/CR 5400 (Price Variance)
@@ -440,13 +462,15 @@ def _apply_three_way_match(
               AND ap_invoice_lines.line_number = qfl.line_number
         """)
 
-        # Backfill totals
+        # Backfill totals (P6: hash-join)
         db.execute("""
-            UPDATE ap_invoices SET total_amount = (
-                SELECT COALESCE(SUM(line_amount), 0)
-                FROM ap_invoice_lines WHERE invoice_id = ap_invoices.id
-            )
-            WHERE id IN (SELECT DISTINCT invoice_id FROM qty_friction_lines)
+            UPDATE ap_invoices SET total_amount = t.total
+            FROM (
+                SELECT invoice_id, COALESCE(SUM(line_amount), 0) as total
+                FROM ap_invoice_lines GROUP BY invoice_id
+            ) t
+            WHERE ap_invoices.id = t.invoice_id
+              AND ap_invoices.id IN (SELECT DISTINCT invoice_id FROM qty_friction_lines)
         """)
 
         # Balancing GL: DR/CR 1100 (RM Inventory adjustment)

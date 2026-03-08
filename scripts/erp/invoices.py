@@ -115,12 +115,14 @@ def _generate_ap_invoices_duckdb(
         WHERE s.target_id LIKE 'PLANT-%'
     """)
 
-    # Backfill totals
+    # Backfill totals (P6: hash-join instead of correlated subquery)
     db.execute("""
-        UPDATE erp_ap_invoices SET total_amount = (
-            SELECT COALESCE(SUM(line_amount), 0)
-            FROM erp_ap_invoice_lines WHERE invoice_id = erp_ap_invoices.id
-        )
+        UPDATE erp_ap_invoices SET total_amount = t.total
+        FROM (
+            SELECT invoice_id, COALESCE(SUM(line_amount), 0) as total
+            FROM erp_ap_invoice_lines GROUP BY invoice_id
+        ) t
+        WHERE erp_ap_invoices.id = t.invoice_id
     """)
 
     count = db.execute("SELECT COUNT(*) FROM erp_ap_invoices").fetchone()[0]
@@ -219,12 +221,14 @@ def _generate_ar_invoices_duckdb(
            OR s.target_id LIKE 'DTC-FC-%'
     """)
 
-    # Backfill totals
+    # Backfill totals (P6: hash-join instead of correlated subquery)
     db.execute("""
-        UPDATE erp_ar_invoices SET total_amount = (
-            SELECT COALESCE(SUM(line_amount), 0)
-            FROM erp_ar_invoice_lines WHERE invoice_id = erp_ar_invoices.id
-        )
+        UPDATE erp_ar_invoices SET total_amount = t.total
+        FROM (
+            SELECT invoice_id, COALESCE(SUM(line_amount), 0) as total
+            FROM erp_ar_invoice_lines GROUP BY invoice_id
+        ) t
+        WHERE erp_ar_invoices.id = t.invoice_id
     """)
 
     count = db.execute("SELECT COUNT(*) FROM erp_ar_invoices").fetchone()[0]
