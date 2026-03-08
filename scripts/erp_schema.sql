@@ -67,7 +67,7 @@ CREATE TABLE ingredients (
     ingredient_code VARCHAR(30) UNIQUE NOT NULL,
     name VARCHAR(200) NOT NULL,
     category VARCHAR(50) NOT NULL,
-    subcategory VARCHAR(30)  -- base_material, active_ingredient, packaging,
+    subcategory VARCHAR(30),  -- base_material, active_ingredient, packaging
     bom_level INTEGER DEFAULT 2,
     weight_kg DECIMAL(12,4),
     cost_per_kg DECIMAL(12,4),
@@ -159,7 +159,7 @@ CREATE TABLE formulas (
     formula_code VARCHAR(50) UNIQUE NOT NULL,
     name VARCHAR(200) NOT NULL,
     product_id INTEGER,
-    bom_level INTEGER NOT NULL DEFAULT 0  -- 0=SKU->BULK, 1=BULK->RM/PREMIX, 2=PREMIX->RM,
+    bom_level INTEGER NOT NULL DEFAULT 0,  -- 0=SKU->BULK, 1=BULK->RM/PREMIX, 2=PREMIX->RM
     batch_size_kg DECIMAL(10,2) NOT NULL,
     yield_percent DECIMAL(5,2) DEFAULT 98.0,
     run_rate_cases_per_hour DECIMAL(10,2),
@@ -198,7 +198,7 @@ CREATE TABLE batches (
     yield_percent DECIMAL(5,2),
     production_date INTEGER NOT NULL,
     status VARCHAR(20) DEFAULT 'pending',
-    product_type VARCHAR(20)  -- finished_good, bulk_intermediate, or premix,
+    product_type VARCHAR(20),  -- finished_good, bulk_intermediate, or premix
     bom_level INTEGER DEFAULT 0,
     transaction_sequence_id BIGINT NOT NULL,
     FOREIGN KEY (plant_id) REFERENCES plants(id),
@@ -222,7 +222,7 @@ CREATE TABLE bulk_intermediates (
     bulk_code VARCHAR(50) UNIQUE NOT NULL,
     name VARCHAR(200) NOT NULL,
     category VARCHAR(50),
-    bom_level INTEGER NOT NULL DEFAULT 1  -- 1=primary bulk, 2=premix sub-intermediate,
+    bom_level INTEGER NOT NULL DEFAULT 1,  -- 1=primary bulk, 2=premix sub-intermediate
     weight_kg DECIMAL(12,4),
     cost_per_kg DECIMAL(12,4),
     unit_of_measure VARCHAR(20) DEFAULT 'kg',
@@ -411,7 +411,7 @@ CREATE TABLE chart_of_accounts (
     id SERIAL PRIMARY KEY,
     account_code VARCHAR(10) UNIQUE NOT NULL,
     account_name VARCHAR(200) NOT NULL,
-    account_type VARCHAR(30) NOT NULL  -- asset, liability, revenue, expense,
+    account_type VARCHAR(30) NOT NULL,  -- asset, liability, revenue, expense
     is_active BOOLEAN DEFAULT true
 );
 
@@ -491,7 +491,7 @@ CREATE TABLE invoice_variances (
     id SERIAL PRIMARY KEY,
     invoice_id INTEGER NOT NULL,
     line_number INTEGER NOT NULL,
-    variance_type VARCHAR(10) NOT NULL  -- price or qty,
+    variance_type VARCHAR(10) NOT NULL,  -- price or qty
     expected_value DECIMAL(14,4) NOT NULL,
     actual_value DECIMAL(14,4) NOT NULL,
     variance_amount DECIMAL(14,4) NOT NULL,
