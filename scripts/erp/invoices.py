@@ -52,8 +52,13 @@ def generate_invoices(
 def _register_cost_table(
     db: duckdb.DuckDBPyConnection, table_name: str, cost_map: dict[str, float]
 ) -> None:
-    """Register a sim_id → cost lookup as a DuckDB table."""
-    db.execute(f"CREATE OR REPLACE TABLE {table_name} (sim_id VARCHAR, cost DOUBLE)")
+    """Register a sim_id → cost lookup as a DuckDB table (skip if exists)."""
+    try:
+        db.execute(f"SELECT 1 FROM {table_name} LIMIT 1")
+        return  # already populated by master_tables or gl_journal
+    except Exception:
+        pass
+    db.execute(f"CREATE TABLE {table_name} (sim_id VARCHAR, cost DOUBLE)")
     if cost_map:
         db.executemany(
             f"INSERT INTO {table_name} VALUES (?, ?)",
@@ -128,14 +133,7 @@ def _generate_ap_invoices_duckdb(
     count = db.execute("SELECT COUNT(*) FROM erp_ap_invoices").fetchone()[0]
     line_count = db.execute("SELECT COUNT(*) FROM erp_ap_invoice_lines").fetchone()[0]
 
-    db.execute(f"""
-        COPY erp_ap_invoices TO '{trans_dir / "ap_invoices.csv"}'
-        (HEADER, DELIMITER ',')
-    """)
-    db.execute(f"""
-        COPY erp_ap_invoice_lines TO '{trans_dir / "ap_invoice_lines.csv"}'
-        (HEADER, DELIMITER ',')
-    """)
+    # Export deferred to __main__.py export step
     logger.info("  AP invoices: %s headers, %s lines", f"{count:,}", f"{line_count:,}")
 
 
@@ -234,14 +232,7 @@ def _generate_ar_invoices_duckdb(
     count = db.execute("SELECT COUNT(*) FROM erp_ar_invoices").fetchone()[0]
     line_count = db.execute("SELECT COUNT(*) FROM erp_ar_invoice_lines").fetchone()[0]
 
-    db.execute(f"""
-        COPY erp_ar_invoices TO '{trans_dir / "ar_invoices.csv"}'
-        (HEADER, DELIMITER ',')
-    """)
-    db.execute(f"""
-        COPY erp_ar_invoice_lines TO '{trans_dir / "ar_invoice_lines.csv"}'
-        (HEADER, DELIMITER ',')
-    """)
+    # Export deferred to __main__.py export step
     logger.info("  AR invoices: %s headers, %s lines", f"{count:,}", f"{line_count:,}")
 
 

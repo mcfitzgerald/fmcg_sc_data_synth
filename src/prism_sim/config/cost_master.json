@@ -30,7 +30,52 @@
       "DISTRIBUTOR": 30, "ECOMMERCE": 15, "DTC": 0
     },
     "dpo_days": 45.0,
-    "annual_carrying_cost_pct": 0.25
+    "annual_carrying_cost_pct": 0.25,
+    "dpo_by_kraljic": {
+      "strategic": 60, "leverage": 45, "bottleneck": 30, "non_critical": 30
+    },
+    "payment_terms_by_kraljic": {
+      "strategic": "NET60", "leverage": "2/10-NET45",
+      "bottleneck": "NET30", "non_critical": "NET30"
+    },
+    "dso_store_variance_days": 5,
+    "ap_consolidation_window_days": 7
+  },
+  "ar_pricing": {
+    "category_channel_multipliers": {
+      "ORAL_CARE": {
+        "CLUB": 0.85, "MASS_RETAIL": 0.97, "GROCERY": 1.00,
+        "PHARMACY": 1.10, "DISTRIBUTOR": 0.93, "ECOMMERCE": 1.05, "DTC": 1.18
+      },
+      "HOME_CARE": {
+        "CLUB": 0.90, "MASS_RETAIL": 0.98, "GROCERY": 1.00,
+        "PHARMACY": 1.05, "DISTRIBUTOR": 0.95, "ECOMMERCE": 1.03, "DTC": 1.12
+      },
+      "PERSONAL_CARE": {
+        "CLUB": 0.88, "MASS_RETAIL": 0.96, "GROCERY": 1.00,
+        "PHARMACY": 1.12, "DISTRIBUTOR": 0.94, "ECOMMERCE": 1.08, "DTC": 1.20
+      },
+      "SKIN_CARE": {
+        "CLUB": 0.92, "MASS_RETAIL": 0.98, "GROCERY": 1.02,
+        "PHARMACY": 1.15, "DISTRIBUTOR": 0.96, "ECOMMERCE": 1.10, "DTC": 1.22
+      },
+      "default": {
+        "CLUB": 0.90, "MASS_RETAIL": 1.00, "GROCERY": 1.00,
+        "PHARMACY": 1.08, "DISTRIBUTOR": 0.95, "ECOMMERCE": 1.05, "DTC": 1.15
+      }
+    },
+    "volume_discount_tiers": [
+      {"min_cases": 200, "discount_pct": 0.10},
+      {"min_cases": 50, "discount_pct": 0.05}
+    ]
+  },
+  "freight_variance": {
+    "carrier_rate_variance_pct": 0.10,
+    "seasonal_fuel_surcharge": {
+      "winter_months": [11, 12, 1, 2], "winter_surcharge_pct": 0.08,
+      "summer_months": [6, 7, 8], "summer_surcharge_pct": 0.03
+    },
+    "mode_variance": {"LTL": 0.15, "FTL": 0.05}
   },
   "product_costs": {
     "_comment": "DEPRECATED: per-SKU cost_per_case from products.csv is preferred. Kept as fallback.",

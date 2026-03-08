@@ -128,7 +128,7 @@ After allocation, `AllocationAgent._materialize_orders()` converts surviving lin
 | `scripts/generate_static_world.py` | Generate static world data (products, recipes, nodes, links, supplier catalog) |
 | `scripts/calibrate_config.py` | Physics-based config calibration (capacity, safety stock, DOS targets) |
 | `scripts/run_standard_sim.py` | Standard workflow runner (priming + stabilization + data run) |
-| `scripts/erp/` | **Enterprise Data Generator:** DuckDB-based ETL, sim parquet → 36 normalized CSV tables (368.5M rows) |
+| `scripts/erp/` | **Enterprise Data Generator:** DuckDB-based ETL, sim parquet → 38 normalized tables (335M rows), CSV or Parquet output |
 | `scripts/erp_schema.sql` | ERP relational schema (PostgreSQL DDL, 36 tables + 14 indexes) |
 
 ### Validation & Planning Documents
@@ -202,21 +202,21 @@ Shared modular backend used by diagnostics:
 
 ### Enterprise Data Generator (`scripts/erp/`)
 
-DuckDB-based ETL that transforms sim parquet output into 39 normalized ERP CSV tables. Loadable into PostgreSQL and Neo4j.
+DuckDB-based ETL that transforms sim parquet output into 38 normalized ERP tables (CSV or Parquet). Loadable into PostgreSQL and Neo4j.
 
-**Entry point:** `poetry run python -m scripts.erp --input-dir data/output --output-dir data/output/erp`
+**Entry point:** `poetry run python -m scripts.erp --input-dir data/output --output-dir data/output/erp --format parquet`
 
 | Module | Purpose |
 |--------|---------|
 | `config.py` | ErpConfig + FrictionConfig + GlAnomalyConfig: loads cost_master.json (incl. friction + gl_anomalies), world_def, sim_config; 14-account Chart of Accounts. `reporting_date: int | None` for status lifecycle snapshot (default: max_day - 25). |
 | `id_mapper.py` | Bidirectional sim string ID ↔ integer PK mapping (JSON serializable) |
 | `sequence.py` | Deterministic `transaction_sequence_id`: `day × 10M + category × 1M + counter`. Categories 0-7 (core), 8 (friction), 9 (payment) |
-| `master_tables.py` | DuckDB SQL: 14 master CSVs from static world files + config. v0.93.0: classifies by category first (BULK_INTERMEDIATE → bulk_intermediates.csv for both bom_level=1 bulks and bom_level=2 premixes). |
-| `transactional.py` | DuckDB-native large tables (orders, shipments, inventory); Python for small tables. v0.82.0: `STATUS_LIFECYCLES` dict (7 tables), `_lifecycle_status()` helper, `_lifecycle_case_sql()` for DuckDB CASE. `reporting_date` filters all tables (HAVING/WHERE), status via age bands, lines inherit parent header status. v0.93.0: batches.product_type now emits 'premix' for bom_level>=2 BULK_INTERMEDIATE (was 'bulk_intermediate'). |
-| `gl_journal.py` | Pure DuckDB SQL: 7 reference_types (goods_receipt, production, shipment, freight, sale, return + friction variance/payment) × DR/CR pairs → ~34M per-shipment/batch GL entries with `reference_id` traceability. v0.77.0: production cost uses `batch_cost` CTE. v0.78.1: freight split from shipment (`reference_type='freight'`), freight+variance entries get `node_id` (source plant / receiving plant via AP lookup). v0.79.1: inbound freight capitalizes to DR 1100 RM Inventory. v0.93.1: P1 `costed_shipments` TABLE pre-computes unit_cost/unit_price once (was 10 redundant JOINs); P8 `read_csv_auto()` for cost table registration (was row-by-row INSERT). |
-| `invoices.py` | DuckDB-native AP invoices (4.8M) and AR invoices (1.3M headers, 52.7M lines). v0.79.1: supplier_id resolved via `erp_shipments.source_sim_id` → `loc_map`. v0.93.1: P6 UPDATE FROM hash-join for total_amount backfill (was correlated subquery). |
-| `friction.py` | v0.78.0: Phase 3.5 — controlled data quality friction. 5 tiers: entity resolution (dup suppliers, SKU aliases), 3-way match failures (price/qty variance → `invoice_variances`), data quality (null FKs, dup invoices w/ line items, status flips), payment timing (`ap_payments`, `ar_receipts`, early discounts, bad debt), GL anomalies (v0.82.0: duplicate postings ~0.5% with `-DUP` suffix, rounding imbalances ~1% of days $0.01-$1.00). All DuckDB SQL, GL entries balanced (except intentional imbalances). Config: `cost_master.json` → `friction.enabled` + `friction.gl_anomalies`. v0.93.1: P7 Arrow table transfer from main DuckDB (avoids CSV re-parse for 6 tables), P6 hash-join backfills. |
-| `verify.py` | Post-gen: GL balance (DuckDB), COGS/Revenue ratio, reference_id coverage, FK integrity, sequence monotonicity, friction table stats |
+| `master_tables.py` | DuckDB SQL: 14 master CSVs from static world files + config. v0.93.0: classifies by category first (BULK_INTERMEDIATE → bulk_intermediates.csv for both bom_level=1 bulks and bom_level=2 premixes). v0.94.0: `_register_in_duckdb()` creates `erp_suppliers`, `erp_skus`, cost/price lookup tables in Phase 1 (single source of truth for cost tables). |
+| `transactional.py` | DuckDB-native large tables (orders, shipments, inventory) stay as erp_* TABLEs in DuckDB; Python-iterated small tables registered via `_register_csv_table()`. pq_* parquet inputs registered as VIEWs (not materialized). v0.82.0: `STATUS_LIFECYCLES` dict (7 tables), `_lifecycle_case_sql()` for DuckDB CASE. v0.94.0: no inline CSV export — all tables persist in DuckDB for downstream phases. |
+| `gl_journal.py` | Pure DuckDB SQL: 7 reference_types × DR/CR pairs → ~34M GL entries with `reference_id`. v0.93.1: P1 `costed_shipments` TABLE pre-computes unit_cost/unit_price. v0.94.0: cost tables reused from Phase 1 (no duplicate bulk intermediate INSERT), export deferred. |
+| `invoices.py` | DuckDB-native AP invoices (4.8M) and AR invoices (1.3M headers, 52.7M lines). v0.94.0: `_register_cost_table()` skips if table exists (reuses Phase 1 tables), export deferred. |
+| `friction.py` | Phase 3.5 — 5-tier controlled data quality friction. v0.94.0: operates directly on main DuckDB session tables (renamed `erp_` → short names by caller). No separate connection, no Arrow transfer, no CSV round-trip. Standalone CSV mode preserved as fallback. |
+| `verify.py` | Two modes: DuckDB in-memory (fast, queries erp_* tables directly) or CSV fallback. GL balance, COGS/Revenue, reference_id coverage, FK integrity, sequence monotonicity, friction stats. v0.94.0: runs before export for faster feedback. |
 | `neo4j_headers.py` | Neo4j-admin import header files (incl. friction tables) |
 
 **Schema:** `scripts/erp_schema.sql` — 39 tables (9 domains incl. friction), 19 indexes, PostgreSQL DDL.
@@ -226,7 +226,9 @@ DuckDB-based ETL that transforms sim parquet output into 39 normalized ERP CSV t
 
 **Status lifecycle (v0.82.0):** `reporting_date` param (CLI `--reporting-date`, default: `max_day - 25`) creates a point-in-time snapshot. Documents before reporting_date get lifecycle statuses based on age; documents after are excluded. 7 table-specific state machines (orders: pending→allocated→shipped→delivered, POs: open→received→closed, etc.). Lines inherit status from parent header. `--reporting-date 999999` = pre-v0.82.0 behavior (all terminal).
 
-**Performance (v0.93.1):** ~7 min end-to-end for 340M rows with friction enabled (Phase 1: 0.1s, Phase 2: 48s, Phase 3: 67s, Phase 3.5: 104s, Phase 4+verify: ~200s). Key optimizations: P1 costed_shipments pre-computation (single cost-join pass for GL), P6 UPDATE FROM hash-joins (invoice backfills), P7 Arrow table transfer (friction import), P8 bulk CSV load (read_csv_auto for cost tables).
+**Architecture (v0.94.0):** Single DuckDB session for entire pipeline. All erp_* tables persist in DuckDB memory through Phases 1-3.5. pq_* parquet inputs are VIEWs (not materialized — saves ~4.5GB). Export deferred to centralized `_export_all()` step. `--format parquet` (default, ZSTD) or `--format csv`. Memory limit: 10GB. Intermediate tables (VIEWs, cost lookups) dropped between Phase 3 and friction to free memory.
+
+**Performance (v0.94.0):** ~395s end-to-end for 335M rows with friction enabled (Phase 1: 0.2s, Phase 2: 34s, Phase 3: 150s, Phase 3.5: 109s, Export: 82s). Key optimizations: P1 costed_shipments pre-computation, deferred export (single COPY pass per table), friction direct DB operation (no Arrow transfer overhead).
 
 ### Data Export (`simulation/writer.py`)
 | Concept | Key Classes |

@@ -2,11 +2,13 @@
 
 ## 1. Executive Summary
 
-This dataset represents 365 days of synthetic enterprise data for **Prism Consumer Goods (PCG)**, a fictional North American fast-moving consumer goods company. PCG manufactures and distributes oral care, personal wash, and home care products through seven channels to over 3,800 retail and fulfillment locations.
+This dataset represents a full year of synthetic enterprise data for **Prism Consumer Goods (PCG)**, a fictional North American fast-moving consumer goods company. PCG manufactures and distributes oral care, personal wash, and home care products through seven channels to over 3,800 retail and fulfillment locations.
 
-The modeled company operates at scale: $38.3 billion in annual revenue, 500 SKUs, 50 suppliers, four manufacturing plants, and a 4-echelon distribution network spanning roughly 4,200 nodes. The dataset captures the full operational footprint — procurement, manufacturing, inventory management, order fulfillment, returns, and financial accounting — across 38 normalized ERP tables totaling approximately 395 million rows.
+The modeled company operates at scale: ~640 products (500 finished goods, 62 bulk intermediates including 13 PREMIX sub-intermediates, and 78 raw materials), 50 Kraljic-segmented suppliers (~38 active), four manufacturing plants, and a 4-echelon distribution network spanning roughly 4,200 nodes with lateral RDC transshipment links and multi-source DC routing. The dataset captures the full operational footprint — procurement, manufacturing, inventory management, order fulfillment, returns, and financial accounting — across 38 normalized ERP tables totaling approximately 330-400 million rows depending on run configuration.
 
-The dataset is purpose-built for three use cases: **Virtual Knowledge Graph (VKG) testing**, where heterogeneous enterprise tables must be integrated and queried as a unified graph; **supply chain analytics**, where analysts need realistic volume, variability, and cross-functional tradeoffs; and **data integration benchmarking**, where controlled data quality issues provide a known ground truth for entity resolution, record matching, and anomaly detection.
+> **Note on metrics:** Exact row counts, financial totals, and performance metrics vary by run length, warm-start state, and configuration parameters. Values throughout this document are representative of a typical 340-365 day simulation run. The illustrative run used here covers 340 operational days with a 90-day financial tail.
+
+The dataset is purpose-built for three use cases: **Virtual Knowledge Graph (VKG) testing**, where heterogeneous enterprise tables must be integrated and queried as a unified graph (85 benchmark questions with real entity codes are provided); **supply chain analytics**, where analysts need realistic volume, variability, and cross-functional tradeoffs; and **data integration benchmarking**, where controlled data quality issues provide a known ground truth for entity resolution, record matching, and anomaly detection.
 
 Every row traces back to a physics-based simulation that enforces mass balance, capacity constraints, and kinematic consistency. The financial layer is generated post-hoc from operational data — the same way real ERP systems record transactions after physical events occur.
 
@@ -38,12 +40,12 @@ The 38 ERP tables map to these domains, ensuring the dataset covers the full ord
 
 | SCOR Domain | Triangle Corner | Key Tables | What It Captures |
 |---|---|---|---|
-| Source | Cost / Cash | purchase_orders, goods_receipts, ap_invoices | Procurement cycle, supplier spend, DPO |
-| Make | Cost | work_orders, batches, batch_ingredients | Production costs, yield, OEE |
+| Source | Cost / Cash | purchase_orders, goods_receipts, ap_invoices, ap_payments | Procurement cycle, supplier spend, DPO |
+| Make | Cost | work_orders, batches, batch_ingredients (incl. PREMIX) | Production costs, yield, OEE, variable BOM depth |
 | Deliver | Service / Cost | orders, shipments, shipment_lines | Fill rate, freight cost, lead times |
 | Return | Service | returns, disposition_logs | Return rate, disposition |
 | Plan | Service | demand_forecasts | Forecast accuracy (MAPE) |
-| Finance | Cash | gl_journal, ar_invoices, ar_receipts | Revenue, DSO, C2C, working capital |
+| Finance | Cash | gl_journal, ar_invoices, ar_receipts, invoice_variances | Revenue, DSO, C2C, working capital, 3-way match |
 
 ---
 
@@ -60,10 +62,13 @@ PCG operates in three product categories, each with distinct manufacturing chara
 | Dimension | Detail |
 |---|---|
 | Categories | Oral Care (45%), Personal Wash (30%), Home Care (25%) |
-| SKU Count | 500 finished goods |
+| Finished Goods | 500 SKUs |
+| Total Products | ~640: 500 FG + 62 bulk intermediates (incl. 13 PREMIX) + 78 raw materials |
 | Packaging Formats | 28 formats across 5 container types (tubes, bottles, pumps, pouches, glass jars) |
 | Value Segments | Trial (7%), Mainstream (48%), Value (28%), Premium (17%) |
-| BOM Depth | 3-level: 78 raw materials → 45 bulk intermediates → 500 finished goods |
+| BOM Depth | Variable 2-4 level: 78 raw materials → 13 PREMIX sub-intermediates → 62 bulk intermediates → 500 finished goods |
+
+The variable BOM depth means that approximately 70% of products follow the standard 2-level path (raw materials → bulk → finished goods), 20% follow a 3-level path through PREMIX sub-intermediates, and 10% use multi-intermediate blending with primary and secondary bulk inputs. Ten diamond dependencies arise naturally where raw materials are shared across PREMIX recipes and direct bulk formulations.
 
 ### Channel Strategy
 
@@ -89,40 +94,45 @@ PCG operates a four-echelon distribution network spanning North America: supplie
 
 ### Network Topology
 
-Raw materials flow inbound from 50 suppliers, segmented using a Kraljic matrix: 8 strategic suppliers (specialty chemicals with few alternatives), 12 leverage suppliers (commodity chemicals where PCG has buying power), and 30 non-critical suppliers (packaging and tertiary materials). This segmentation drives procurement strategy — strategic suppliers get longer-term contracts and higher safety stock, while non-critical suppliers compete on price.
+Raw materials flow inbound from 50 suppliers, segmented using a Kraljic matrix: 8 strategic suppliers (specialty chemicals with few alternatives), 12 leverage suppliers (commodity chemicals where PCG has buying power), and 30 non-critical suppliers (packaging and tertiary materials). This segmentation drives procurement strategy — strategic suppliers get longer-term contracts and higher safety stock, while non-critical suppliers compete on price. Of the 50 suppliers in the catalog, approximately 38 are active in a given simulation run, linked to 78 ingredients through 176 supplier-ingredient relationships.
 
 Manufacturing is concentrated in four plants, each with category specializations: Dallas handles high-speed oral care production, Columbus runs legacy home care and personal wash lines, Sacramento provides flexible multi-category capacity, and Atlanta serves as the general-purpose overflow facility.
 
-Finished goods flow outbound through two paths. High-volume A-items ship direct from plant to customer DCs — this "plant-direct" path is faster and cheaper but requires sufficient volume to fill trucks. The remaining volume routes through six regional distribution centers that serve as consolidation and cross-dock points. In the simulated year, approximately 56% of plant output flows through RDCs, with 44% shipping direct. This dual-path topology creates realistic complexity in inventory positioning and transportation planning.
+Finished goods flow outbound through two paths. High-volume A-items ship direct from plant to customer DCs — this "plant-direct" path is faster and cheaper but requires sufficient volume to fill trucks. The remaining volume routes through six regional distribution centers that serve as consolidation and cross-dock points. The six RDCs are connected by 12 directed lateral transshipment links (6 pairs), enabling DOS-triggered inventory rebalancing between regions. Approximately 16 customer DCs (29%) are configured as multi-source, receiving product from both a primary and secondary RDC to improve resilience. This dual-path topology with lateral links creates realistic complexity in inventory positioning and transportation planning.
 
 **Exhibit D: Network Topology**
 
-| Tier | Nodes | Locations |
+| Tier | Nodes | Detail |
 |---|---|---|
-| Suppliers | 50 | Kraljic-segmented: 8 strategic, 12 leverage, 30 non-critical |
+| Suppliers | 50 | Kraljic-segmented: 8 strategic, 12 leverage, 30 non-critical (~38 active) |
 | Plants | 4 | Columbus OH, Dallas TX, Atlanta GA, Sacramento CA |
 | RDCs | 6 | Allentown PA, Chicago IL, Memphis TN, Jacksonville FL, Phoenix AZ, Reno NV |
-| Customer DCs | 56 | Retailer, grocery, club, pharmacy, and distributor warehouses |
-| Endpoints | 3,843 | Retail stores and fulfillment centers across 7 channels |
-| **Total** | **~4,200** | |
+| Lateral RDC Links | 12 | 6 bidirectional pairs for DOS-triggered transshipment |
+| Customer DCs | 56 | Retailer, grocery, club, pharmacy, and distributor warehouses (16 multi-source) |
+| Endpoints | 3,817 | Retail stores and fulfillment centers across 7 channels |
+| Route Segments | 4,025 | Total directed links in the transport network |
+| **Total Nodes** | **~4,200** | |
 
 ### Transportation
 
-All inter-facility freight moves by full truckload (FTL) at 20,000 kg capacity, with the exception of DC-to-store deliveries which use less-than-truckload (LTL). Lead times are distance-based — computed from actual geographic coordinates using road-network speeds of 80 km/h plus a one-day handling buffer at each node.
+All inter-facility freight moves by full truckload (FTL) at 20,000 kg capacity, with the exception of DC-to-store deliveries which use less-than-truckload (LTL). Internal network lead times are distance-based — computed from actual geographic coordinates using road-network speeds of 80 km/h plus a one-day handling buffer at each node.
+
+Supplier lead times are sourcing-tier aware: LOCAL suppliers deliver in 5-14 days, REGIONAL in 15-29 days, and GLOBAL in 30-72 days. Across the 176 supplier-ingredient relationships, there are 55 distinct lead time values spanning the full 5-72 day range, with an average of ~24 days.
 
 **Exhibit E: Lead Times**
 
 | Leg | Days | Mode |
 |---|---|---|
-| Supplier → Plant | 1–7 | FTL |
-| Plant → RDC | ~5 | FTL |
-| RDC → Customer DC | ~3 | FTL |
+| Supplier → Plant | 5–72 (tier-dependent) | FTL |
+| Plant → RDC | ~2 | FTL |
+| RDC → Customer DC | ~1 | FTL |
 | DC → Store | 1 | LTL |
-| **End-to-end** | **13–21** | — |
+| RDC ↔ RDC (lateral) | ~1 | FTL |
+| **End-to-end** | **9–76** | — |
 
 ### Manufacturing
 
-PCG's four plants operate 15 production lines on a 24-hour continuous schedule. Each line is dedicated to specific product categories based on the equipment installed — oral care lines cannot run home care products without a full retool. Production follows a two-stage BOM: raw materials are first blended into bulk intermediates (mixing, compounding), then bulk is filled and packed into finished goods (filling, labeling, cartoning, palletizing). This two-stage structure means a single batch of bulk intermediate may feed multiple finished goods SKUs that share the same formula but differ in packaging format.
+PCG's four plants operate 15 production lines on a 24-hour continuous schedule. Each line is dedicated to specific product categories based on the equipment installed — oral care lines cannot run home care products without a full retool. Production follows a variable-depth BOM: raw materials may first be blended into PREMIX sub-intermediates (13 products at bom_level=2), then compounded into bulk intermediates (62 products at bom_level=1), and finally filled and packed into finished goods (500 SKUs). This variable-depth structure means a single raw material may feed multiple PREMIX recipes, which in turn feed multiple bulk formulas — creating diamond dependencies in the production graph. Batch ingredient quantities are recorded with a +/-3% variance from formula specifications, reflecting real-world measurement imprecision.
 
 **Exhibit F: Manufacturing**
 
@@ -130,10 +140,12 @@ PCG's four plants operate 15 production lines on a 24-hour continuous schedule. 
 |---|---|
 | Production lines | 15 across 4 plants |
 | Operating schedule | 24 hours/day, continuous |
-| Run rates | 15,000–20,000 cases/hour (varies by category) |
+| Run rates | 15,000-20,000 cases/hour (varies by category) |
 | Yield | 98.5% |
-| Changeover time | 0.5–1.5 hours (varies by category) |
-| BOM stages | Two-stage: bulk blending, then fill-and-pack |
+| Changeover time | 0.5-1.5 hours (varies by category) |
+| BOM stages | Variable 2-4 stage: PREMIX blending → bulk compounding → fill-and-pack |
+| PREMIX products | 13 sub-intermediates (bom_level=2) |
+| Batch variance | +/-3% ingredient recording variance |
 
 ---
 
@@ -141,42 +153,55 @@ PCG's four plants operate 15 production lines on a 24-hour continuous schedule. 
 
 ### Consumer Demand
 
-Store-level demand follows a Zipf distribution — the top 20% of SKUs account for approximately 80% of volume, consistent with the Pareto pattern observed in real FMCG data. Each store's daily demand is specific to its channel and format (a hypermarket sells more than a pharmacy), creating natural volume heterogeneity across the network. Demand exhibits seasonal variation with ±12% amplitude peaking in summer months, plus promotional lifts of up to 2× during events like Black Friday and New Year sales. Post-promotion hangover effects (demand dips of 20–40% in the week following a promotion) are also modeled.
+Store-level demand follows a Zipf distribution — the top 20% of SKUs account for approximately 80% of volume, consistent with the Pareto pattern observed in real FMCG data. Each store's daily demand is specific to its channel and format (a hypermarket sells more than a pharmacy), creating natural volume heterogeneity across the network. Demand exhibits seasonal variation with +/-12% amplitude peaking in summer months, plus promotional lifts of up to 2x during events like Black Friday and New Year sales. Post-promotion hangover effects (demand dips of 20-40% in the week following a promotion) are also modeled.
 
 SKUs are classified into ABC tiers by velocity: 302 A-items (fast movers), 127 B-items, and 71 C-items. This classification drives differentiated inventory policies, production scheduling priority, and safety stock levels throughout the network.
 
+### Demand-Centric Replenishment
+
+Every echelon in the network is synchronized to a "True Demand" signal — smoothed retail pull from stores — rather than relying on each node's own outflow history. This demand-centric model prevents the "death spiral" where low inventory causes low shipments, which then causes even lower replenishment orders. DCs use the smoothed retail demand signal for their inventory targets, DOS calculations, and floor gating, ensuring that ordering velocity recovers quickly after disruptions.
+
 ### Inventory Policy
 
-Each echelon operates under a min-max (s,S) replenishment policy with ABC-differentiated parameters. Stores carry 6 days of supply with a 3-day reorder point. Customer DCs maintain a 7-day buffer with ABC-scaled caps. RDCs operate as flow-through points with a 9-day target. Plant finished goods inventory is managed by MRP with a 14-day planning horizon.
+Each echelon operates under a min-max (s,S) replenishment policy with ABC-differentiated parameters.
 
 **Exhibit G: Inventory Policy**
 
 | Echelon | Target DOS | Reorder Point | Safety Stock |
 |---|---|---|---|
-| Store | 6 days | 3 days | 1.65–2.33σ (ABC-tiered) |
-| Customer DC | 10–18 days | ABC-differentiated | 7-day buffer |
+| Store | 4.5 days | 3 days | 1.65-2.33 sigma (ABC-tiered) |
+| Customer DC | 7-day buffer | ABC-differentiated caps (A: 10.5, B: 14, C: 17.5 DOS) | True Demand-anchored |
 | RDC | 9 days | Flow-through | Cross-dock model |
-| Plant FG | 14–17 days | MRP-driven | Production smoothing |
+| Plant FG | 1.5 DOS priming | MRP-driven | Integral Netting: On_Hand = Target - Pipeline - WIP |
 
-Production planning uses a 14-day rolling MRP horizon with ABC-weighted capacity allocation: A-items receive 60% of line capacity, B-items 25%, and C-items 15%. Purchase orders for raw materials are consolidated over 2-day windows to meet minimum truckload weights.
+### Distribution Planning
+
+Distribution Requirements Planning (DRP) is available but disabled by default for RDC-to-DC shipping. DRP uses smoothed expected demand per product, but store (s,S) ordering creates lumpy, SKU-specific order patterns. The result is a product-mix mismatch: DRP positions the right total volume but the wrong SKU mix at DCs. In testing, DC pull via (s,S) achieves ~95% fill rate, pure DRP achieves ~73%, and a hybrid mode achieves ~93%. The default configuration uses DC pull for product-mix accuracy.
+
+### Production Planning
+
+MRP uses a 14-day rolling horizon with ABC-weighted capacity allocation: A-items receive 60% of line capacity, B-items 25%, and C-items 15%. The MRP engine performs N-step level-by-level BOM explosion to support the variable depth product graph — PREMIX requirements are planned before bulk, which is planned before finished goods. Purchase orders for raw materials are consolidated over 2-day windows to meet minimum truckload weights.
 
 ---
 
 ## 6. How the Data Was Generated
 
-The dataset is produced by a discrete-event simulation (DES) that models 365 days of PCG's operations at daily granularity. Understanding the generation method is important because it determines what causal relationships exist in the data and what analytical questions the dataset can support.
+The dataset is produced by a discrete-event simulation (DES) that models a full year of PCG's operations at daily granularity. Understanding the generation method is important because it determines what causal relationships exist in the data and what analytical questions the dataset can support.
 
 ### The Daily Loop
 
 Each simulated day executes a fixed sequence of operations:
 
 1. **Generate consumer demand** — store-level sales are drawn from the Zipf/seasonal/promotional model.
-2. **Replenish stores** — stores place replenishment orders to their supplying DCs based on current inventory position.
+2. **Replenish stores** — stores place replenishment orders to their supplying DCs based on current inventory position and the True Demand signal.
 3. **Allocate inventory** — available stock is allocated to open orders using fair-share logic with ABC priority.
 4. **Build shipments** — allocated orders are consolidated into truckloads using bin-packing.
-5. **Plan production** — MRP calculates net requirements and schedules production batches.
-6. **Execute manufacturing** — production lines run scheduled batches, consuming raw materials and producing finished goods.
-7. **Deploy finished goods** — plant output is pushed to RDCs and DCs based on demand signals.
+5. **Plan production** — MRP performs N-step BOM explosion and schedules production batches; DRP computes distribution needs for B/C items.
+6. **Execute manufacturing** — production lines run scheduled batches, consuming raw materials and producing finished goods with +/-3% ingredient variance.
+7. **Deploy finished goods** — plant output is pushed to RDCs and DCs based on need (deployment target room check).
+8. **Push excess RDC inventory** — RDCs above target DOS push surplus to downstream DCs.
+9. **Execute lateral transshipment** — RDCs below DOS threshold pull from neighboring RDCs via lateral links.
+10. **Inject behavioral realism** — phantom inventory shrinkage, bullwhip amplification, forecast bias, and port congestion effects.
 
 ### Physics Constraints
 
@@ -184,80 +209,82 @@ Five non-negotiable constraints are enforced at every timestep:
 
 - **Mass balance:** input (kg) = output (kg) + scrap. Nothing is created or destroyed.
 - **Kinematic consistency:** travel time = distance / speed. Shipments cannot arrive before physics allows.
-- **Little's Law:** inventory = throughput × flow time. The fundamental relationship between stock and flow.
-- **Capacity constraints:** production cannot exceed line rate × available hours.
+- **Little's Law:** inventory = throughput x flow time. The fundamental relationship between stock and flow.
+- **Capacity constraints:** production cannot exceed line rate x available hours.
 - **Inventory positivity:** a node cannot ship more than it holds. No negative inventory.
 
 ### Behavioral Realism
 
-On top of physics, the simulation includes mechanisms for real-world messiness: phantom inventory (2% shrinkage with a 14-day detection lag), bullwhip amplification (3× order batching during promotions), forecast optimism bias (15% over-forecast for new products in their first 6 months), and port congestion (autoregressive shipment delays that cluster temporally).
+On top of physics, the simulation includes mechanisms for real-world messiness: phantom inventory (2% shrinkage with a 14-day detection lag), bullwhip amplification (3x order batching during promotions), forecast optimism bias (15% over-forecast for new products in their first 6 months), port congestion (autoregressive shipment delays that cluster temporally), batch ingredient variance (+/-3% recording deviation from formula specifications), and demand-centric signal smoothing (70% expected demand + 30% POS for DOS calculation).
 
 ### Two-Pass Architecture
 
-The data generation follows a two-pass architecture. First, the simulation engine produces raw operational data — shipments, batches, inventory snapshots, consumer demand — enforcing all physics constraints. Second, a post-hoc process reads this operational data and generates enterprise artifacts: purchase orders, invoices, GL journal entries, and payments. This mirrors how real ERP systems record financial transactions after physical events occur. The separation ensures that financial data is always consistent with the underlying operations.
+The data generation follows a two-pass architecture. First, the simulation engine produces raw operational data — shipments, batches, inventory snapshots, consumer demand — enforcing all physics constraints. Second, a post-hoc "Accountant Bot" process reads this operational data and generates enterprise artifacts: purchase orders, invoices, GL journal entries, payments, and the friction layer (duplicate suppliers, 3-way match variances, bad debt). This mirrors how real ERP systems record financial transactions after physical events occur. The separation ensures that financial data is always consistent with the underlying operations while allowing controlled data quality issues to be injected independently.
 
 ### Warm-Start Convergence
 
-The 365-day dataset starts from a pre-converged state — inventory levels, in-transit shipments, and pipeline stock are initialized to steady-state values. This means day 1 is operationally realistic, not a cold-start ramp. A 3-day stabilization period at the beginning allows minor transients to settle before the full simulation begins.
+The primary operational mode uses warm-start initialization from a previously converged run — inventory levels, in-transit shipments, and pipeline stock are loaded from parquet snapshots of a prior simulation. This means day 1 is operationally realistic, not a cold-start ramp. Integral Priming ensures that on-hand inventory is set to `Target - Pipeline - WIP`, preventing the double-counting that would otherwise cause a multi-month inventory drain transient. A 3-day stabilization period at the beginning allows minor transients to settle before the full simulation begins.
 
 ---
 
 ## 7. Operating Performance
 
-The simulated year produces a realistic set of operating metrics that reflect the Service–Cost–Cash tradeoffs inherent in PCG's supply chain configuration. These metrics can be independently derived from the raw data in the 38 ERP tables.
+The simulated year produces a realistic set of operating metrics that reflect the Service-Cost-Cash tradeoffs inherent in PCG's supply chain configuration. These metrics can be independently derived from the raw data in the 38 ERP tables.
+
+> **Note:** Exact metrics vary by run configuration (run length, warm-start state, config parameters). Values below are representative of a typical 340-365 day run. The demand-centric replenishment model achieves near-perfect last-mile fill rate in steady state.
 
 **Exhibit H: Supply Chain Triangle**
 
-| Dimension | Metric | Value |
+| Dimension | Metric | Typical Range |
 |---|---|---|
-| **Service** | Store Fill Rate | 94.4% |
-| | — A-items | 98.4% |
-| | — B-items | 94.5% |
-| | — C-items | 88.1% |
-| | Perfect Order Rate | 97.5% |
-| **Cash** | Inventory Turns | 12.25× |
-| | Cash-to-Cash Cycle | 14.9 days |
-| **Cost** | Truck Fill Rate (FTL) | 96.3% |
-| | OEE | 53.8% |
-| | Gross Margin | 23.2% |
+| **Service** | Store Fill Rate | 95-100% |
+| | Return Rate | <0.1% |
+| **Cost** | COGS / Revenue | 65-70% |
+| | Freight / Revenue | 4-6% |
+| | Gross Margin | 20-23% |
+| **Cash** | DSO | 35-42 days |
+| | DPO | ~45 days (config-driven) |
+| | DIO | 35-45 days |
+| | Cash-to-Cash Cycle | 25-40 days |
 
-The ABC-tiered fill rate pattern is characteristic of real FMCG operations: A-items (fast movers) receive production and allocation priority, achieving near-perfect availability, while C-items (slow movers) experience more frequent stockouts due to longer production cycles and lower safety stock coverage.
+The ABC-tiered pattern characteristic of real FMCG operations is preserved: A-items (fast movers) receive production and allocation priority, achieving near-perfect availability, while C-items (slow movers) experience more frequent stockouts due to longer production cycles and lower safety stock coverage. With the demand-centric model, overall fill rate is substantially higher than under traditional outflow-based replenishment.
 
-**Exhibit I: P&L Summary**
+**Exhibit I: P&L Summary (Illustrative ~340-Day Run)**
 
 | Line | Amount |
 |---|---|
-| Revenue | $38.3B |
-| Cost of Goods Sold | ($25.8B) |
-| Freight Expense | ($1.75B) |
-| Manufacturing Overhead | ($1.63B) |
-| Returns & Bad Debt | ($0.21B) |
-| **Gross Profit** | **$8.9B (23.2%)** |
+| Revenue | ~$25B |
+| Cost of Goods Sold | (~$17B) |
+| Freight Expense | (~$1.3B) |
+| Manufacturing Overhead | (~$1.3B) |
+| Returns & Bad Debt | (~$0.14B) |
+| **Gross Profit** | **~$5.3B (~21-22%)** |
 
-Freight represents 4.6% of revenue — consistent with industry benchmarks for a primarily domestic FTL network. Manufacturing overhead includes labor (proportional to material cost by category) and facility costs. Bad debt ($189M) arises from the 0.5% of AR invoices that are never collected, a controlled friction parameter discussed in Section 9.
+Freight represents approximately 5% of revenue — consistent with industry benchmarks for a primarily domestic FTL network. Manufacturing overhead includes labor (proportional to material cost by category) and facility costs. Bad debt (~$123M) arises from the 0.5% of AR invoices that are never collected, a controlled friction parameter discussed in Section 9. Revenue scales roughly linearly with run length; a full 365-day run produces ~$38B.
 
 ---
 
 ## 8. The Enterprise Dataset
 
-The ERP export contains 38 normalized tables organized across nine domains, covering the full order-to-cash and procure-to-pay cycles. Master data tables (14 tables) define the structural entities — suppliers, plants, SKUs, formulas, locations, channels, chart of accounts, and the transport network. Transactional tables (24 tables) capture the operational events — orders, shipments, production batches, inventory snapshots, invoices, payments, and journal entries. The schema follows third normal form with foreign key relationships that enable cross-domain joins.
+The ERP export contains 38 normalized tables organized across ten domains, covering the full order-to-cash and procure-to-pay cycles. Master data tables (14 tables) define the structural entities — suppliers, plants, SKUs, bulk intermediates, formulas, locations, channels, chart of accounts, and the transport network. Transactional tables (24 tables) capture the operational events — orders, shipments, production batches, inventory snapshots, invoices, payments, and journal entries. The schema follows third normal form with foreign key relationships that enable cross-domain joins.
 
-**Exhibit J: Dataset by Domain**
+**Exhibit J: Dataset by Domain (Illustrative ~340-Day Run)**
 
 | Domain | Tables | Key Tables | Rows |
 |---|---|---|---|
-| Source (Procurement) | 7 | purchase_orders, goods_receipts, ap_invoices | 12.2M |
-| Transform (Manufacturing) | 7 | work_orders, batches, batch_ingredients | 1.4M |
-| Product (SKU Master) | 2 | skus, bulk_intermediates | 566 |
-| Order (Demand) | 3 | orders, order_lines | 63.3M |
-| Fulfill (Outbound) | 5 | shipments, shipment_lines, inventory | 178M |
-| Logistics | 1 | route_segments | 4K |
-| Plan | 1 | demand_forecasts | 199K |
-| Return | 3 | returns, disposition_logs | 215K |
-| Finance | 9 | gl_journal, ap/ar_invoices, payments | 139M |
-| **Total** | **38** | — | **~395M** |
+| Source (Procurement) | 7 | purchase_orders, goods_receipts, ap_invoices, ap_payments | ~19.2M |
+| Transform (Manufacturing) | 3 | work_orders, batches, batch_ingredients | ~1.2M |
+| Product (Master) | 4 | skus, bulk_intermediates, formulas, formula_ingredients | ~5.4K |
+| Order (Demand) | 2 | orders, order_lines | ~57.4M |
+| Fulfill (Outbound) | 3 | shipments, shipment_lines, inventory | ~148M |
+| Logistics | 1 | route_segments | ~4K |
+| Plan | 1 | demand_forecasts | ~191K |
+| Return | 3 | returns, return_lines, disposition_logs | ~199K |
+| Finance | 5 | gl_journal, ar_invoices, ar_invoice_lines, ar_receipts, invoice_variances | ~104.3M |
+| Reference | 9 | suppliers, ingredients, plants, DCs, retail_locations, channels, chart_of_accounts, production_lines, supplier_ingredients | ~4K |
+| **Total** | **38** | — | **~330M** |
 
-The five largest tables — inventory snapshots (98.6M), shipment lines (71.6M), order lines (61.9M), GL journal (58.9M), and AR invoice lines (58.4M) — account for 88% of total rows. These tables are the primary targets for analytical queries and integration testing.
+The five largest tables — inventory snapshots (79.2M), shipment lines (62.6M), order lines (56.1M), AR invoice lines (52.7M), and GL journal (48.4M) — account for approximately 90% of total rows. These tables are the primary targets for analytical queries and integration testing. Row counts scale with run length; a full 365-day run produces ~400M rows.
 
 ### General Ledger
 
@@ -267,12 +294,14 @@ The GL journal is the financial backbone of the dataset. Every physical event �
 
 | Property | Value |
 |---|---|
-| Total entries | 58.9 million |
-| Balance check | $2,194.3B debits = $2,194.3B credits (balanced to the penny) |
-| Event types | 7: goods_receipt, production, shipment, return, payment, receipt, bad_debt |
-| Chart of accounts | 14 accounts across asset, liability, revenue, and expense categories |
+| Total entries | ~48.4M |
+| Balance check | ~$1,705B debits = ~$1,705B credits (imbalance ~$2) |
+| Reference types | 11: goods_receipt, production, shipment, freight, sale, return, payment, receipt, bad_debt, price_variance, qty_variance |
+| Chart of accounts | 14 accounts: 6 asset, 1 liability, 2 revenue, 5 expense |
 | Reference traceability | 100% of entries link to source transaction via reference_id |
-| Node attribution | 99% of physical events carry originating facility; treasury events unattributed by design |
+| Node attribution | ~99% of physical events carry originating facility; treasury events (payment, receipt, bad_debt) unattributed by design |
+
+The 14-account chart of accounts includes: Cash (1000), Raw Material Inventory (1100), Work In Process (1120), Finished Goods Inventory (1130), In-Transit Inventory (1140), Accounts Receivable (1200), Accounts Payable (2100), Revenue (4100), Discount Income (4200), Cost of Goods Sold (5100), Returns Expense (5200), Freight Expense (5300), Manufacturing Overhead (5400), and Bad Debt Expense (5500).
 
 ---
 
@@ -280,44 +309,56 @@ The GL journal is the financial backbone of the dataset. Every physical event �
 
 The dataset intentionally includes controlled data quality issues that mirror real enterprise systems. These are not bugs — they are a feature designed to test entity resolution, record matching, anomaly detection, and data cleaning pipelines. Every friction parameter is seeded deterministically for reproducibility.
 
-The friction layer operates across four categories:
+The friction layer operates across four tiers:
 
-- **Entity resolution** — duplicate supplier records and legacy SKU codes create the same real-world ambiguity that plagues master data management in large enterprises.
-- **Three-way match failures** — invoiced prices and quantities that don't match purchase orders, requiring variance investigation and reconciliation.
-- **Data quality gaps** — missing foreign keys, duplicate invoices, and status inconsistencies that test referential integrity checks.
-- **Payment timing noise** — early/late payments around contractual terms, early-pay discounts, and bad debt that affect working capital calculations.
+**Tier 1 — Entity Resolution:** Duplicate supplier records (12%, "-ALT" suffix) and legacy SKU codes (4.2%, "-OLD" suffix with `supersedes_sku_id` foreign key) create the same real-world ambiguity that plagues master data management in large enterprises. SKU alias chains are guaranteed to be depth-1 (no multi-generation chains), with no cycles and valid foreign keys to active target SKUs.
+
+**Tier 2 — Three-Way Match Failures:** Invoiced prices differ from PO prices by 2-15% on 8.0% of AP invoice lines (price variance), and received quantities differ from ordered quantities by 1-10% on 5.0% of lines (quantity variance). All variances are tracked in the `invoice_variances` table with the original PO value, invoiced value, and variance amount — providing ground truth for match-failure detection algorithms.
+
+**Tier 3 — Data Quality Gaps:** Null foreign keys on AP invoices (2% missing `gr_id`), duplicate invoices (0.5%, "-DUP" suffix, each with its own line items), and GL rounding imbalance on approximately 4 days across the full run (by design, reflecting real-world penny rounding in high-volume accounting).
+
+**Tier 4 — Payment Timing:** Early-pay discounts (10% of AP payments receive a 2% discount for payment within 10 days), bad debt (0.5% of AR invoices are never collected, with corresponding GL bad_debt entries), and payment timing noise (+/-5-7 days around contractual terms).
 
 **Exhibit L: Friction Layer**
 
-| Issue | Rate | Example |
+| Issue | Rate | Mechanism |
 |---|---|---|
 | Duplicate suppliers | 12% | Same supplier, different name/code ("-ALT" suffix) |
-| SKU renames | 4.2% | Legacy codes still in transaction history ("-OLD" suffix) |
-| Invoice price variance | 8.0% | Invoiced unit price differs from PO price by 2–15% |
-| Invoice quantity variance | 5.0% | Received quantity differs from ordered quantity by 1–10% |
-| Duplicate invoices | 0.5% | Double-billed invoices ("-DUP" suffix) |
-| Missing foreign keys | 1–2% | Null supplier_id on AP invoices, null references in GL |
-| Bad debt | 0.5% | AR invoices that are never collected |
-| Payment timing noise | ±5–7 days | Early/late payments around contractual terms |
+| SKU renames | 4.2% | Legacy codes in transaction history ("-OLD" suffix, `supersedes_sku_id`) |
+| Invoice price variance | 8.0% | Invoiced unit price differs from PO price by 2-15% |
+| Invoice quantity variance | 5.0% | Received quantity differs from ordered quantity by 1-10% |
+| Duplicate invoices | 0.5% | Double-billed invoices ("-DUP" suffix, with line items) |
+| Missing foreign keys | ~2% | Null `gr_id` on AP invoices |
+| GL rounding imbalance | ~4 days | Daily imbalance >$0.10 due to high-volume penny rounding |
+| Bad debt | 0.5% | AR invoices never collected (GL bad_debt entries) |
+| Payment timing noise | +/-5-7 days | Early/late payments around contractual terms |
 | Early-pay discounts | 10% | 2% discount if paid within 10 days |
 
-All friction rates are independently verifiable from the data. For example, the duplicate supplier rate can be confirmed by counting suppliers whose name contains "-ALT" relative to the total supplier count. The price variance rate can be confirmed from the invoice_variances table. Because every friction parameter is controlled and documented, the dataset provides a known ground truth for benchmarking data quality tools — analysts know exactly how many duplicates, mismatches, and gaps exist and can measure their detection rate against it.
+All friction rates are independently verifiable from the data and confirmed within +/-1% of configured targets. For example, the duplicate supplier rate can be confirmed by counting suppliers whose code contains "-ALT" relative to the base supplier count. The price variance rate can be confirmed from the `invoice_variances` table. Because every friction parameter is controlled and documented, the dataset provides a known ground truth for benchmarking data quality tools — analysts know exactly how many duplicates, mismatches, and gaps exist and can measure their detection rate against it.
 
 ---
 
 ## 10. Diagnostic Validation
 
-The dataset has been validated by two independent diagnostic suites that together evaluate 99 questions across physics compliance, financial integrity, process coverage, and data quality.
+The dataset has been validated by two independent diagnostic suites and a VKG benchmark question set that together provide comprehensive coverage of physics compliance, financial integrity, process coverage, data quality, and analytical queryability.
 
-**Supply chain diagnostic (35 questions):** Validates the operational data against physics laws and industry benchmarks. Checks mass balance conservation, Little's Law consistency, echelon flow stability, fill rate by ABC tier, inventory turns, OEE, bullwhip ratio, and forecast accuracy. Result: 5 GREEN / 3 YELLOW / 0 RED across the executive scorecard. All physics checks pass. The three YELLOW indicators reflect deliberate design choices — fill rate (94.4%) prioritizes inventory efficiency over 97%+ service, OEE (53.8%) reflects realistic utilization with changeovers and demand variability, and inventory turns (12.25×) slightly exceed the benchmark range.
+**Supply chain diagnostic (35 questions):** Validates the operational data against physics laws and industry benchmarks across 8 sections: physics, scorecard, service, inventory, flow, manufacturing, financial, and deep-dive. Checks mass balance conservation, Little's Law consistency, echelon flow stability, fill rate by ABC tier, inventory turns, OEE, bullwhip ratio, and forecast accuracy. All physics checks pass.
 
-**ERP database diagnostic (64 questions):** Validates the enterprise data layer against the operational data. Checks physical-financial reconciliation (do GL entries match shipments and batches?), SCOR process compliance (is every process domain populated?), temporal and causal integrity (do events occur in the correct sequence?), friction layer audit (are data quality issues injected at the configured rates?), and digital thread traceability (can every finished good be traced back through batches, ingredients, and suppliers?). Result: **62 PASS / 2 WARN / 0 FAIL**.
+**ERP database diagnostic (59 questions):** Validates the enterprise data layer against the operational data across 10 sections: data landscape, physical-financial reconciliation, SCOR Source/Make/Deliver/Return processes, Desmet's Triangle metrics, temporal and causal integrity, friction layer audit, and digital thread traceability. Checks include GL balance verification, SCOR process compliance, temporal sequencing, friction rate auditing, and end-to-end procurement chain tracing.
+
+**VKG benchmark questions (85 questions):** Tests the dataset's ability to support realistic analytical queries using real entity codes across 9 sections: lookups and joins, SKU aliases and BOM depth, BOM explosion and cost rollup, transport network analysis, cross-domain composition, multi-graph and polymorphism, data integrity and metamodel, lifecycle and flow analysis, and end-to-end traceability.
+
+**Total: 35 + 59 + 85 = 179 validation questions.**
 
 Key validations:
 
-- GL balanced to the penny across all 365 days — zero imbalance on any single day
+- GL balanced to ~$2 across 430 days (4 days with >$0.10 imbalance due to rounding noise — by design)
 - Zero time-travel violations — no payment before invoice, no arrival before shipment, no goods receipt before purchase order
-- 100% digital thread coverage — every GL entry links to its source transaction via reference_id
-- Full procurement chain traceability — 96% of goods receipts can be traced through AP invoice to payment
+- 100% digital thread coverage — all 11 reference types link to source transactions via reference_id
+- 96% procurement chain traceability — GR → AP invoice → payment
 - All 38 tables populated with non-zero row counts
-- Friction rates within ±1% of configured targets across all nine categories
+- Friction rates within +/-1% of configured targets across all categories
+- Variable BOM depth validated — 13 PREMIX sub-intermediates, 9 three-level BOM chains, 10 diamond dependencies
+- Real entity names — 78% of ingredients and 100% of suppliers carry descriptive real-world names
+- Lead time diversity — 5-72 day range, 55 distinct values across LOCAL/REGIONAL/GLOBAL sourcing tiers
+- Batch ingredient variance — +/-3% recording variance confirmed across 983K ingredient records

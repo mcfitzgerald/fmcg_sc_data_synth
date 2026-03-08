@@ -30,41 +30,27 @@ def generate_friction(
     *,
     main_db: duckdb.DuckDBPyConnection | None = None,
 ) -> dict[str, int]:
-    """Apply friction mutations to clean ERP CSVs.
+    """Apply friction mutations to ERP tables.
 
-    Opens a fresh DuckDB connection, imports tables from the main DB via Arrow
-    transfer (P7) or falls back to CSV import, applies tiers 1-5, and
-    re-exports modified tables.
+    When main_db is provided, operates directly on its tables (tables must
+    already be renamed to short names by caller). No CSV import/export.
+
+    When main_db is None, opens own DuckDB connection and imports/exports CSVs.
 
     Returns a stats dict with counts of affected rows per tier.
     """
     fc = cfg.friction
     stats: dict[str, int] = {}
 
-    db = duckdb.connect()
-    db.execute(f"SELECT setseed({fc.seed / 10000.0})")  # DuckDB setseed range 0.0-1.0
-
-    trans_dir = output_dir / "transactional"
-    master_dir = output_dir / "master"
-
-    # P7: Transfer tables from main DuckDB via Arrow (avoids CSV re-parse)
-    _tables_to_transfer = {
-        "ap_invoices": "erp_ap_invoices",
-        "ap_invoice_lines": "erp_ap_invoice_lines",
-        "ar_invoices": "erp_ar_invoices",
-        "gl_journal": "erp_gl_journal",
-        "goods_receipts": "erp_goods_receipts",
-        "shipments": "erp_shipments",
-    }
     if main_db is not None:
-        for local_name, main_name in _tables_to_transfer.items():
-            arrow_tbl = main_db.execute(f"SELECT * FROM {main_name}").fetch_arrow_table()
-            db.execute(f"CREATE TABLE {local_name} AS SELECT * FROM arrow_tbl")
-        # Master tables are CSV-only (not in main_db)
-        _import_csv(db, "suppliers", master_dir / "suppliers.csv")
-        _import_csv(db, "skus", master_dir / "skus.csv")
+        # Use main DB directly — tables already renamed to short names
+        db = main_db
+        own_connection = False
     else:
-        # Fallback: import from CSV
+        db = duckdb.connect()
+        own_connection = True
+        trans_dir = output_dir / "transactional"
+        master_dir = output_dir / "master"
         _import_csv(db, "suppliers", master_dir / "suppliers.csv")
         _import_csv(db, "skus", master_dir / "skus.csv")
         _import_csv(db, "ap_invoices", trans_dir / "ap_invoices.csv")
@@ -73,6 +59,8 @@ def generate_friction(
         _import_csv(db, "gl_journal", trans_dir / "gl_journal.csv")
         _import_csv(db, "goods_receipts", trans_dir / "goods_receipts.csv")
         _import_csv(db, "shipments", trans_dir / "shipments.csv")
+
+    db.execute(f"SELECT setseed({fc.seed / 10000.0})")  # DuckDB setseed range 0.0-1.0
 
     # Build AP invoice → receiving plant node_id lookup
     # Chain: ap_invoices → goods_receipts → shipments → gl_journal goods_receipt entries
@@ -134,23 +122,6 @@ def generate_friction(
     db.execute("DROP TABLE gl_journal")
     db.execute("ALTER TABLE gl_journal_sorted RENAME TO gl_journal")
 
-    # ── Re-export modified tables ──────────────────────────────
-    _export_csv(db, "suppliers", master_dir / "suppliers.csv")
-    _export_csv(db, "skus", master_dir / "skus.csv")
-    # ap_invoices: ordered export so friction duplicates don't break monotonicity
-    db.execute(f"""
-        COPY (SELECT * FROM ap_invoices ORDER BY transaction_sequence_id, id)
-        TO '{trans_dir / "ap_invoices.csv"}' (HEADER, DELIMITER ',')
-    """)
-    _export_csv(db, "ap_invoice_lines", trans_dir / "ap_invoice_lines.csv")
-    _export_csv(db, "ar_invoices", trans_dir / "ar_invoices.csv")
-    _export_csv(db, "gl_journal", trans_dir / "gl_journal.csv")
-
-    # New tables (always exported, even if empty — schema consistency)
-    _export_csv(db, "invoice_variances", trans_dir / "invoice_variances.csv")
-    _export_csv(db, "ap_payments", trans_dir / "ap_payments.csv")
-    _export_csv(db, "ar_receipts", trans_dir / "ar_receipts.csv")
-
     # ── Post-friction GL balance assertion ─────────────────────
     total_dr, total_cr = db.execute("""
         SELECT SUM(debit_amount), SUM(credit_amount) FROM gl_journal
@@ -163,7 +134,24 @@ def generate_friction(
     else:
         logger.info("  Post-friction GL balanced: diff=%.4f", diff)
 
-    db.close()
+    if own_connection:
+        # Standalone mode: export to CSV
+        trans_dir = output_dir / "transactional"
+        master_dir = output_dir / "master"
+        _export_csv(db, "suppliers", master_dir / "suppliers.csv")
+        _export_csv(db, "skus", master_dir / "skus.csv")
+        db.execute(f"""
+            COPY (SELECT * FROM ap_invoices ORDER BY transaction_sequence_id, id)
+            TO '{trans_dir / "ap_invoices.csv"}' (HEADER, DELIMITER ',')
+        """)
+        _export_csv(db, "ap_invoice_lines", trans_dir / "ap_invoice_lines.csv")
+        _export_csv(db, "ar_invoices", trans_dir / "ar_invoices.csv")
+        _export_csv(db, "gl_journal", trans_dir / "gl_journal.csv")
+        _export_csv(db, "invoice_variances", trans_dir / "invoice_variances.csv")
+        _export_csv(db, "ap_payments", trans_dir / "ap_payments.csv")
+        _export_csv(db, "ar_receipts", trans_dir / "ar_receipts.csv")
+        db.close()
+
     return stats
 
 

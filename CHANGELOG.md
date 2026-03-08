@@ -5,6 +5,69 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.94.0] - 2026-03-08
+
+### Feat: ERP Deferred Export Architecture + Dual Format Support
+
+Architectural refactor of the ERP pipeline: all tables now persist in DuckDB memory through the full pipeline, with export deferred to a centralized `_export_all()` step. Adds `--format parquet` (default) and `--format csv` output modes. Fixes memory stall and duplicate GL entries.
+
+#### Deferred Export (`__main__.py`, `transactional.py`, `gl_journal.py`, `invoices.py`)
+- **All erp_* tables stay in DuckDB** — no inline CSV writes during Phases 2-3. Tables are created as DuckDB TABLEs
+  (large tables via SQL, small tables via `_register_csv_table()`).
+- **Centralized `_export_all()`** — exports all 24 DuckDB tables + master CSVs at end. Uses `schema.py` column
+  definitions for column selection (strips internal columns like `source_sim_id`).
+- **`--format` CLI flag** — `parquet` (default, ZSTD compression) or `csv`. Master CSVs auto-converted to parquet
+  when format is parquet.
+- **Memory fix:** pq_* parquet inputs registered as VIEWs (not materialized TABLEs) to stay within 10GB DuckDB
+  memory limit. Prevents 20+ minute stall at Phase 3 costed_shipments.
+- **Intermediate cleanup** — VIEWs and lookup TABLEs dropped between Phase 3 and friction to free ~4GB.
+
+#### Friction Layer Simplification (`friction.py`)
+- **Direct main DB operation** — when `main_db` provided, friction operates directly on renamed tables in the
+  main DuckDB session (no Arrow transfer, no CSV round-trip, no second connection).
+- **Table rename dance** in `__main__.py`: `erp_` → short names → friction → rename back.
+- Standalone CSV mode preserved as fallback when `main_db` is None.
+
+#### Bug Fix: Duplicate Bulk Intermediate Costs (`gl_journal.py`)
+- Removed unconditional `INSERT INTO ing_cost_tbl` for bulk intermediates — `master_tables._register_in_duckdb()`
+  already inserts them in Phase 1. Duplicate rows in the lookup table inflated GL entries for bulk products.
+
+#### Master Tables DuckDB Registration (`master_tables.py`)
+- New `_register_in_duckdb()` creates `erp_suppliers`, `erp_skus`, and cost/price lookup tables in Phase 1.
+- Cost tables (`sku_cost_tbl`, `sku_price_tbl`, `ing_cost_tbl`) created once, reused by GL + invoices.
+- Added `supersedes_sku_id` column to SKUs schema.
+
+#### Verify Module: DuckDB Mode (`verify.py`)
+- Supports two modes: DuckDB in-memory (fast, ~seconds) and CSV fallback.
+- When `db` parameter provided, queries erp_* tables directly instead of re-reading CSVs from disk.
+- Verification runs before export for faster feedback.
+
+#### Invoices: Skip-if-exists Cost Tables (`invoices.py`)
+- `_register_cost_table()` checks if table exists before recreating — avoids clobbering tables from Phase 1.
+
+#### ERP Database Diagnostic (`diagnose_erp_database.py`)
+- Migrated from `ap_invoices.gr_id` FK to `ap_invoice_gr_map` join table pattern (5 queries updated).
+
+#### Cost Master Enrichment (`cost_master.json`)
+- New `ar_pricing` section: category×channel price multipliers, volume discount tiers.
+- New `dpo_by_kraljic` and `payment_terms_by_kraljic` in working capital.
+- New `freight_variance` section: carrier rate variance, seasonal fuel surcharges, mode variance.
+
+#### Whitepaper Updates (`docs/whitepaper.md`)
+- Updated product counts (640 total), variable BOM depth, lateral RDC links, multi-source DCs.
+- Updated supplier lead times (5-72 days, tier-dependent).
+- Updated SCOR domain table (ap_payments, invoice_variances, PREMIX).
+
+#### Ontology Updates (`pcg.yaml`, `questions.md`)
+- Added missing attributes to 6 entity classes (PurchaseOrder, WorkOrder, Order, Inventory, GLJournalEntry, ARInvoice).
+- Fixed entity codes in benchmark questions (MASS→RET, updated order IDs to match real data).
+
+#### Results
+- **Total:** ~395s (was 418s in v0.93.1 — 6% faster despite deferred export overhead)
+- **335M rows**, 48 pass / 1 warn (pre-existing AP sequence monotonicity from friction)
+- **GL balanced:** diff=0.0002 (pre-friction), diff=2.70 (post-friction)
+- **Dual format:** both `--format csv` and `--format parquet` verified
+
 ## [0.93.1] - 2026-03-07
 
 ### Perf: ERP Generator Performance Optimizations (418s, -33%)

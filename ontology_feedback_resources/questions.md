@@ -16,7 +16,7 @@ Questions are written from the perspective of senior supply chain, finance, and 
 
 **Q04.** List all Oral Care SKUs in the Premium segment with a price per case above $45. Include the brand and whether the SKU is currently active.
 
-**Q05.** Show me every line on order ORD-1-GROCERY-DC-001-11 — SKU, quantity in cases, unit price, and line status.
+**Q05.** Show me every line on order ORD-1-GRO-DC-001-28 — SKU, quantity in cases, unit price, and line status.
 
 **Q06.** For formula FORM-BULK-OC-ORIGINAL-027, which suppliers can provide the required ingredients? Show the ingredient name, supplier name, and the supplier's quoted unit cost.
 
@@ -76,7 +76,7 @@ Questions are written from the perspective of senior supply chain, finance, and 
 
 ## Section 4: Transport Network Analysis (Q29–Q40)
 
-**Q29.** What is the shortest route by distance from the Dallas plant (PLANT-TX) to retail location STORE-MASS-001-0042? Show me every hop and the cumulative kilometers.
+**Q29.** What is the shortest route by distance from the Dallas plant (PLANT-TX) to retail location STORE-RET-001-0042? Show me every hop and the cumulative kilometers.
 
 **Q30.** Now find the fastest route from Dallas to that same retail location — optimize for transit time in hours, not distance. Does the fastest path differ from the shortest?
 
@@ -116,11 +116,11 @@ Questions are written from the perspective of senior supply chain, finance, and 
 
 **Q46.** What is the total AP invoice amount for all ingredients that go into SKU-ORAL-005's bill of materials? Trace the BOM, find each ingredient's supplier, and sum their AP invoices for the year.
 
-**Q47.** We have a rush order at retail location STORE-MASS-001-0100. Which DC currently has inventory of SKU-HOME-376, and what is the shortest route from that DC to the retail location? Find the optimal fulfillment source.
+**Q47.** We have a rush order at retail location STORE-RET-001-0100. Which DC currently has inventory of SKU-HOME-376, and what is the shortest route from that DC to the retail location? Find the optimal fulfillment source.
 
 **Q48.** Show me all work orders in "in_progress" status that use formulas containing Glycerin USP (ACT-HUMECTANT-001). I need to know our active production commitment to glycerin-dependent products.
 
-**Q49.** Trace the full supply chain for order ORD-100-GROCERY-DC-001-12045: show the order lines, the SKUs on each line, the formula behind each SKU, every ingredient in those formulas, and the suppliers who provide them. Give me the full six-hop picture.
+**Q49.** Trace the full supply chain for order ORD-100-GRO-DC-001-28: show the order lines, the SKUs on each line, the formula behind each SKU, every ingredient in those formulas, and the suppliers who provide them. Give me the full six-hop picture.
 
 **Q50.** For each finished SKU in the Oral Care category, compare the total AR invoice revenue against the total BOM raw material cost. Which SKUs have the healthiest margin, and which are underwater?
 
@@ -130,7 +130,7 @@ Questions are written from the perspective of senior supply chain, finance, and 
 
 **Q51.** For SKU-ORAL-001, give me the grand unified sourcing view: every raw ingredient, which suppliers provide it, the cheapest inbound shipping route from each supplier to the Dallas plant (PLANT-TX), and the outbound route from Dallas to each retail location that orders this SKU. End-to-end.
 
-**Q52.** A customer filed a quality complaint about order ORD-100-MASS-DC-001-9876. Trace backward: which production batch filled that order, what formula was used, what ingredients were consumed, and which suppliers provided them? I need the full genealogy.
+**Q52.** A customer filed a quality complaint about order ORD-100-RET-DC-001-42. Trace backward: which production batch filled that order, what formula was used, what ingredients were consumed, and which suppliers provided them? I need the full genealogy.
 
 **Q53.** What is the fastest route from any manufacturing plant to retail location STORE-PHARM-001-0200, weighted by transit time? The origin type is "plant" but I don't care which one — find the best.
 
@@ -208,4 +208,4 @@ Questions are written from the perspective of senior supply chain, finance, and 
 
 **Q84.** A return was filed under RMA-001-0-1069. Trace the returned SKU back through its production history: which batch produced it, which formula was used, and which ingredients and suppliers were involved? I need to know if the defect traces to a raw material.
 
-**Q85.** What is the cheapest possible path to get SKU-ORAL-001 from raw materials to retail location STORE-MASS-001-0042? Combine the BOM ingredient costs, the cheapest supplier for each ingredient, the lowest-cost inbound transport to PLANT-TX, the production cost, and the cheapest outbound route to the retail location. Give me the total raw-to-shelf unit cost.
+**Q85.** What is the cheapest possible path to get SKU-ORAL-001 from raw materials to retail location STORE-RET-001-0042? Combine the BOM ingredient costs, the cheapest supplier for each ingredient, the lowest-cost inbound transport to PLANT-TX, the production cost, and the cheapest outbound route to the retail location. Give me the total raw-to-shelf unit cost.

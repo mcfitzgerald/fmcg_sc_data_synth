@@ -2,7 +2,7 @@
 # Prism Consumer Goods (PCG) - ERP Supply Chain Ontology
 # ============================================================================
 #
-# Virtual twin declaration for the PCG schema (38 tables, ~395M rows).
+# Virtual twin declaration for the PCG schema (38 tables, ~330-400M rows).
 # Uses class hierarchy via scm_base.yaml imports (is_a, mixins, abstract classes).
 #
 # v3.2 — PREMIX & Status Lifecycle Update:
@@ -57,7 +57,7 @@ name: pcg
 version: "3.2.0"
 description: >-
   Prism Consumer Goods ERP ontology for Virtual Graph.
-  Models a full FMCG supply chain across 8 domains: Source, Transform,
+  Models a full FMCG supply chain across 9 domains: Source, Transform,
   Product, Order, Fulfill, Logistics, Plan, Return, and Finance.
   38 entity classes with class hierarchy (Location, TransactionDocument,
   LineItem), 50 relationships with polymorphic patterns, transport network
@@ -203,7 +203,15 @@ classes:
     attributes:
       po_number:
         range: string
+      supplier_id:
+        range: integer
+      plant_id:
+        range: integer
       order_date:
+        range: integer
+      status:
+        range: string
+      transaction_sequence_id:
         range: integer
 
   PurchaseOrderLine:
@@ -409,8 +417,20 @@ classes:
     attributes:
       wo_number:
         range: string
+      plant_id:
+        range: integer
+      formula_id:
+        range: integer
       planned_quantity_kg:
         range: decimal
+      planned_start_date:
+        range: integer
+      due_date:
+        range: integer
+      status:
+        range: string
+      transaction_sequence_id:
+        range: integer
 
   Batch:
     description: "Production batch output from a work order"
@@ -635,7 +655,15 @@ classes:
         range: string
       day:
         range: integer
+      source_id:
+        range: integer
+      retail_location_id:
+        range: integer
+      status:
+        range: string
       total_cases:
+        range: integer
+      transaction_sequence_id:
         range: integer
 
   OrderLine:
@@ -818,6 +846,10 @@ classes:
         range: integer
       location_type:
         range: LocationType
+      location_id:
+        range: integer
+      sku_id:
+        range: integer
       quantity_cases:
         range: decimal
 
@@ -1009,14 +1041,30 @@ classes:
           }
         ]
     attributes:
+      transaction_sequence_id:
+        range: integer
       entry_date:
         range: integer
+      posting_date:
+        range: integer
+      account_code:
+        range: string
       debit_amount:
         range: decimal
       credit_amount:
         range: decimal
       reference_type:
         range: string
+      reference_id:
+        range: string
+      node_id:
+        range: string
+      product_id:
+        range: string
+      description:
+        range: string
+      is_reversal:
+        range: boolean
 
   APInvoice:
     description: "Accounts payable invoice from supplier"
@@ -1113,10 +1161,24 @@ classes:
     attributes:
       invoice_number:
         range: string
+      customer_location_id:
+        range: integer
+      shipment_id:
+        range: integer
       invoice_date:
+        range: integer
+      due_date:
         range: integer
       total_amount:
         range: decimal
+      currency:
+        range: string
+      channel:
+        range: string
+      status:
+        range: string
+      transaction_sequence_id:
+        range: integer
 
   ARInvoiceLine:
     description: "Line item on an AR invoice"
@@ -2391,7 +2453,7 @@ classes:
       vg:operation_types: '["direct_join"]'
       vg:context: >-
         {
-          "business_logic": "Links GL journal entries to their chart of accounts classification. IMPORTANT: join key is account_code (VARCHAR), NOT id (INTEGER). 58.9M journal entries across 14 accounts.",
+          "business_logic": "Links GL journal entries to their chart of accounts classification. IMPORTANT: join key is account_code (VARCHAR), NOT id (INTEGER). ~48M journal entries across 14 accounts.",
           "traversal_semantics": {
             "inbound": "what GL entries post to this account (account activity)",
             "outbound": "which account this GL entry posts to"

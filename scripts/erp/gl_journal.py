@@ -17,7 +17,6 @@ Seven event types generate DR/CR pairs (each with its own reference_type):
 
 from __future__ import annotations
 
-import csv
 import logging
 from pathlib import Path
 
@@ -37,8 +36,6 @@ def generate_gl_journal(
     cfg: ErpConfig,
 ) -> None:
     """Generate gl_journal.csv with per-shipment/batch double-entry GL via DuckDB."""
-    trans_dir = output_dir / "transactional"
-
     # Register cost/price lookup tables
     _register_cost_tables(db, output_dir)
 
@@ -288,11 +285,7 @@ def generate_gl_journal(
     else:
         logger.info("  GL balanced: DR=CR=%.2f (diff=%.4f)", total_dr, diff)
 
-    # Export
-    db.execute(f"""
-        COPY erp_gl_journal TO '{trans_dir / "gl_journal.csv"}'
-        (HEADER, DELIMITER ',')
-    """)
+    # Export deferred to __main__.py export step
 
 
 def _register_cost_tables(
@@ -314,14 +307,6 @@ def _register_cost_tables(
         db, "ing_cost_tbl",
         output_dir / "master" / "ingredients.csv", "ingredient_code", "cost_per_kg",
     )
-    # Also add bulk costs to ing_cost_tbl
-    bulk_csv = output_dir / "master" / "bulk_intermediates.csv"
-    if bulk_csv.exists():
-        db.execute(f"""
-            INSERT INTO ing_cost_tbl
-            SELECT "bulk_code" as sim_id, CAST("cost_per_kg" AS DOUBLE) as cost
-            FROM read_csv_auto('{bulk_csv}')
-        """)
 
 
 def _maybe_register(

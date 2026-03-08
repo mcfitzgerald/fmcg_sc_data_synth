@@ -1,8 +1,10 @@
 """DuckDB-based transactional table generation.
 
-Reads simulation parquet files and produces normalized transactional CSVs.
-Large tables (orders, shipments) use DuckDB SQL + COPY TO for speed.
-Small tables (<200K rows) use Python iteration.
+Reads simulation parquet files and produces normalized ERP tables in DuckDB.
+Large tables (orders, shipments) use DuckDB SQL — no CSV intermediate.
+Small tables (<200K rows) use Python iteration + DuckDB registration.
+All tables stay in DuckDB for downstream GL/invoices/friction/verify.
+Export to Parquet/CSV is deferred to the final export step.
 """
 
 from __future__ import annotations
@@ -15,7 +17,6 @@ import duckdb
 
 from .config import ErpConfig
 from .id_mapper import IdMapper
-from .master_tables import classify_node
 from .sequence import CAT_MULTIPLIER, DAY_MULTIPLIER
 
 logger = logging.getLogger(__name__)
@@ -75,28 +76,27 @@ def generate_transactional_tables(
     mapper: IdMapper,
     cfg: ErpConfig,
 ) -> None:
-    """Generate all transactional CSV tables from parquet files."""
+    """Generate all transactional tables in DuckDB from parquet files."""
     trans_dir = output_dir / "transactional"
     trans_dir.mkdir(parents=True, exist_ok=True)
 
-    # Register parquet files as views
+    # Register parquet files (hot tables materialized as TABLE)
     _register_parquets(db, input_dir)
 
     # Register helper UDFs and tables
     _register_location_map(db, mapper)
     _register_product_map(db, mapper)
-    _register_distance_map(db, input_dir)
 
     rd = cfg.reporting_date or 999999
 
-    # ── Large tables: DuckDB SQL + COPY TO ────────────────────
-    _generate_orders_duckdb(db, trans_dir, rd)
-    _generate_purchase_orders_duckdb(db, trans_dir, rd)
-    _generate_shipments_duckdb(db, trans_dir, cfg, rd)
-    _generate_goods_receipts_duckdb(db, trans_dir, rd)
-    _generate_inventory_duckdb(db, trans_dir, rd)
+    # ── Large tables: DuckDB SQL (no CSV — stays in DuckDB) ───
+    _generate_orders_duckdb(db, rd)
+    _generate_purchase_orders_duckdb(db, rd)
+    _generate_shipments_duckdb(db, cfg, rd)
+    _generate_goods_receipts_duckdb(db, rd)
+    _generate_inventory_duckdb(db, rd)
 
-    # ── Small tables: Python iteration ────────────────────────
+    # ── Small tables: Python iteration → DuckDB ───────────────
     _generate_work_orders(db, trans_dir, mapper, rd)
     _generate_batches(db, trans_dir, mapper, rd)
     _generate_batch_ingredients(db, trans_dir, mapper, rd)
@@ -110,7 +110,7 @@ def generate_transactional_tables(
 
 
 def _register_parquets(db: duckdb.DuckDBPyConnection, input_dir: Path) -> None:
-    """Register parquet files as DuckDB views."""
+    """Register parquet files as VIEWs (DuckDB reads parquet on demand)."""
     parquets = {
         "pq_orders": "orders.parquet",
         "pq_shipments": "shipments.parquet",
@@ -162,21 +162,13 @@ def _register_product_map(
     )
 
 
-def _register_distance_map(
-    db: duckdb.DuckDBPyConnection, input_dir: Path
-) -> None:
-    """Register distance lookup from raw_links (already loaded in master phase)."""
-    # raw_links is already loaded from master tables phase
-    pass
-
-
 # ── Orders (DuckDB-native) ──────────────────────────────────
 
 
 def _generate_orders_duckdb(
-    db: duckdb.DuckDBPyConnection, trans_dir: Path, reporting_date: int
+    db: duckdb.DuckDBPyConnection, reporting_date: int
 ) -> None:
-    """Generate orders + order_lines via DuckDB SQL + COPY TO."""
+    """Generate erp_orders + erp_order_lines as DuckDB tables."""
     logger.info("  Generating orders (DuckDB)...")
 
     status_case = _lifecycle_case_sql("orders", "MIN(day)", reporting_date)
@@ -203,33 +195,25 @@ def _generate_orders_duckdb(
     """)
 
     count = db.execute("SELECT COUNT(*) FROM erp_orders").fetchone()[0]
-    db.execute(f"""
-        COPY erp_orders TO '{trans_dir / "orders.csv"}'
-        (HEADER, DELIMITER ',')
-    """)
     logger.info("  Order headers: %s", f"{count:,}")
 
-    # Create order lines (inherit status from header)
-    db.execute(f"""
-        COPY (
-            SELECT
-                eo.id as order_id,
-                ROW_NUMBER() OVER (PARTITION BY eo.id ORDER BY o.product_id) as line_number,
-                COALESCE(pm.pk, 0) as sku_id,
-                o.quantity as quantity_cases,
-                COALESCE(o.unit_price, 0.0) as unit_price,
-                eo.status
-            FROM pq_orders o
-            JOIN erp_orders eo ON eo.order_number = o.order_id
-            LEFT JOIN prod_map pm ON pm.sim_id = o.product_id
-            WHERE o.order_id LIKE 'ORD-%'
-        ) TO '{trans_dir / "order_lines.csv"}'
-        (HEADER, DELIMITER ',')
+    # Create order lines
+    db.execute("""
+        CREATE OR REPLACE TABLE erp_order_lines AS
+        SELECT
+            eo.id as order_id,
+            ROW_NUMBER() OVER (PARTITION BY eo.id ORDER BY o.product_id) as line_number,
+            COALESCE(pm.pk, 0) as sku_id,
+            o.quantity as quantity_cases,
+            COALESCE(o.unit_price, 0.0) as unit_price,
+            eo.status
+        FROM pq_orders o
+        JOIN erp_orders eo ON eo.order_number = o.order_id
+        LEFT JOIN prod_map pm ON pm.sim_id = o.product_id
+        WHERE o.order_id LIKE 'ORD-%'
     """)
 
-    line_count = db.execute("""
-        SELECT COUNT(*) FROM pq_orders WHERE order_id LIKE 'ORD-%'
-    """).fetchone()[0]
+    line_count = db.execute("SELECT COUNT(*) FROM erp_order_lines").fetchone()[0]
     logger.info("  Order lines: %s", f"{line_count:,}")
 
 
@@ -237,9 +221,9 @@ def _generate_orders_duckdb(
 
 
 def _generate_purchase_orders_duckdb(
-    db: duckdb.DuckDBPyConnection, trans_dir: Path, reporting_date: int
+    db: duckdb.DuckDBPyConnection, reporting_date: int
 ) -> None:
-    """Generate purchase_orders + purchase_order_lines via DuckDB."""
+    """Generate erp_pos + erp_po_lines as DuckDB tables."""
     logger.info("  Generating purchase orders (DuckDB)...")
 
     status_case = _lifecycle_case_sql("purchase_orders", "MIN(day)", reporting_date)
@@ -264,28 +248,23 @@ def _generate_purchase_orders_duckdb(
     """)
 
     count = db.execute("SELECT COUNT(*) FROM erp_pos").fetchone()[0]
-    db.execute(f"""
-        COPY erp_pos TO '{trans_dir / "purchase_orders.csv"}'
-        (HEADER, DELIMITER ',')
+
+    # PO lines
+    db.execute("""
+        CREATE OR REPLACE TABLE erp_po_lines AS
+        SELECT
+            po.id as po_id,
+            ROW_NUMBER() OVER (PARTITION BY po.id ORDER BY o.product_id) as line_number,
+            COALESCE(pm.pk, 0) as ingredient_id,
+            o.quantity as quantity_kg,
+            COALESCE(o.unit_price, 0.0) as unit_cost,
+            po.status
+        FROM pq_orders o
+        JOIN erp_pos po ON po.po_number = o.order_id
+        LEFT JOIN prod_map pm ON pm.sim_id = o.product_id
+        WHERE o.order_id LIKE 'PO-%'
     """)
 
-    # PO lines (inherit status from header)
-    db.execute(f"""
-        COPY (
-            SELECT
-                po.id as po_id,
-                ROW_NUMBER() OVER (PARTITION BY po.id ORDER BY o.product_id) as line_number,
-                COALESCE(pm.pk, 0) as ingredient_id,
-                o.quantity as quantity_kg,
-                COALESCE(o.unit_price, 0.0) as unit_cost,
-                po.status
-            FROM pq_orders o
-            JOIN erp_pos po ON po.po_number = o.order_id
-            LEFT JOIN prod_map pm ON pm.sim_id = o.product_id
-            WHERE o.order_id LIKE 'PO-%'
-        ) TO '{trans_dir / "purchase_order_lines.csv"}'
-        (HEADER, DELIMITER ',')
-    """)
     logger.info("  POs: %s headers", f"{count:,}")
 
 
@@ -293,10 +272,10 @@ def _generate_purchase_orders_duckdb(
 
 
 def _generate_shipments_duckdb(
-    db: duckdb.DuckDBPyConnection, trans_dir: Path, cfg: ErpConfig,
+    db: duckdb.DuckDBPyConnection, cfg: ErpConfig,
     reporting_date: int,
 ) -> None:
-    """Generate shipments + shipment_lines via DuckDB."""
+    """Generate erp_shipments + erp_shipment_lines as DuckDB tables."""
     logger.info("  Generating shipments (DuckDB)...")
 
     # Register route cost config as a DuckDB table for lookups
@@ -353,37 +332,24 @@ def _generate_shipments_duckdb(
     """)
 
     count = db.execute("SELECT COUNT(*) FROM erp_shipments").fetchone()[0]
-    db.execute(f"""
-        COPY (
-            SELECT id, shipment_number, ship_date, arrival_date,
-                   origin_id, destination_id, status, route_type,
-                   ROUND(freight_cost, 2) as freight_cost,
-                   ROUND(total_weight_kg, 2) as total_weight_kg,
-                   transaction_sequence_id
-            FROM erp_shipments
-        ) TO '{trans_dir / "shipments.csv"}'
-        (HEADER, DELIMITER ',')
-    """)
     logger.info("  Shipment headers: %s", f"{count:,}")
 
     # Shipment lines
-    db.execute(f"""
-        COPY (
-            SELECT
-                es.id as shipment_id,
-                ROW_NUMBER() OVER (PARTITION BY es.id ORDER BY s.product_id) as line_number,
-                COALESCE(pm.pk, 0) as sku_id,
-                s.quantity as quantity_cases,
-                ROUND(s.quantity * COALESCE(rp.weight_kg, 0), 2) as weight_kg
-            FROM pq_shipments s
-            JOIN erp_shipments es ON es.shipment_number = s.shipment_id
-            LEFT JOIN prod_map pm ON pm.sim_id = s.product_id
-            LEFT JOIN raw_products rp ON rp.id = s.product_id
-        ) TO '{trans_dir / "shipment_lines.csv"}'
-        (HEADER, DELIMITER ',')
+    db.execute("""
+        CREATE OR REPLACE TABLE erp_shipment_lines AS
+        SELECT
+            es.id as shipment_id,
+            ROW_NUMBER() OVER (PARTITION BY es.id ORDER BY s.product_id) as line_number,
+            COALESCE(pm.pk, 0) as sku_id,
+            s.quantity as quantity_cases,
+            ROUND(s.quantity * COALESCE(rp.weight_kg, 0), 2) as weight_kg
+        FROM pq_shipments s
+        JOIN erp_shipments es ON es.shipment_number = s.shipment_id
+        LEFT JOIN prod_map pm ON pm.sim_id = s.product_id
+        LEFT JOIN raw_products rp ON rp.id = s.product_id
     """)
 
-    line_count = db.execute("SELECT COUNT(*) FROM pq_shipments").fetchone()[0]
+    line_count = db.execute("SELECT COUNT(*) FROM erp_shipment_lines").fetchone()[0]
     logger.info("  Shipment lines: %s", f"{line_count:,}")
 
 
@@ -411,9 +377,9 @@ def _register_route_costs(db: duckdb.DuckDBPyConnection, cfg: ErpConfig) -> None
 
 
 def _generate_goods_receipts_duckdb(
-    db: duckdb.DuckDBPyConnection, trans_dir: Path, reporting_date: int
+    db: duckdb.DuckDBPyConnection, reporting_date: int
 ) -> None:
-    """Generate goods_receipts + goods_receipt_lines via DuckDB."""
+    """Generate erp_goods_receipts + erp_gr_lines as DuckDB tables."""
     logger.info("  Generating goods receipts (DuckDB)...")
 
     status_case = _lifecycle_case_sql("goods_receipts", "MIN(s.arrival_day)", reporting_date)
@@ -438,25 +404,19 @@ def _generate_goods_receipts_duckdb(
     """)
 
     count = db.execute("SELECT COUNT(*) FROM erp_goods_receipts").fetchone()[0]
-    db.execute(f"""
-        COPY erp_goods_receipts TO '{trans_dir / "goods_receipts.csv"}'
-        (HEADER, DELIMITER ',')
-    """)
 
     # GR lines
-    db.execute(f"""
-        COPY (
-            SELECT
-                gr.id as gr_id,
-                ROW_NUMBER() OVER (PARTITION BY gr.id ORDER BY s.product_id) as line_number,
-                COALESCE(pm.pk, 0) as ingredient_id,
-                s.quantity as quantity_kg
-            FROM pq_shipments s
-            JOIN erp_goods_receipts gr ON gr.gr_number = 'GR-' || s.shipment_id
-            LEFT JOIN prod_map pm ON pm.sim_id = s.product_id
-            WHERE s.target_id LIKE 'PLANT-%'
-        ) TO '{trans_dir / "goods_receipt_lines.csv"}'
-        (HEADER, DELIMITER ',')
+    db.execute("""
+        CREATE OR REPLACE TABLE erp_gr_lines AS
+        SELECT
+            gr.id as gr_id,
+            ROW_NUMBER() OVER (PARTITION BY gr.id ORDER BY s.product_id) as line_number,
+            COALESCE(pm.pk, 0) as ingredient_id,
+            s.quantity as quantity_kg
+        FROM pq_shipments s
+        JOIN erp_goods_receipts gr ON gr.gr_number = 'GR-' || s.shipment_id
+        LEFT JOIN prod_map pm ON pm.sim_id = s.product_id
+        WHERE s.target_id LIKE 'PLANT-%'
     """)
     logger.info("  Goods receipts: %s", f"{count:,}")
 
@@ -465,54 +425,48 @@ def _generate_goods_receipts_duckdb(
 
 
 def _generate_inventory_duckdb(
-    db: duckdb.DuckDBPyConnection, trans_dir: Path, reporting_date: int
+    db: duckdb.DuckDBPyConnection, reporting_date: int
 ) -> None:
-    """Generate inventory.csv — weekly snapshots via DuckDB COPY TO."""
+    """Generate erp_inventory as a DuckDB table — weekly snapshots."""
     logger.info("  Generating inventory (DuckDB, weekly snapshots)...")
 
     max_day = db.execute("SELECT MAX(day) FROM pq_inventory").fetchone()[0]
 
     db.execute(f"""
-        COPY (
-            SELECT
-                ROW_NUMBER() OVER () as id,
-                i.day,
-                CASE
-                    WHEN i.node_id LIKE 'PLANT-%' THEN 'plant'
-                    WHEN i.node_id LIKE 'RDC-%' THEN 'rdc'
-                    WHEN i.node_id LIKE 'STORE-%' THEN 'store'
-                    WHEN i.node_id LIKE 'SUP-%' THEN 'supplier'
-                    ELSE 'customer_dc'
-                END as location_type,
-                COALESCE(lm.pk, 0) as location_id,
-                COALESCE(pm.pk, 0) as sku_id,
-                i.actual_inventory as quantity_cases
-            FROM pq_inventory i
-            LEFT JOIN loc_map lm ON lm.sim_id = i.node_id
-            LEFT JOIN prod_map pm ON pm.sim_id = i.product_id
-            WHERE (i.day % 7 = 0 OR i.day = {max_day})
-                AND i.day <= {reporting_date}
-                AND lm.pk IS NOT NULL AND pm.pk IS NOT NULL
-        ) TO '{trans_dir / "inventory.csv"}'
-        (HEADER, DELIMITER ',')
+        CREATE OR REPLACE TABLE erp_inventory AS
+        SELECT
+            ROW_NUMBER() OVER () as id,
+            i.day,
+            CASE
+                WHEN i.node_id LIKE 'PLANT-%' THEN 'plant'
+                WHEN i.node_id LIKE 'RDC-%' THEN 'rdc'
+                WHEN i.node_id LIKE 'STORE-%' THEN 'store'
+                WHEN i.node_id LIKE 'SUP-%' THEN 'supplier'
+                ELSE 'customer_dc'
+            END as location_type,
+            COALESCE(lm.pk, 0) as location_id,
+            COALESCE(pm.pk, 0) as sku_id,
+            i.actual_inventory as quantity_cases
+        FROM pq_inventory i
+        LEFT JOIN loc_map lm ON lm.sim_id = i.node_id
+        LEFT JOIN prod_map pm ON pm.sim_id = i.product_id
+        WHERE (i.day % 7 = 0 OR i.day = {max_day})
+            AND i.day <= {reporting_date}
+            AND lm.pk IS NOT NULL AND pm.pk IS NOT NULL
     """)
 
-    count_result = db.execute(f"""
-        SELECT COUNT(*) FROM pq_inventory
-        WHERE (day % 7 = 0 OR day = {max_day})
-            AND day <= {reporting_date}
-    """).fetchone()[0]
-    logger.info("  Inventory snapshots: ~%s rows", f"{count_result:,}")
+    count = db.execute("SELECT COUNT(*) FROM erp_inventory").fetchone()[0]
+    logger.info("  Inventory snapshots: %s rows", f"{count:,}")
 
 
-# ── Small tables: Python iteration ───────────────────────────
+# ── Small tables: Python iteration → DuckDB ──────────────────
 
 
 def _generate_work_orders(
     db: duckdb.DuckDBPyConnection, trans_dir: Path, mapper: IdMapper,
     reporting_date: int,
 ) -> None:
-    """Generate work_orders.csv from production_orders.parquet."""
+    """Generate work_orders from production_orders.parquet."""
     logger.info("  Generating work orders...")
 
     rows = db.execute("""
@@ -537,12 +491,13 @@ def _generate_work_orders(
             create_day, due_day, status, seq_id,
         ))
 
-    _write_csv(
-        trans_dir / "work_orders.csv",
-        ["id", "wo_number", "plant_id", "formula_id", "planned_quantity_kg",
-         "planned_start_date", "due_date", "status", "transaction_sequence_id"],
-        wo_out,
-    )
+    headers = [
+        "id", "wo_number", "plant_id", "formula_id", "planned_quantity_kg",
+        "planned_start_date", "due_date", "status", "transaction_sequence_id",
+    ]
+    path = trans_dir / "work_orders.csv"
+    _write_csv(path, headers, wo_out)
+    _register_csv_table(db, "erp_work_orders", path)
     logger.info("  Work orders: %d", len(wo_out))
 
 
@@ -550,7 +505,7 @@ def _generate_batches(
     db: duckdb.DuckDBPyConnection, trans_dir: Path, mapper: IdMapper,
     reporting_date: int,
 ) -> None:
-    """Generate batches.csv from batches.parquet."""
+    """Generate batches from batches.parquet."""
     logger.info("  Generating batches...")
 
     # Build product_id → (category, bom_level) lookup for correct typing
@@ -592,13 +547,14 @@ def _generate_batches(
             qty, yield_pct, day_produced, status, product_type, bom_level, seq_id,
         ))
 
-    _write_csv(
-        trans_dir / "batches.csv",
-        ["id", "batch_number", "wo_id", "plant_id", "formula_id",
-         "product_id", "quantity_kg", "yield_percent", "production_date",
-         "status", "product_type", "bom_level", "transaction_sequence_id"],
-        batch_out,
-    )
+    headers = [
+        "id", "batch_number", "wo_id", "plant_id", "formula_id",
+        "product_id", "quantity_kg", "yield_percent", "production_date",
+        "status", "product_type", "bom_level", "transaction_sequence_id",
+    ]
+    path = trans_dir / "batches.csv"
+    _write_csv(path, headers, batch_out)
+    _register_csv_table(db, "erp_batches", path)
     logger.info("  Batches: %d", len(batch_out))
 
 
@@ -606,7 +562,7 @@ def _generate_batch_ingredients(
     db: duckdb.DuckDBPyConnection, trans_dir: Path, mapper: IdMapper,
     reporting_date: int,
 ) -> None:
-    """Generate batch_ingredients.csv."""
+    """Generate batch_ingredients."""
     logger.info("  Generating batch ingredients...")
 
     rows = db.execute("""
@@ -624,11 +580,10 @@ def _generate_batch_ingredients(
         counter += 1
         bi_out.append((counter, batch_pk, ing_pk, round(qty_kg, 4)))
 
-    _write_csv(
-        trans_dir / "batch_ingredients.csv",
-        ["id", "batch_id", "ingredient_id", "quantity_kg"],
-        bi_out,
-    )
+    headers = ["id", "batch_id", "ingredient_id", "quantity_kg"]
+    path = trans_dir / "batch_ingredients.csv"
+    _write_csv(path, headers, bi_out)
+    _register_csv_table(db, "erp_batch_ingredients", path)
     logger.info("  Batch ingredients: %d", len(bi_out))
 
 
@@ -674,15 +629,24 @@ def _generate_returns(
         ret_lines.append((pk, 1, prod_pk, qty, condition))
         disp_out.append((pk, 1, disposition, qty))
 
-    _write_csv(trans_dir / "returns.csv",
+    ret_path = trans_dir / "returns.csv"
+    _write_csv(ret_path,
                ["id", "return_number", "return_date", "source_id", "dc_id",
                 "status", "transaction_sequence_id"], ret_out)
-    _write_csv(trans_dir / "return_lines.csv",
+    _register_csv_table(db, "erp_returns", ret_path)
+
+    rl_path = trans_dir / "return_lines.csv"
+    _write_csv(rl_path,
                ["return_id", "line_number", "sku_id", "quantity_cases", "condition"],
                ret_lines)
-    _write_csv(trans_dir / "disposition_logs.csv",
+    _register_csv_table(db, "erp_return_lines", rl_path)
+
+    disp_path = trans_dir / "disposition_logs.csv"
+    _write_csv(disp_path,
                ["return_id", "return_line_number", "disposition", "quantity_cases"],
                disp_out)
+    _register_csv_table(db, "erp_disposition_logs", disp_path)
+
     logger.info("  Returns: %d", len(ret_out))
 
 
@@ -690,7 +654,7 @@ def _generate_forecasts(
     db: duckdb.DuckDBPyConnection, trans_dir: Path, mapper: IdMapper,
     reporting_date: int,
 ) -> None:
-    """Generate demand_forecasts.csv."""
+    """Generate demand_forecasts."""
     logger.info("  Generating forecasts...")
 
     rows = db.execute("""
@@ -708,10 +672,13 @@ def _generate_forecasts(
         version = f"FCAST-DAY-{day:03d}"
         fc_out.append((counter, version, prod_pk, "total", day + 1, qty, "statistical"))
 
-    _write_csv(trans_dir / "demand_forecasts.csv",
-               ["id", "forecast_version", "sku_id", "location_type",
-                "forecast_date", "forecast_quantity_cases", "forecast_type"],
-               fc_out)
+    headers = [
+        "id", "forecast_version", "sku_id", "location_type",
+        "forecast_date", "forecast_quantity_cases", "forecast_type",
+    ]
+    path = trans_dir / "demand_forecasts.csv"
+    _write_csv(path, headers, fc_out)
+    _register_csv_table(db, "erp_demand_forecasts", path)
     logger.info("  Forecasts: %d", len(fc_out))
 
 
@@ -727,7 +694,7 @@ def _populate_mapper_from_duckdb(
         shp_rows = db.execute(
             "SELECT shipment_number, id FROM erp_shipments"
         ).fetchall()
-        for sim_id, pk in shp_rows:
+        for sim_id, _pk in shp_rows:
             mapper.get("shipments", sim_id)
     except Exception:
         pass
@@ -737,7 +704,7 @@ def _populate_mapper_from_duckdb(
         gr_rows = db.execute(
             "SELECT gr_number, id FROM erp_goods_receipts"
         ).fetchall()
-        for sim_id, pk in gr_rows:
+        for sim_id, _pk in gr_rows:
             mapper.get("goods_receipts", sim_id)
     except Exception:
         pass
@@ -748,3 +715,14 @@ def _write_csv(path: Path, headers: list[str], rows: list[tuple]) -> None:
         writer = csv.writer(f)
         writer.writerow(headers)
         writer.writerows(rows)
+
+
+def _register_csv_table(
+    db: duckdb.DuckDBPyConnection, table_name: str, csv_path: Path
+) -> None:
+    """Register a CSV file as a DuckDB table for downstream queries."""
+    if csv_path.exists():
+        db.execute(
+            f"CREATE OR REPLACE TABLE {table_name} AS "
+            f"SELECT * FROM read_csv_auto('{csv_path}')"
+        )

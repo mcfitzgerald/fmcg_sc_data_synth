@@ -97,6 +97,9 @@ def generate_master_tables(
     # ── Supplier-ingredient links ──────────────────────────────
     _generate_supplier_ingredients(db, master_dir, mapper)
 
+    # ── Register master tables + cost lookups in DuckDB ──────
+    _register_in_duckdb(db, master_dir)
+
     logger.info("Master tables complete")
 
 
@@ -219,7 +222,7 @@ def _generate_products(
             skus.append(
                 (pk, pid, name, cat_clean, brand or "",
                  upc or 12, weight or 5.0, cost or 10.0,
-                 price or 0.0, vseg or "", True)
+                 price or 0.0, vseg or "", True, None)
             )
 
     _write_csv(
@@ -238,7 +241,8 @@ def _generate_products(
         master_dir / "skus.csv",
         ["id", "sku_code", "name", "category", "brand",
          "units_per_case", "weight_kg", "cost_per_case",
-         "price_per_case", "value_segment", "is_active"],
+         "price_per_case", "value_segment", "is_active",
+         "supersedes_sku_id"],
         skus,
     )
 
@@ -500,6 +504,56 @@ def _generate_supplier_ingredients(
         rows,
     )
     logger.info("Supplier-ingredient links: %d", len(rows))
+
+
+def _register_in_duckdb(
+    db: duckdb.DuckDBPyConnection,
+    master_dir: Path,
+) -> None:
+    """Register master CSVs in DuckDB + build cost/price lookup tables.
+
+    Tables registered:
+      erp_suppliers, erp_skus — needed by friction layer
+      sku_cost_tbl, sku_price_tbl, ing_cost_tbl — needed by GL journal + invoices
+    """
+    for name in ("suppliers", "skus"):
+        csv_path = master_dir / f"{name}.csv"
+        if csv_path.exists():
+            db.execute(
+                f"CREATE OR REPLACE TABLE erp_{name} AS "
+                f"SELECT * FROM read_csv_auto('{csv_path}')"
+            )
+
+    skus_csv = master_dir / "skus.csv"
+    if skus_csv.exists():
+        db.execute(f"""
+            CREATE OR REPLACE TABLE sku_cost_tbl AS
+            SELECT sku_code as sim_id, CAST(cost_per_case AS DOUBLE) as cost
+            FROM read_csv_auto('{skus_csv}')
+        """)
+        db.execute(f"""
+            CREATE OR REPLACE TABLE sku_price_tbl AS
+            SELECT sku_code as sim_id, CAST(price_per_case AS DOUBLE) as cost
+            FROM read_csv_auto('{skus_csv}')
+        """)
+
+    ing_csv = master_dir / "ingredients.csv"
+    if ing_csv.exists():
+        db.execute(f"""
+            CREATE OR REPLACE TABLE ing_cost_tbl AS
+            SELECT ingredient_code as sim_id, CAST(cost_per_kg AS DOUBLE) as cost
+            FROM read_csv_auto('{ing_csv}')
+        """)
+
+    bulk_csv = master_dir / "bulk_intermediates.csv"
+    if bulk_csv.exists():
+        db.execute(f"""
+            INSERT INTO ing_cost_tbl
+            SELECT bulk_code as sim_id, CAST(cost_per_kg AS DOUBLE) as cost
+            FROM read_csv_auto('{bulk_csv}')
+        """)
+
+    logger.info("  Registered master tables + cost lookups in DuckDB")
 
 
 # ── Helpers ────────────────────────────────────────────────────

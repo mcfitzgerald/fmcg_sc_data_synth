@@ -501,16 +501,21 @@ def run_section2(conn: psycopg.Connection) -> dict[str, int]:
         n_gr = cur.fetchone()[0]
         cur.execute("SELECT COUNT(*) FROM ap_invoices")
         n_ap = cur.fetchone()[0]
-        cur.execute("SELECT COUNT(*) FROM ap_invoices WHERE gr_id IS NULL")
+        cur.execute("""
+            SELECT COUNT(*) FROM ap_invoices ai
+            WHERE NOT EXISTS (
+                SELECT 1 FROM ap_invoice_gr_map m WHERE m.invoice_id = ai.id
+            )
+        """)
         n_ap_null_gr = cur.fetchone()[0]
 
     null_gr_rate = _pct(n_ap_null_gr, n_ap)
     print(f"  Purchase Orders: {n_po:,}")
     print(f"  Goods Receipts:  {n_gr:,}")
     print(f"  AP Invoices:     {n_ap:,}")
-    print(f"  AP with null gr_id: {n_ap_null_gr:,} ({null_gr_rate:.1f}%)")
+    print(f"  AP with no GR mapping: {n_ap_null_gr:,} ({null_gr_rate:.1f}%)")
 
-    # Expect ~2% null gr_id from friction
+    # Expect ~2% orphaned from friction
     v = _friction_verdict(null_gr_rate / 100, EXPECTED_FRICTION["null_fk_rate_ap"])
     _kpi_row("Null gr_id Rate", f"{null_gr_rate:.1f}%", f"~{EXPECTED_FRICTION['null_fk_rate_ap'] * 100:.0f}%", v)
     counts[v.lower()] += 1
@@ -1499,7 +1504,8 @@ def run_section7(conn: psycopg.Connection) -> dict[str, int]:
     with conn.cursor() as cur:
         cur.execute("""
             SELECT COUNT(*) FROM ap_invoices ai
-            JOIN goods_receipts gr ON gr.id = ai.gr_id
+            JOIN ap_invoice_gr_map m ON m.invoice_id = ai.id
+            JOIN goods_receipts gr ON gr.id = m.gr_id
             WHERE ai.invoice_date < gr.receipt_date
         """)
         gr_ap_violations = cur.fetchone()[0]
@@ -1682,9 +1688,16 @@ def run_section8(conn: psycopg.Connection) -> dict[str, int]:
     counts[v.lower()] += 1
 
     # Q8.6 — Null FK Rates
-    _q_header("Q8.6", "Null FK Rates — AP gr_id and GL node_id")
+    _q_header("Q8.6", "Null FK Rates — AP GR mappings and GL node_id")
     with conn.cursor() as cur:
-        cur.execute("SELECT COUNT(*), COUNT(CASE WHEN gr_id IS NULL THEN 1 END) FROM ap_invoices")
+        cur.execute("""
+            SELECT COUNT(*),
+                   (SELECT COUNT(*) FROM ap_invoices ai
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM ap_invoice_gr_map m WHERE m.invoice_id = ai.id
+                    ))
+            FROM ap_invoices
+        """)
         n_ap, n_null_gr = cur.fetchone()
         cur.execute("""
             SELECT COUNT(*),
@@ -1921,9 +1934,10 @@ def run_section9(conn: psycopg.Connection) -> dict[str, int]:
         with conn.cursor() as cur:
             cur.execute("""
                 SELECT ai.id, p.id
-                FROM ap_invoices ai
+                FROM ap_invoice_gr_map m
+                JOIN ap_invoices ai ON ai.id = m.invoice_id
                 LEFT JOIN ap_payments p ON p.invoice_id = ai.id
-                WHERE ai.gr_id = %s
+                WHERE m.gr_id = %s
                 LIMIT 1
             """, (grid,))
             chain = cur.fetchone()
