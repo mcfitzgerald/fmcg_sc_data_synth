@@ -270,15 +270,11 @@ def main() -> None:
     # Save ID mapping
     mapper.save(output_dir / "reference" / "id_mapping.json")
 
-    # Generate Neo4j headers + PostgreSQL DDL
+    # Generate Neo4j headers + DuckDB DDL
     from .neo4j_headers import generate_neo4j_headers
-    from .schema import generate_ddl, generate_duckdb_ddl
+    from .schema import generate_duckdb_ddl
 
     generate_neo4j_headers(output_dir)
-
-    schema_path = output_dir / "erp_schema.sql"
-    schema_path.write_text(generate_ddl())
-    logger.info("PostgreSQL DDL written to %s", schema_path)
 
     duckdb_schema_path = output_dir / "erp_schema_duckdb.sql"
     duckdb_schema_path.write_text(generate_duckdb_ddl())

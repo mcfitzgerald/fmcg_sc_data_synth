@@ -2,11 +2,9 @@
 
 Defines all 38 tables with columns, types, constraints, and indexes.
 Used to:
-  1. Generate PostgreSQL DDL (erp_schema.sql) during ERP export
+  1. Generate DuckDB DDL (erp_schema_duckdb.sql) during ERP export
   2. Validate CSV headers match schema definitions
-  3. Generate load scripts
-
-This module replaces the hand-maintained scripts/erp_schema.sql.
+  3. Column selection for DuckDB → file export
 """
 
 from __future__ import annotations

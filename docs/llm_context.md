@@ -129,7 +129,7 @@ After allocation, `AllocationAgent._materialize_orders()` converts surviving lin
 | `scripts/calibrate_config.py` | Physics-based config calibration (capacity, safety stock, DOS targets) |
 | `scripts/run_standard_sim.py` | Standard workflow runner (priming + stabilization + data run) |
 | `scripts/erp/` | **Enterprise Data Generator:** DuckDB-based ETL, sim parquet → 38 normalized tables (335M rows). Default output: `erp.duckdb` file. Also supports `--format parquet` or `--format csv`. |
-| `scripts/erp_schema.sql` | ERP relational schema (PostgreSQL DDL, 38 tables + 24 indexes) |
+| `scripts/erp/schema.py` | ERP schema definitions (38 tables, generates DuckDB DDL) |
 
 ### Validation & Planning Documents
 | Document | Purpose |
@@ -219,8 +219,8 @@ DuckDB-based ETL that transforms sim parquet output into 38 normalized ERP table
 | `verify.py` | Two modes: DuckDB in-memory (fast, queries erp_* tables directly) or CSV fallback. GL balance, COGS/Revenue, reference_id coverage, FK integrity, sequence monotonicity, friction stats. v0.94.0: runs before export for faster feedback. |
 | `neo4j_headers.py` | Neo4j-admin import header files (incl. friction tables) |
 
-**Schema:** `scripts/erp_schema.sql` — 39 tables (9 domains incl. friction), 19 indexes, PostgreSQL DDL.
-**Load scripts:** `data/output/erp/load_postgres.sh`, `data/output/erp/load_neo4j.cypher`
+**Schema:** `scripts/erp/schema.py` — 38 tables (9 domains incl. friction), 24 indexes. Generates `erp_schema_duckdb.sql` at export time.
+**Load scripts:** `data/output/erp/load_neo4j.cypher` (Neo4j LOAD CSV)
 
 **Friction layer (v0.78.0, extended v0.82.0):** Toggled by `cost_master.json` → `friction.enabled`. When enabled, Phase 3.5 injects controlled noise: duplicate suppliers (variant names, ~10%), SKU old-code aliases (~5%, `supersedes_sku_id`), AP invoice price/qty variances (8%/5%), null FKs, duplicate invoices, AR status flips, AP payments, AR receipts, early payment discounts (2%), bad debt writeoffs (0.5%), GL duplicate postings (~0.5%, `-DUP` suffix on `reference_id`), GL rounding imbalances (~1% of days, $0.01-$1.00). New GL accounts: 4200 Discount Income, 5500 Bad Debt Expense.
 

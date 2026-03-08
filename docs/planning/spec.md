@@ -129,9 +129,9 @@ As validation iterates, these areas are probable touchpoints:
 
 **Run:** `poetry run python -m scripts.erp --input-dir data/output --output-dir data/output/erp`
 
-**Output:** `data/output/erp/` — master/ (14 CSVs), transactional/ (22 CSVs), reference/, neo4j_headers/
+**Output:** `data/output/erp/erp.duckdb` (38 tables, ~335M rows). Also: master/ CSVs (intermediates), reference/, neo4j_headers/
 
-**Load scripts:** `load_postgres.sh` (\\copy), `load_neo4j.cypher` (LOAD CSV)
+**Load scripts:** `load_neo4j.cypher` (LOAD CSV). DuckDB file needs no load step.
 
 **Verification (automated):**
 - GL balanced: DR=CR=$759.6B (diff < $0.01)
@@ -157,8 +157,8 @@ As validation iterates, these areas are probable touchpoints:
 - Neo4j graph optimization (relationship property enrichment)
 
 **Reference files:**
-- `scripts/export_erp_format.py` (35-table ETL)
-- `scripts/erp_schema.sql` (36-table DDL)
+- `scripts/erp/` (ERP generator package, 38-table ETL)
+- `scripts/erp/schema.py` (schema definitions, DuckDB DDL generation)
 
 ---
 
@@ -172,7 +172,7 @@ As validation iterates, these areas are probable touchpoints:
 | `docs/planning/triangle.md` | Desmet's SC Triangle (Service/Cost/Cash) | Timeless |
 | `CLAUDE.md` | LLM agent instructions & commands | Current |
 | `CHANGELOG.md` | Detailed version history | Current |
-| `scripts/erp_schema.sql` | ERP DDL (36 tables, Postgres) | Current |
+| `scripts/erp/schema.py` | ERP schema definitions (38 tables, DuckDB DDL) | Current |
 | `docs/planning/archive/` | Historical: intent, roadmap, investigation docs | Archived |
 
 ---

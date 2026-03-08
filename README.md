@@ -40,35 +40,30 @@ poetry run python run_simulation.py --days 1095 --no-logging --snapshot
 poetry run python run_simulation.py --days 365 --streaming --format parquet \
   --warm-start data/output/snapshot
 
-# 5. Generate ERP tables — 38 tables, ~395M rows (~8 min)
+# 5. Generate ERP database — 38 tables, ~335M rows (~6 min)
 poetry run python -m scripts.erp --input-dir data/output --output-dir data/output/erp
 
-# 6. Load into PostgreSQL (~30-60 min)
-psql $DATABASE_URL < scripts/erp_schema.sql
-bash data/output/erp/load_postgres.sh
+# 6. Query directly — no load step needed
+# duckdb data/output/erp/erp.duckdb "SELECT COUNT(*) FROM ap_invoices"
+# Or: python -c "import duckdb; db = duckdb.connect('data/output/erp/erp.duckdb'); ..."
 
 # 7. Run diagnostics (see Diagnostics section below)
 ```
 
 ---
 
-## Loading Into PostgreSQL
+## Using the ERP Database
 
-Database setup is up to you — use Docker, a managed instance, or any PostgreSQL 16+ server. Once you have a running database:
+The ERP generator outputs a single `data/output/erp/erp.duckdb` file containing all 38 tables with indexes. No separate load step is needed — just open the file:
 
-1. **Create the schema** — `scripts/erp_schema.sql` creates 38 tables with foreign key relationships and indexes:
-
-```bash
-psql $DATABASE_URL < scripts/erp_schema.sql
+```python
+import duckdb
+db = duckdb.connect("data/output/erp/erp.duckdb", read_only=True)
+db.execute("SHOW TABLES").fetchall()
+db.execute("SELECT COUNT(*) FROM ap_invoices").fetchone()
 ```
 
-2. **Load the data** — the ERP generator auto-produces `data/output/erp/load_postgres.sh` with `\copy` commands in FK-safe order:
-
-```bash
-bash data/output/erp/load_postgres.sh
-```
-
-The load script uses `\copy` (client-side), so it works with any reachable PostgreSQL instance — local, Docker, or remote. Loading ~395M rows takes approximately 30-60 minutes depending on hardware.
+Alternative output formats are available via `--format parquet` or `--format csv`.
 
 ---
 
@@ -441,7 +436,7 @@ scripts/
 │   ├── diagnose_supply_chain.py   # 35-question operational diagnostic
 │   ├── diagnose_erp_database.py   # 64-question ERP database diagnostic
 │   └── diagnostics/               # Shared analysis infrastructure
-├── erp_schema.sql        # PostgreSQL DDL (38 tables, FKs, indexes)
+├── erp/                  # ERP data generator (38 tables → erp.duckdb)
 └── generate_static_world.py       # World generation entry point
 ```
 
