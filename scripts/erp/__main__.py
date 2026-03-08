@@ -390,6 +390,13 @@ def _export_duckdb(
 
     db.execute("DETACH export_db")
 
+    # Clean up intermediate CSVs — all data is in the .duckdb file now
+    import shutil
+    for subdir in ("master", "transactional"):
+        d = output_dir / subdir
+        if d.exists():
+            shutil.rmtree(d)
+
     file_size_mb = duckdb_path.stat().st_size / (1024 * 1024)
     logger.info("Exported %d tables to %s (%.1f MB)", exported, duckdb_path, file_size_mb)
 

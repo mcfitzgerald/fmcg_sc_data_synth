@@ -17,7 +17,9 @@ ERP generator now outputs a single `erp.duckdb` file containing all 38 tables as
 - **Expanded `DUCKDB_EXPORT_MAP`** — all 14 master tables added (was only suppliers + skus). Total: 38 tables.
 - **Refactored `_export_all()`** — extracted `_get_select_cols()` helper; removed master CSV→Parquet conversion
   block (no longer needed since all masters are in DuckDB).
-- **DuckDB DDL generation** — `erp_schema_duckdb.sql` written alongside `erp_schema.sql`.
+- **DuckDB DDL generation** — `erp_schema_duckdb.sql` written at export time. PostgreSQL DDL (`erp_schema.sql`) removed.
+- **Intermediate CSV cleanup** — `--format duckdb` deletes master/ and transactional/ CSV dirs after export.
+  Output is just `erp.duckdb` + `erp_schema_duckdb.sql` + `reference/` + `neo4j_headers/`.
 - CSV and Parquet formats preserved via `--format csv` / `--format parquet`.
 
 #### Master Table Registration (`master_tables.py`)
