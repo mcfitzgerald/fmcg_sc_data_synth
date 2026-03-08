@@ -1,0 +1,31 @@
+Connection Code (Psycopg 3 - Recommended)
+  Psycopg 3 is the modern standard, offering better performance and native Python type support.
+
+    1 import psycopg
+    2
+    3 # Connection string
+    4 conn_str = "postgresql://postgres:postgres@localhost:5432/erp_db"
+    5
+    6 try:
+    7     # Connect to the database
+    8     with psycopg.connect(conn_str) as conn:
+    9         # Open a cursor to perform database operations
+   10         with conn.cursor() as cur:
+   11             # Run a test query on your 335M row dataset
+   12             cur.execute("SELECT COUNT(*) FROM gl_journal")
+   13             count = cur.fetchone()[0]
+   14             print(f"Connection Successful! Total GL Journal rows: {count:,}")
+   15 except Exception as e:
+   16     print(f"Error connecting to database: {e}")
+
+
+  Important Notes for your 335M Row DB:
+   1. Server-Side Cursors: When querying your massive transactional tables (like gl_journal or
+      inventory), always use a named (server-side) cursor. If you don't, psycopg will try to pull
+      all 79M rows into your Mac's RAM at once, causing a crash.
+       * Psycopg 3: with conn.cursor(name="my_large_query") as cur:
+       * Psycopg 2: cur = conn.cursor('my_large_query')
+   2. Performance: Because we tuned the DB for high performance (shared_buffers=2GB), simple
+      indexed lookups via Python will be near-instant.
+   3. Docker Network: If you ever run your Python script inside another Docker container on the
+      same network, change localhost to erp_db.
