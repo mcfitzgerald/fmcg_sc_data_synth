@@ -31,6 +31,12 @@ ERP generator now outputs a single `erp.duckdb` file containing all 38 tables as
 - **New `generate_duckdb_ddl()`** — translates PostgreSQL types to DuckDB-compatible types:
   `SERIAL` → `INTEGER`, `TEXT` → `VARCHAR`, `VARCHAR(N)` → `VARCHAR`. Keeps `DECIMAL`, `BIGINT`, `BOOLEAN`,
   foreign keys, and indexes.
+- **Foreign keys in DuckDB export** — `generate_create_table_duckdb()` now emits FK constraints (was skipped).
+  Tables are created in dependency order (`TABLES` list) so FKs resolve. Self-referencing FK (`skus.supersedes_sku_id`)
+  is skipped (unsupported by DuckDB). 22 FK constraints queryable via `information_schema.table_constraints`.
+- **New `generate_duckdb_comments()`** — emits `COMMENT ON TABLE` (domain labels, 38 tables) and
+  `COMMENT ON COLUMN` (semantic enum comments, 6 columns). Queryable via `duckdb_tables()` / `duckdb_columns()`
+  for agent discovery.
 
 #### Unified Verification (`verify.py`)
 - **All 14 master tables added to `_TABLE_ALIASES`** — row counts now come uniformly from DuckDB instead of

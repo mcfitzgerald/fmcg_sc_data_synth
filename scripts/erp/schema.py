@@ -827,9 +827,8 @@ def _pg_to_duckdb(pg_type: str) -> str:
 def generate_create_table_duckdb(table_name: str, *, schema: str = "") -> str:
     """Generate a DuckDB CREATE TABLE statement for a single table.
 
-    Includes column types, constraints (NOT NULL, DEFAULT), and primary keys.
-    Foreign keys are omitted — DuckDB doesn't enforce them and they cause
-    dependency-order issues during CREATE.
+    Includes column types, constraints (NOT NULL, DEFAULT), primary keys,
+    and foreign keys.  Self-referencing FKs are skipped (unsupported by DuckDB).
 
     Args:
         table_name: Schema table name (e.g. 'orders', 'suppliers').
@@ -851,6 +850,15 @@ def generate_create_table_duckdb(table_name: str, *, schema: str = "") -> str:
             parts.append(col.constraints)
         col_parts.append(" ".join(parts))
 
+    # Foreign keys (skip self-referencing — DuckDB doesn't support them)
+    # FK references use bare table names — both tables are in the same database.
+    for fk in table.foreign_keys:
+        if fk.ref_table == table_name:
+            continue
+        col_parts.append(
+            f"    FOREIGN KEY ({fk.column}) REFERENCES {fk.ref_table}({fk.ref_column})"
+        )
+
     # Composite primary key
     if table.primary_key:
         col_parts.append(
@@ -867,6 +875,43 @@ def get_column_names(table_name: str) -> list[str]:
     if table is None:
         raise KeyError(f"Unknown table: {table_name}")
     return table.column_names
+
+
+def generate_duckdb_comments(*, schema: str = "") -> list[str]:
+    """Generate COMMENT ON statements for DuckDB tables and columns.
+
+    Uses existing metadata:
+    - Table comments from ``table.domain`` (propagated to tables without explicit domain).
+    - Column comments from ``col.comment`` (e.g. enum value lists).
+
+    Args:
+        schema: Optional schema prefix (e.g. 'export_db').
+
+    Returns:
+        List of ``COMMENT ON …`` SQL strings.
+    """
+    stmts: list[str] = []
+    current_domain = ""
+
+    for table in TABLES:
+        if table.domain:
+            current_domain = table.domain
+        qualified = f"{schema}.{table.name}" if schema else table.name
+
+        # Table-level comment from domain label
+        if current_domain:
+            escaped = current_domain.replace("'", "''")
+            stmts.append(f"COMMENT ON TABLE {qualified} IS '{escaped}'")
+
+        # Column-level comments
+        for col in table.columns:
+            if col.comment:
+                escaped = col.comment.replace("'", "''")
+                stmts.append(
+                    f"COMMENT ON COLUMN {qualified}.{col.name} IS '{escaped}'"
+                )
+
+    return stmts
 
 
 def validate_csv_headers(table_name: str, csv_headers: list[str]) -> list[str]:

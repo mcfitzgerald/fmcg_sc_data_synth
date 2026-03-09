@@ -19,7 +19,14 @@ import pyarrow.parquet as pq
 
 from .config import load_erp_config
 from .id_mapper import IdMapper
-from .schema import INDEXES, TABLE_MAP, generate_create_table_duckdb, get_column_names
+from .schema import (
+    INDEXES,
+    TABLE_MAP,
+    TABLES,
+    generate_create_table_duckdb,
+    generate_duckdb_comments,
+    get_column_names,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -360,45 +367,62 @@ def _export_duckdb(
 
     db.execute(f"ATTACH '{duckdb_path}' AS export_db")
 
-    # First pass: create all tables with DDL (needed for FK references)
+    # Build reverse map: schema_name → ddb_name
+    schema_to_ddb: dict[str, str] = {
+        schema_name: ddb_name
+        for ddb_name, (_subdir, schema_name) in DUCKDB_EXPORT_MAP.items()
+    }
+
+    # Pre-compute column lists while memory is the default catalog
+    # (information_schema lookup requires default catalog context)
+    col_lists: dict[str, str] = {}
     exported_tables: list[tuple[str, str]] = []  # (ddb_name, schema_name)
-    for ddb_name, (_subdir, schema_name) in DUCKDB_EXPORT_MAP.items():
+    for table in TABLES:
+        schema_name = table.name
+        ddb_name = schema_to_ddb.get(schema_name)
+        if ddb_name is None:
+            continue
         try:
             db.execute(f"SELECT 1 FROM {ddb_name} LIMIT 1")
         except duckdb.CatalogException:
             continue
-
-        if schema_name in TABLE_MAP:
-            ddl = generate_create_table_duckdb(schema_name, schema="export_db")
-            db.execute(ddl)
-        else:
-            # Fallback for tables without schema definition
-            col_list = _get_select_cols(db, ddb_name, schema_name)
-            db.execute(
-                f"CREATE TABLE export_db.{schema_name} AS "
-                f"SELECT {col_list} FROM {ddb_name} WHERE 1=0"
-            )
+        col_lists[ddb_name] = _get_select_cols(db, ddb_name, schema_name)
         exported_tables.append((ddb_name, schema_name))
 
-    # Second pass: insert data
+    # Switch default catalog so FK references resolve within export_db
+    db.execute("USE export_db")
+
+    # First pass: create all tables with DDL in TABLES order (dependency order
+    # required for FK constraints to resolve)
+    for _ddb_name, schema_name in exported_tables:
+        ddl = generate_create_table_duckdb(schema_name)
+        db.execute(ddl)
+
+    # Second pass: insert data (source tables are in memory catalog)
     for ddb_name, schema_name in exported_tables:
-        col_list = _get_select_cols(db, ddb_name, schema_name)
+        col_list = col_lists[ddb_name]
         db.execute(
-            f"INSERT INTO export_db.{schema_name} "
-            f"SELECT {col_list} FROM {ddb_name}"
+            f"INSERT INTO {schema_name} "
+            f"SELECT {col_list} FROM memory.{ddb_name}"
         )
-        count = db.execute(f"SELECT COUNT(*) FROM export_db.{schema_name}").fetchone()[0]
+        count = db.execute(f"SELECT COUNT(*) FROM {schema_name}").fetchone()[0]
         logger.info("  %-30s %10s rows", schema_name, f"{count:,}")
 
     # Add indexes
     for idx_name, tbl_name, cols in INDEXES:
         try:
-            db.execute(f"SELECT 1 FROM export_db.{tbl_name} LIMIT 1")
+            db.execute(f"SELECT 1 FROM {tbl_name} LIMIT 1")
         except duckdb.CatalogException:
             continue
         col_str = ", ".join(cols)
-        db.execute(f"CREATE INDEX {idx_name} ON export_db.{tbl_name}({col_str})")
+        db.execute(f"CREATE INDEX {idx_name} ON {tbl_name}({col_str})")
 
+    # Add table and column comments for agent discoverability
+    for stmt in generate_duckdb_comments():
+        db.execute(stmt)
+
+    # Switch back to memory catalog before detaching
+    db.execute("USE memory")
     db.execute("DETACH export_db")
 
     # Clean up intermediate CSVs — all data is in the .duckdb file now
