@@ -19,7 +19,7 @@ import pyarrow.parquet as pq
 
 from .config import load_erp_config
 from .id_mapper import IdMapper
-from .schema import INDEXES, TABLE_MAP, get_column_names
+from .schema import INDEXES, TABLE_MAP, generate_create_table_duckdb, get_column_names
 
 logging.basicConfig(
     level=logging.INFO,
@@ -350,37 +350,48 @@ def _export_duckdb(
 ) -> None:
     """Export all tables to a standalone erp.duckdb file.
 
-    Uses ATTACH + CTAS to write clean tables (schema-defined columns only,
-    no erp_ prefix) into the file database, then adds indexes.
+    Creates tables with full DDL (PKs, NOT NULL, FKs, defaults) from
+    schema.py, then inserts data. This ensures DESCRIBE shows the
+    complete schema — not just bare column types.
     """
     duckdb_path = output_dir / "erp.duckdb"
-    # Remove existing file for a clean export
     if duckdb_path.exists():
         duckdb_path.unlink()
 
     db.execute(f"ATTACH '{duckdb_path}' AS export_db")
 
-    exported = 0
+    # First pass: create all tables with DDL (needed for FK references)
+    exported_tables: list[tuple[str, str]] = []  # (ddb_name, schema_name)
     for ddb_name, (_subdir, schema_name) in DUCKDB_EXPORT_MAP.items():
         try:
             db.execute(f"SELECT 1 FROM {ddb_name} LIMIT 1")
         except duckdb.CatalogException:
             continue
 
-        col_list = _get_select_cols(db, ddb_name, schema_name)
+        if schema_name in TABLE_MAP:
+            ddl = generate_create_table_duckdb(schema_name, schema="export_db")
+            db.execute(ddl)
+        else:
+            # Fallback for tables without schema definition
+            col_list = _get_select_cols(db, ddb_name, schema_name)
+            db.execute(
+                f"CREATE TABLE export_db.{schema_name} AS "
+                f"SELECT {col_list} FROM {ddb_name} WHERE 1=0"
+            )
+        exported_tables.append((ddb_name, schema_name))
 
+    # Second pass: insert data
+    for ddb_name, schema_name in exported_tables:
+        col_list = _get_select_cols(db, ddb_name, schema_name)
         db.execute(
-            f"CREATE TABLE export_db.{schema_name} AS "
+            f"INSERT INTO export_db.{schema_name} "
             f"SELECT {col_list} FROM {ddb_name}"
         )
-
         count = db.execute(f"SELECT COUNT(*) FROM export_db.{schema_name}").fetchone()[0]
         logger.info("  %-30s %10s rows", schema_name, f"{count:,}")
-        exported += 1
 
     # Add indexes
     for idx_name, tbl_name, cols in INDEXES:
-        # Only index tables that were exported
         try:
             db.execute(f"SELECT 1 FROM export_db.{tbl_name} LIMIT 1")
         except duckdb.CatalogException:
@@ -398,7 +409,8 @@ def _export_duckdb(
             shutil.rmtree(d)
 
     file_size_mb = duckdb_path.stat().st_size / (1024 * 1024)
-    logger.info("Exported %d tables to %s (%.1f MB)", exported, duckdb_path, file_size_mb)
+    logger.info("Exported %d tables to %s (%.1f MB)",
+                 len(exported_tables), duckdb_path, file_size_mb)
 
 
 def _get_select_cols(

@@ -771,8 +771,6 @@ def generate_ddl() -> str:
 
 def generate_duckdb_ddl() -> str:
     """Generate DuckDB-compatible DDL from the schema definitions."""
-    import re
-
     lines: list[str] = [
         "-- " + "=" * 76,
         "-- Prism Consumer Goods (PCG) - ERP Schema",
@@ -784,24 +782,10 @@ def generate_duckdb_ddl() -> str:
         "-- Drop all tables (reverse dependency order) for clean reload",
     ]
 
-    # DROP TABLE statements in reverse order (no CASCADE needed for DuckDB)
     for table in reversed(TABLES):
         lines.append(f"DROP TABLE IF EXISTS {table.name};")
     lines.append("")
 
-    # Type mapping: PostgreSQL → DuckDB
-    def _pg_to_duckdb(pg_type: str) -> str:
-        upper = pg_type.upper()
-        if upper == "SERIAL":
-            return "INTEGER"
-        if upper == "TEXT":
-            return "VARCHAR"
-        # Strip VARCHAR lengths — DuckDB doesn't enforce them
-        if re.match(r"VARCHAR\(\d+\)", upper):
-            return "VARCHAR"
-        return pg_type  # DECIMAL, BIGINT, BOOLEAN, INTEGER all pass through
-
-    # CREATE TABLE statements
     current_domain = ""
     for table in TABLES:
         if table.domain and table.domain != current_domain:
@@ -811,43 +795,9 @@ def generate_duckdb_ddl() -> str:
             lines.append("-- " + "=" * 76)
             lines.append("")
 
-        lines.append(f"CREATE TABLE {table.name} (")
-        col_lines: list[str] = []
-
-        for col in table.columns:
-            ddb_type = _pg_to_duckdb(col.type)
-            parts = [f"    {col.name}", ddb_type]
-            if table.has_serial_pk and col.name == "id":
-                parts.append("PRIMARY KEY")
-            elif col.constraints:
-                parts.append(col.constraints)
-            col_lines.append((" ".join(parts), col.comment))
-
-        # Foreign keys (DuckDB accepts but doesn't enforce)
-        for fk in table.foreign_keys:
-            col_lines.append((
-                f"    FOREIGN KEY ({fk.column}) REFERENCES {fk.ref_table}({fk.ref_column})",
-                "",
-            ))
-
-        # Composite primary key
-        if table.primary_key:
-            col_lines.append((
-                f"    PRIMARY KEY ({', '.join(table.primary_key)})",
-                "",
-            ))
-
-        for i, (sql, comment) in enumerate(col_lines):
-            trailing = "," if i < len(col_lines) - 1 else ""
-            if comment:
-                lines.append(f"{sql}{trailing}  -- {comment}")
-            else:
-                lines.append(f"{sql}{trailing}")
-
-        lines.append(");")
+        lines.append(generate_create_table_duckdb(table.name) + ";")
         lines.append("")
 
-    # Indexes
     lines.append("-- " + "=" * 76)
     lines.append("-- Indexes")
     lines.append("-- " + "=" * 76)
@@ -858,6 +808,57 @@ def generate_duckdb_ddl() -> str:
     lines.append("")
 
     return "\n".join(lines)
+
+
+def _pg_to_duckdb(pg_type: str) -> str:
+    """Convert a PostgreSQL type to DuckDB-compatible type."""
+    import re
+
+    upper = pg_type.upper()
+    if upper == "SERIAL":
+        return "INTEGER"
+    if upper == "TEXT":
+        return "VARCHAR"
+    if re.match(r"VARCHAR\(\d+\)", upper):
+        return "VARCHAR"
+    return pg_type
+
+
+def generate_create_table_duckdb(table_name: str, *, schema: str = "") -> str:
+    """Generate a DuckDB CREATE TABLE statement for a single table.
+
+    Includes column types, constraints (NOT NULL, DEFAULT), and primary keys.
+    Foreign keys are omitted — DuckDB doesn't enforce them and they cause
+    dependency-order issues during CREATE.
+
+    Args:
+        table_name: Schema table name (e.g. 'orders', 'suppliers').
+        schema: Optional schema prefix (e.g. 'export_db').
+    """
+    table = TABLE_MAP.get(table_name)
+    if table is None:
+        raise KeyError(f"Unknown table: {table_name}")
+
+    qualified = f"{schema}.{table_name}" if schema else table_name
+    col_parts: list[str] = []
+
+    for col in table.columns:
+        ddb_type = _pg_to_duckdb(col.type)
+        parts = [f"    {col.name}", ddb_type]
+        if table.has_serial_pk and col.name == "id":
+            parts.append("PRIMARY KEY")
+        elif col.constraints:
+            parts.append(col.constraints)
+        col_parts.append(" ".join(parts))
+
+    # Composite primary key
+    if table.primary_key:
+        col_parts.append(
+            f"    PRIMARY KEY ({', '.join(table.primary_key)})"
+        )
+
+    body = ",\n".join(col_parts)
+    return f"CREATE TABLE {qualified} (\n{body}\n)"
 
 
 def get_column_names(table_name: str) -> list[str]:
